@@ -24,6 +24,7 @@ pub trait Page {
         Ok(())
     }
 
+    #[allow(unused)]
     fn unfocus(&mut self) -> Result<(), Report> {
         Ok(())
     }

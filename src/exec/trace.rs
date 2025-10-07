@@ -125,14 +125,8 @@ impl ExecutionTrace {
 
         if addr.is_element_aligned() {
             for i in 0..size_in_felts {
-                let addr = addr
-                    .addr
-                    .checked_add(i as u32)
-                    .ok_or(MemoryReadError::OutOfBounds)?;
-                elems.push(
-                    self.read_memory_element_in_context(addr, ctx, clk)
-                        .unwrap_or_default(),
-                );
+                let addr = addr.addr.checked_add(i as u32).ok_or(MemoryReadError::OutOfBounds)?;
+                elems.push(self.read_memory_element_in_context(addr, ctx, clk).unwrap_or_default());
             }
         } else {
             return Err(MemoryReadError::UnalignedRead);
@@ -174,15 +168,9 @@ impl ExecutionTrace {
 
         let ptr = NativePtr::from_ptr(addr);
         if TypeId::of::<T>() == TypeId::of::<Felt>() {
-            assert_eq!(
-                ptr.offset, 0,
-                "cannot read values of type Felt from unaligned addresses"
-            );
+            assert_eq!(ptr.offset, 0, "cannot read values of type Felt from unaligned addresses");
         }
-        assert_eq!(
-            ptr.offset, 0,
-            "support for unaligned reads is not yet implemented"
-        );
+        assert_eq!(ptr.offset, 0, "support for unaligned reads is not yet implemented");
         match <T as FromMidenRepr>::size_in_felts() {
             1 => {
                 let felt = self.read_memory_element_in_context(ptr.addr, ctx, clk)?;

@@ -57,23 +57,4 @@ impl NativePtr {
     pub const fn is_element_aligned(&self) -> bool {
         self.offset == 0
     }
-
-    /// Returns true if this pointer is not element aligned
-    pub const fn is_unaligned(&self) -> bool {
-        self.offset > 0
-    }
-
-    /// Returns the byte alignment implied by this pointer value.
-    ///
-    /// For example, a pointer to the first word in linear memory, i.e. address 1, with an offset
-    /// of 2, is equivalent to an address in byte-addressable memory of 6, which has an implied
-    /// alignment of 2 bytes.
-    pub const fn alignment(&self) -> u32 {
-        2u32.pow(self.as_ptr().trailing_zeros())
-    }
-
-    /// Converts this native pointer back to a byte-addressable pointer value
-    pub const fn as_ptr(&self) -> u32 {
-        (self.addr * 4) + self.offset as u32
-    }
 }

@@ -109,14 +109,10 @@ impl Pane for BreakpointsPane {
                 if self.breakpoint_cycle < state.executor.cycle {
                     self.breakpoints_hit.clear();
                     self.breakpoints_hit.append(&mut state.breakpoints_hit);
-                    if let Some(prev) = self.breakpoint_selected {
-                        if self
-                            .breakpoints_hit
-                            .iter()
-                            .any(|bp| bp.id == prev && bp.is_one_shot())
-                        {
-                            self.breakpoint_selected = None;
-                        }
+                    if let Some(prev) = self.breakpoint_selected
+                        && self.breakpoints_hit.iter().any(|bp| bp.id == prev && bp.is_one_shot())
+                    {
+                        self.breakpoint_selected = None;
                     }
                 }
                 self.breakpoint_cycle = state.executor.cycle;
@@ -143,11 +139,8 @@ impl Pane for BreakpointsPane {
             .collect::<Vec<_>>();
         breakpoints.sort_by_key(|(_, bp)| bp.id);
         let user_created_breakpoints = breakpoints.len();
-        let user_breakpoints_hit = self
-            .breakpoints_hit
-            .iter()
-            .filter(|bp| !bp.is_internal())
-            .count();
+        let user_breakpoints_hit =
+            self.breakpoints_hit.iter().filter(|bp| !bp.is_internal()).count();
 
         let fg = Color::White;
         let bg = Color::Black;

@@ -27,13 +27,14 @@ pub type Frame<'a> = ratatui::Frame<'a>;
 #[derive(Clone, Debug)]
 pub enum Event {
     Init,
+    #[allow(unused)]
     Quit,
     Error,
-    Closed,
     Tick,
     Render,
     FocusGained,
     FocusLost,
+    #[allow(unused)]
     Paste(String),
     Key(KeyEvent),
     Mouse(MouseEvent),
@@ -41,7 +42,10 @@ pub enum Event {
 }
 
 pub enum EventResponse<T> {
+    /// When handled, continue propagating events
+    #[allow(unused)]
     Continue(T),
+    /// When handled, stop propagating events
     Stop(T),
 }
 
@@ -90,11 +94,13 @@ impl Tui {
         self
     }
 
+    #[allow(unused)]
     pub fn mouse(mut self, mouse: bool) -> Self {
         self.mouse = mouse;
         self
     }
 
+    #[allow(unused)]
     pub fn paste(mut self, paste: bool) -> Self {
         self.paste = paste;
         self
@@ -222,6 +228,7 @@ impl Tui {
         Ok(())
     }
 
+    #[allow(unused)]
     pub fn resume(&mut self) -> Result<(), Report> {
         self.enter()?;
         Ok(())

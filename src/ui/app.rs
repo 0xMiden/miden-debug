@@ -212,10 +212,10 @@ impl App {
                     if let Some(action) = popup.update(action.clone(), &mut self.state)? {
                         action_tx.send(action).into_diagnostic()?;
                     }
-                } else if let Some(page) = self.pages.get_mut(self.active_page) {
-                    if let Some(action) = page.update(action.clone(), &mut self.state)? {
-                        action_tx.send(action).into_diagnostic()?;
-                    }
+                } else if let Some(page) = self.pages.get_mut(self.active_page)
+                    && let Some(action) = page.update(action.clone(), &mut self.state)?
+                {
+                    action_tx.send(action).into_diagnostic()?;
                 }
 
                 if let Some(action) = self.header.update(action.clone(), &mut self.state)? {
@@ -245,12 +245,9 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut tui::Frame<'_>) -> Result<(), Report> {
-        let vertical_layout = Layout::vertical(vec![
-            Constraint::Max(1),
-            Constraint::Fill(1),
-            Constraint::Max(1),
-        ])
-        .split(frame.area());
+        let vertical_layout =
+            Layout::vertical(vec![Constraint::Max(1), Constraint::Fill(1), Constraint::Max(1)])
+                .split(frame.area());
 
         self.header.draw(frame, vertical_layout[0], &self.state)?;
 

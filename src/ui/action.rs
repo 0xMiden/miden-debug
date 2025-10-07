@@ -6,11 +6,14 @@ pub enum Action {
     Tick,
     Render,
     Resize(u16, u16),
+    #[allow(unused)]
     Suspend,
     Resume,
     Quit,
+    #[allow(unused)]
     Refresh,
     Error(String),
+    #[allow(unused)]
     Help,
     FocusNext,
     FocusPrev,
@@ -18,6 +21,7 @@ pub enum Action {
     UnFocus,
     Up,
     Down,
+    #[allow(unused)]
     Submit,
     Update,
     Tab(u32),

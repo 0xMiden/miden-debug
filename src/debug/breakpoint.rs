@@ -100,10 +100,7 @@ impl BreakpointType {
 
     /// Returns true if this breakpoint is internal to the debugger (i.e. not creatable via :b)
     pub fn is_internal(&self) -> bool {
-        matches!(
-            self,
-            BreakpointType::Next | BreakpointType::Step | BreakpointType::Finish
-        )
+        matches!(self, BreakpointType::Next | BreakpointType::Step | BreakpointType::Finish)
     }
 
     /// Returns true if this breakpoint is removed upon being hit

@@ -102,17 +102,9 @@ fn default_line_with_selection(
     let suffix_content =
         core::str::from_utf8(&line.as_bytes()[selected.end..]).expect("invalid selection");
     let (selected_content, suffix_content) = if suffix_content.is_empty() {
-        (
-            selected_content
-                .strip_suffix('\n')
-                .unwrap_or(selected_content),
-            suffix_content,
-        )
+        (selected_content.strip_suffix('\n').unwrap_or(selected_content), suffix_content)
     } else {
-        (
-            selected_content,
-            suffix_content.strip_suffix('\n').unwrap_or(suffix_content),
-        )
+        (selected_content, suffix_content.strip_suffix('\n').unwrap_or(suffix_content))
     };
     vec![
         Span::raw(prefix_content.to_string()),
@@ -174,11 +166,7 @@ impl SyntectHighlighter {
 
     /// Create a syntect highlighter with the given theme and the default syntax set.
     pub fn new_themed(theme: syntax::Theme, use_bg_color: bool) -> Self {
-        Self::new(
-            syntax::SyntaxSet::load_defaults_nonewlines(),
-            theme,
-            use_bg_color,
-        )
+        Self::new(syntax::SyntaxSet::load_defaults_nonewlines(), theme, use_bg_color)
     }
 
     /// Determine syntect SyntaxReference to use for given SourceCode
@@ -191,16 +179,11 @@ impl SyntectHighlighter {
         if let Some(name) = contents.name()
             && let Some(ext) = Path::new(name).extension()
         {
-            return self
-                .syntax_set
-                .find_syntax_by_extension(ext.to_string_lossy().as_ref());
+            return self.syntax_set.find_syntax_by_extension(ext.to_string_lossy().as_ref());
         }
         // finally, attempt to guess syntax based on first line
         self.syntax_set.find_syntax_by_first_line(
-            core::str::from_utf8(contents.data())
-                .ok()?
-                .split('\n')
-                .next()?,
+            core::str::from_utf8(contents.data()).ok()?.split('\n').next()?,
         )
     }
 }

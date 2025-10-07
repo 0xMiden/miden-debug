@@ -245,12 +245,9 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut tui::Frame<'_>) -> Result<(), Report> {
-        let vertical_layout = Layout::vertical(vec![
-            Constraint::Max(1),
-            Constraint::Fill(1),
-            Constraint::Max(1),
-        ])
-        .split(frame.area());
+        let vertical_layout =
+            Layout::vertical(vec![Constraint::Max(1), Constraint::Fill(1), Constraint::Max(1)])
+                .split(frame.area());
 
         self.header.draw(frame, vertical_layout[0], &self.state)?;
 

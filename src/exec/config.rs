@@ -45,23 +45,9 @@ impl ExecutionConfig {
         let inputs = StackInputs::new(file.inputs.stack.into_iter().map(|felt| felt.0).collect())
             .map_err(|err| format!("invalid value for 'stack': {err}"))?;
         let advice_inputs = AdviceInputs::default()
-            .with_stack(
-                file.inputs
-                    .advice
-                    .stack
-                    .into_iter()
-                    .rev()
-                    .map(|felt| felt.0),
-            )
+            .with_stack(file.inputs.advice.stack.into_iter().rev().map(|felt| felt.0))
             .with_map(file.inputs.advice.map.into_iter().map(|entry| {
-                (
-                    entry.digest.0,
-                    entry
-                        .values
-                        .into_iter()
-                        .map(|felt| felt.0)
-                        .collect::<Vec<_>>(),
-                )
+                (entry.digest.0, entry.values.into_iter().map(|felt| felt.0).collect::<Vec<_>>())
             }));
 
         Ok(Self {
@@ -135,31 +121,19 @@ impl clap::builder::TypedValueParser for ExecutionConfigParser {
         if !inputs_path.is_file() {
             return Err(Error::raw(
                 ErrorKind::InvalidValue,
-                format!(
-                    "invalid inputs file: '{}' is not a file",
-                    inputs_path.display()
-                ),
+                format!("invalid inputs file: '{}' is not a file", inputs_path.display()),
             ));
         }
 
         let content = std::fs::read_to_string(inputs_path).map_err(|err| {
-            Error::raw(
-                ErrorKind::ValueValidation,
-                format!("failed to read inputs file: {err}"),
-            )
+            Error::raw(ErrorKind::ValueValidation, format!("failed to read inputs file: {err}"))
         })?;
         let inputs_file = toml::from_str::<ExecutionConfigFile>(&content).map_err(|err| {
-            Error::raw(
-                ErrorKind::ValueValidation,
-                format!("invalid inputs file: {err}"),
-            )
+            Error::raw(ErrorKind::ValueValidation, format!("invalid inputs file: {err}"))
         })?;
 
         ExecutionConfig::from_inputs_file(inputs_file).map_err(|err| {
-            Error::raw(
-                ErrorKind::ValueValidation,
-                format!("invalid inputs file: {err}"),
-            )
+            Error::raw(ErrorKind::ValueValidation, format!("invalid inputs file: {err}"))
         })
     }
 }
@@ -294,27 +268,11 @@ mod tests {
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert_eq!(
             file.advice_inputs.stack,
-            &[
-                RawFelt::new(4),
-                RawFelt::new(3),
-                RawFelt::new(2),
-                RawFelt::new(1)
-            ]
+            &[RawFelt::new(4), RawFelt::new(3), RawFelt::new(2), RawFelt::new(1)]
         );
         assert_eq!(
-            file.advice_inputs
-                .map
-                .get(&digest)
-                .map(|value| value.as_ref()),
-            Some(
-                [
-                    RawFelt::new(1),
-                    RawFelt::new(2),
-                    RawFelt::new(3),
-                    RawFelt::new(4)
-                ]
-                .as_slice()
-            )
+            file.advice_inputs.map.get(&digest).map(|value| value.as_ref()),
+            Some([RawFelt::new(1), RawFelt::new(2), RawFelt::new(3), RawFelt::new(4)].as_slice())
         );
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());

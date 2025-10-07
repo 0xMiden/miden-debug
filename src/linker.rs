@@ -232,9 +232,7 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
     ) -> Result<Self::Value, clap::error::Error> {
         use clap::error::{Error, ErrorKind};
 
-        let value = value
-            .to_str()
-            .ok_or_else(|| Error::new(ErrorKind::InvalidUtf8))?;
+        let value = value.to_str().ok_or_else(|| Error::new(ErrorKind::InvalidUtf8))?;
         let (kind, name) = value
             .split_once('=')
             .map(|(kind, name)| (Some(kind), name))
@@ -251,10 +249,7 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
         let extension = maybe_path.extension().map(|ext| ext.to_str().unwrap());
         let kind = match kind {
             Some(kind) if !kind.is_empty() => kind.parse::<LibraryKind>().map_err(|_| {
-                Error::raw(
-                    ErrorKind::InvalidValue,
-                    format!("'{kind}' is not a valid library kind"),
-                )
+                Error::raw(ErrorKind::InvalidValue, format!("'{kind}' is not a valid library kind"))
             })?,
             Some(_) | None => match extension {
                 Some(kind) => kind.parse::<LibraryKind>().map_err(|_| {
@@ -282,10 +277,7 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
                 LibraryKind::Masp if !meta.is_file() => {
                     return Err(Error::raw(
                         ErrorKind::ValueValidation,
-                        format!(
-                            "invalid link library: '{}' is not a file",
-                            maybe_path.display()
-                        ),
+                        format!("invalid link library: '{}' is not a file", maybe_path.display()),
                     ));
                 }
                 LibraryKind::Masm if !meta.is_dir() => {
@@ -301,12 +293,7 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
                 _ => (),
             }
 
-            let name = maybe_path
-                .file_stem()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_string();
+            let name = maybe_path.file_stem().unwrap().to_str().unwrap().to_string();
 
             Ok(LinkLibrary {
                 name: name.into(),
@@ -314,9 +301,7 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
                 kind,
             })
         } else if extension.is_some() {
-            let name = name
-                .strip_suffix(unsafe { extension.unwrap_unchecked() })
-                .unwrap();
+            let name = name.strip_suffix(unsafe { extension.unwrap_unchecked() }).unwrap();
             let mut name = name.to_string();
             name.pop();
 

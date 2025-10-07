@@ -60,9 +60,7 @@ impl Page for Home {
             const ARROW: &str = symbols::scrollbar::HORIZONTAL.end;
             let status_line =
                 format!("[l,h {ARROW} pane movement] [: {ARROW} commands] [q {ARROW} quit]");
-            command_tx
-                .send(Action::StatusLine(status_line))
-                .into_diagnostic()?;
+            command_tx.send(Action::StatusLine(status_line)).into_diagnostic()?;
         }
         Ok(())
     }
@@ -103,9 +101,8 @@ impl Page for Home {
                 }
             }
             Action::ToggleFullScreen => {
-                self.fullscreen_pane_index = self
-                    .fullscreen_pane_index
-                    .map_or(Some(self.focused_pane_index), |_| None);
+                self.fullscreen_pane_index =
+                    self.fullscreen_pane_index.map_or(Some(self.focused_pane_index), |_| None);
             }
             Action::FocusFooter(..) => {
                 if let Some(pane) = self.panes.get_mut(self.focused_pane_index) {

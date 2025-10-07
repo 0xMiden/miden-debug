@@ -7,10 +7,9 @@ mod state;
 mod syntax_highlighting;
 mod tui;
 
-use self::{action::Action, app::App};
-
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 
+use self::{action::Action, app::App};
 use crate::config::DebuggerConfig;
 
 pub fn run(config: Box<DebuggerConfig>, logger: Box<dyn log::Log>) -> Result<(), Report> {

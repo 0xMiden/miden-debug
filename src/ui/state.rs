@@ -150,10 +150,7 @@ impl State {
         let initial = candidate;
         let mut next = candidate.wrapping_add(1);
         loop {
-            assert_ne!(
-                initial, next,
-                "unable to allocate a breakpoint id: too many breakpoints"
-            );
+            assert_ne!(initial, next, "unable to allocate a breakpoint id: too many breakpoints");
             if self
                 .breakpoints
                 .iter()
@@ -196,7 +193,7 @@ impl State {
         } else if matches!(expr.ty, Type::Felt) {
             if !expr.addr.is_element_aligned() {
                 return Err(
-                    "read failed: type 'felt' must be aligned to an element boundary".into(),
+                    "read failed: type 'felt' must be aligned to an element boundary".into()
                 );
             }
             let felt = self
@@ -211,10 +208,7 @@ impl State {
             if !expr.addr.is_word_aligned() {
                 return Err("read failed: type 'word' must be aligned to a word boundary".into());
             }
-            let word = self
-                .execution_trace
-                .read_memory_word(expr.addr.addr)
-                .unwrap_or_default();
+            let word = self.execution_trace.read_memory_word(expr.addr.addr).unwrap_or_default();
             output.push('[');
             for (i, elem) in word.iter().enumerate() {
                 if i > 0 {
@@ -302,9 +296,7 @@ fn load_package(config: &DebuggerConfig) -> Result<Arc<miden_mast_package::Packa
             .parse::<miden_assembly::ast::QualifiedProcedureName>()
             .map_err(|_| Report::msg(format!("invalid function identifier: '{entry}'")))?;
         if !package.is_library() {
-            return Err(Report::msg(
-                "cannot use --entrypoint with executable packages",
-            ));
+            return Err(Report::msg("cannot use --entrypoint with executable packages"));
         }
 
         package.make_executable(&id).map(Arc::new)

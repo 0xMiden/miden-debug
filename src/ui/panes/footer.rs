@@ -89,10 +89,7 @@ impl Pane for FooterPane {
                     }
                     KeyCode::Esc => {
                         self.command_history_index = None;
-                        Some(EventResponse::Stop(Action::FooterResult(
-                            self.command.clone(),
-                            None,
-                        )))
+                        Some(EventResponse::Stop(Action::FooterResult(self.command.clone(), None)))
                     }
                     KeyCode::Up if !self.command_history.is_empty() => {
                         let history_index = self
@@ -169,9 +166,7 @@ impl Pane for FooterPane {
             area.width = area.width.saturating_sub(4);
 
             let width = area.width.max(3);
-            let scroll = self
-                .input
-                .visual_scroll(width as usize - self.command.len());
+            let scroll = self.input.visual_scroll(width as usize - self.command.len());
             let input = Paragraph::new(Line::from(vec![
                 Span::styled(&self.command, Style::default().fg(Color::LightBlue)),
                 Span::styled(self.input.value(), Style::default()),

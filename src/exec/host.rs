@@ -47,10 +47,7 @@ where
             TraceEvent::AssertionFailed(None) => u32::MAX,
             ev => ev.into(),
         };
-        self.tracing_callbacks
-            .entry(key)
-            .or_default()
-            .push(Box::new(callback));
+        self.tracing_callbacks.entry(key).or_default().push(Box::new(callback));
     }
 
     /// Register a handler to be called when an assertion in the VM fails
@@ -76,10 +73,7 @@ where
         location: &Location,
     ) -> (SourceSpan, Option<Arc<SourceFile>>) {
         let maybe_file = self.source_manager.get_by_uri(location.uri());
-        let span = self
-            .source_manager
-            .location_to_span(location.clone())
-            .unwrap_or_default();
+        let span = self.source_manager.location_to_span(location.clone()).unwrap_or_default();
         (span, maybe_file)
     }
 
@@ -102,10 +96,7 @@ where
         let clk = process.clk();
         if let Some(handler) = self.on_assert_failed.as_mut() {
             // TODO: We're truncating the error code here, but we may need to handle the full range
-            handler(
-                clk,
-                TraceEvent::AssertionFailed(NonZeroU32::new(err_code.as_int() as u32)),
-            );
+            handler(clk, TraceEvent::AssertionFailed(NonZeroU32::new(err_code.as_int() as u32)));
         }
     }
 }

@@ -53,8 +53,7 @@ impl SourceCodePane {
                     .source_file
                     .read_span(&resolved.source_file.source_span().into(), 0, 0)
                     .expect("failed to read span of file");
-                self.syntax_highlighter
-                    .start_highlighter_state(span_contents.as_ref())
+                self.syntax_highlighter.start_highlighter_state(span_contents.as_ref())
             });
         let resolved_span = resolved.span.into_slice_index();
         let content = resolved.source_file.content();
@@ -414,27 +413,24 @@ impl Pane for SourceCodePane {
         lines[selected_line].append(&mut parts);
 
         let gutter_width = self.current_file.as_ref().unwrap().gutter_width as usize;
-        let lines = lines
-            .into_iter()
-            .enumerate()
-            .map(|(line_index, highlighted_parts)| {
-                let line_number_style = if line_index == selected_line {
-                    self.theme.current_line
-                } else {
-                    self.theme.line_number
-                };
-                Line::from_iter(
-                    [
-                        Span::styled(
-                            format!("{line_no:gutter_width$}", line_no = line_index + 1),
-                            line_number_style,
-                        ),
-                        Span::styled(" | ", line_number_style),
-                    ]
-                    .into_iter()
-                    .chain(highlighted_parts),
-                )
-            });
+        let lines = lines.into_iter().enumerate().map(|(line_index, highlighted_parts)| {
+            let line_number_style = if line_index == selected_line {
+                self.theme.current_line
+            } else {
+                self.theme.line_number
+            };
+            Line::from_iter(
+                [
+                    Span::styled(
+                        format!("{line_no:gutter_width$}", line_no = line_index + 1),
+                        line_number_style,
+                    ),
+                    Span::styled(" | ", line_number_style),
+                ]
+                .into_iter()
+                .chain(highlighted_parts),
+            )
+        });
 
         // Render the syntax-highlighted lines
         let list = List::new(lines)

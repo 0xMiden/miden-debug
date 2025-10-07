@@ -161,12 +161,8 @@ impl Executor {
             assertion_events.borrow_mut().insert(clk, event);
         });
 
-        let mut process = Process::new(
-            program.kernel().clone(),
-            self.stack,
-            self.advice,
-            self.options,
-        );
+        let mut process =
+            Process::new(program.kernel().clone(), self.stack, self.advice, self.options);
         let process_state: ProcessState = (&mut process).into();
         let root_context = process_state.ctx();
         let result = process.execute(program, &mut host);
@@ -370,9 +366,7 @@ fn render_execution_error(
         LabeledSpan, miette::miette, reporting::PrintDiagnostic,
     };
 
-    let stacktrace = execution_state
-        .callstack
-        .stacktrace(&execution_state.recent, source_manager);
+    let stacktrace = execution_state.callstack.stacktrace(&execution_state.recent, source_manager);
 
     eprintln!("{stacktrace}");
 
@@ -415,10 +409,7 @@ fn render_execution_error(
 
         panic!("{}", PrintDiagnostic::new(report));
     } else {
-        panic!(
-            "program execution failed at step {step}: {err}",
-            step = execution_state.cycle
-        );
+        panic!("program execution failed at step {step}: {err}", step = execution_state.cycle);
     }
 }
 

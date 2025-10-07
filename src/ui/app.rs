@@ -212,10 +212,10 @@ impl App {
                     if let Some(action) = popup.update(action.clone(), &mut self.state)? {
                         action_tx.send(action).into_diagnostic()?;
                     }
-                } else if let Some(page) = self.pages.get_mut(self.active_page) {
-                    if let Some(action) = page.update(action.clone(), &mut self.state)? {
-                        action_tx.send(action).into_diagnostic()?;
-                    }
+                } else if let Some(page) = self.pages.get_mut(self.active_page)
+                    && let Some(action) = page.update(action.clone(), &mut self.state)?
+                {
+                    action_tx.send(action).into_diagnostic()?;
                 }
 
                 if let Some(action) = self.header.update(action.clone(), &mut self.state)? {

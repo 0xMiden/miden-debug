@@ -68,24 +68,6 @@ impl LinkLibrary {
         self.name.as_ref()
     }
 
-    /// Construct a LinkLibrary for the Miden standard library
-    pub fn std() -> Self {
-        LinkLibrary {
-            name: "std".into(),
-            path: None,
-            kind: LibraryKind::Masp,
-        }
-    }
-
-    /// Construct a LinkLibrary for Miden base(protocol/tx kernel) library
-    pub fn base() -> Self {
-        LinkLibrary {
-            name: "base".into(),
-            path: None,
-            kind: LibraryKind::Masp,
-        }
-    }
-
     pub fn load(
         &self,
         config: &DebuggerConfig,

@@ -1,3 +1,4 @@
+#![allow(unused)]
 mod config;
 mod debug;
 mod exec;

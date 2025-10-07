@@ -41,7 +41,7 @@ pub struct DebuggerConfig {
     /// By default this will be the working directory the debugger is executed from
     #[cfg_attr(
         feature = "tui",
-        arg(long, value_name = "DIR", help_heading = "Output")
+        arg(long, value_name = "DIR", help_heading = "Execution")
     )]
     pub working_dir: Option<PathBuf>,
     /// The path to the root directory of the current Miden toolchain
@@ -53,7 +53,7 @@ pub struct DebuggerConfig {
             long,
             value_name = "DIR",
             env = "MIDEN_SYSROOT",
-            help_heading = "Compiler"
+            help_heading = "Linker"
         )
     )]
     pub sysroot: Option<PathBuf>,
@@ -64,12 +64,12 @@ pub struct DebuggerConfig {
         default_value_t = ColorChoice::Auto,
         default_missing_value = "auto",
         num_args(0..=1),
-        help_heading = "Diagnostics"
+        help_heading = "Output"
     ))]
     pub color: ColorChoice,
     /// Specify the function to call as the entrypoint for the program
     /// in the format `<module_name>::<function>`
-    #[cfg_attr(feature = "tui", arg(long, help_heading = "Compiler"))]
+    #[cfg_attr(feature = "tui", arg(long, help_heading = "Execution"))]
     pub entrypoint: Option<String>,
     /// Specify one or more search paths for link libraries requested via `-l`
     #[cfg_attr(

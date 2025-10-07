@@ -188,12 +188,12 @@ impl SyntectHighlighter {
             return self.syntax_set.find_syntax_by_name(language);
         }
         // otherwise try to use any file extension provided in the name
-        if let Some(name) = contents.name() {
-            if let Some(ext) = Path::new(name).extension() {
-                return self
-                    .syntax_set
-                    .find_syntax_by_extension(ext.to_string_lossy().as_ref());
-            }
+        if let Some(name) = contents.name()
+            && let Some(ext) = Path::new(name).extension()
+        {
+            return self
+                .syntax_set
+                .find_syntax_by_extension(ext.to_string_lossy().as_ref());
         }
         // finally, attempt to guess syntax based on first line
         self.syntax_set.find_syntax_by_first_line(

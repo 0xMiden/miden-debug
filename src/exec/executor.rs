@@ -15,11 +15,11 @@ use miden_mast_package::{
     MemDependencyResolverByDigest, ResolvedDependency,
 };
 use miden_processor::{
-    AdviceInputs, AdviceProvider, ExecutionError, Felt, MastForest, Process, ProcessState,
+    AdviceInputs, AdviceProvider, ExecutionError, ExecutionOptions, Felt, Process, ProcessState,
     RowIndex, VmStateIterator,
 };
 
-use super::{DebugExecutor, DebuggerHost, ExecutionTrace, TraceEvent};
+use super::{DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent};
 use crate::{debug::CallStack, felt::FromMidenRepr};
 
 /// The [Executor] is responsible for executing a program with the Miden VM.
@@ -31,19 +31,38 @@ use crate::{debug::CallStack, felt::FromMidenRepr};
 pub struct Executor {
     stack: StackInputs,
     advice: AdviceInputs,
+    options: ExecutionOptions,
     libraries: Vec<Arc<Library>>,
-    mast_forests: Vec<Arc<MastForest>>,
     dependency_resolver: MemDependencyResolverByDigest,
 }
 impl Executor {
     /// Construct an executor with the given arguments on the operand stack
     pub fn new(args: Vec<Felt>) -> Self {
+        let config = ExecutionConfig {
+            inputs: StackInputs::new(args).expect("invalid stack inputs"),
+            ..Default::default()
+        };
+
+        Self::from_config(config)
+    }
+
+    /// Construct an executor from the given configuration
+    ///
+    /// NOTE: The execution options for tracing/debugging will be set to true for you
+    pub fn from_config(config: ExecutionConfig) -> Self {
+        let ExecutionConfig {
+            inputs,
+            advice_inputs,
+            options,
+        } = config;
+        let options = options.with_tracing().with_debugging(true);
         let dependency_resolver = MemDependencyResolverByDigest::default();
+
         Self {
-            stack: StackInputs::new(args).expect("invalid stack inputs"),
-            advice: AdviceInputs::default(),
+            stack: inputs,
+            advice: advice_inputs,
+            options,
             libraries: Default::default(),
-            mast_forests: Default::default(),
             dependency_resolver,
         }
     }
@@ -113,12 +132,6 @@ impl Executor {
         self
     }
 
-    /// Add a [MastForest] to the execution context
-    pub fn with_mast_forest(&mut self, mast: Arc<MastForest>) -> &mut Self {
-        self.mast_forests.push(mast);
-        self
-    }
-
     /// Convert this [Executor] into a [DebugExecutor], which captures much more information
     /// about the program being executed, and must be stepped manually.
     pub fn into_debug(
@@ -148,7 +161,12 @@ impl Executor {
             assertion_events.borrow_mut().insert(clk, event);
         });
 
-        let mut process = Process::new_debug(program.kernel().clone(), self.stack, self.advice);
+        let mut process = Process::new(
+            program.kernel().clone(),
+            self.stack,
+            self.advice,
+            self.options,
+        );
         let process_state: ProcessState = (&mut process).into();
         let root_context = process_state.ctx();
         let result = process.execute(program, &mut host);
@@ -406,11 +424,13 @@ fn render_execution_error(
 
 /// Render an iterator of `T`, comma-separated
 struct DisplayValues<T>(Cell<Option<T>>);
+
 impl<T> DisplayValues<T> {
     pub fn new(inner: T) -> Self {
         Self(Cell::new(Some(inner)))
     }
 }
+
 impl<T, I> fmt::Display for DisplayValues<I>
 where
     T: fmt::Display,

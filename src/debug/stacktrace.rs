@@ -52,10 +52,6 @@ impl CallStack {
         self.frames.last_mut()
     }
 
-    pub fn nth_frame(&self, n: usize) -> Option<&CallFrame> {
-        self.frames.iter().nth_back(n)
-    }
-
     pub fn frames(&self) -> &[CallFrame] {
         self.frames.as_slice()
     }

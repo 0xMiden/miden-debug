@@ -109,14 +109,13 @@ impl Pane for BreakpointsPane {
                 if self.breakpoint_cycle < state.executor.cycle {
                     self.breakpoints_hit.clear();
                     self.breakpoints_hit.append(&mut state.breakpoints_hit);
-                    if let Some(prev) = self.breakpoint_selected {
-                        if self
+                    if let Some(prev) = self.breakpoint_selected
+                        && self
                             .breakpoints_hit
                             .iter()
                             .any(|bp| bp.id == prev && bp.is_one_shot())
-                        {
-                            self.breakpoint_selected = None;
-                        }
+                    {
+                        self.breakpoint_selected = None;
                     }
                 }
                 self.breakpoint_cycle = state.executor.cycle;

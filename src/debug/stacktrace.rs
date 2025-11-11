@@ -171,14 +171,8 @@ impl CallStack {
                 current_frame.procedure.clone_from(&procedure);
             }
 
-            // If this is the frame pointer prologue/epilogue drop the last op, which should be a
-            // push
-            if matches!(op, Operation::FmpUpdate) {
-                current_frame.context.pop_back();
-            }
-
             // Push op into call frame if this is any op other than `nop` or frame setup
-            if !matches!(op, Operation::Noop | Operation::FmpUpdate) {
+            if !matches!(op, Operation::Noop) {
                 let cycle_idx = state.asmop.as_ref().map(|info| info.cycle_idx()).unwrap_or(1);
                 current_frame.push(op, cycle_idx, asmop.as_deref());
             }

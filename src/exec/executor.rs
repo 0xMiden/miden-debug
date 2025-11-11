@@ -373,10 +373,8 @@ fn render_execution_error(
     if let Some(last_state) = execution_state.last.as_ref() {
         let stack = last_state.stack.iter().map(|elem| elem.as_int());
         let stack = DisplayValues::new(stack);
-        let fmp = last_state.fmp.as_int();
         eprintln!(
             "\nLast Known State (at most recent instruction which succeeded):
- | Frame Pointer: {fmp} (starts at 2^30)
  | Operand Stack: [{stack}]
  "
         );

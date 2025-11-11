@@ -17,6 +17,9 @@ env:
   # via https://github.com/rust-lang/docs.rs/pull/2433
   RUST_CACHE_KEY: rust-cache-20251006
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: lint

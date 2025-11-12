@@ -624,12 +624,7 @@ impl FromMidenRepr for [Felt; 4] {
 
     #[inline(always)]
     fn from_felts(felts: &[RawFelt]) -> Self {
-        [
-            Felt(felts[0]),
-            Felt(felts[1]),
-            Felt(felts[2]),
-            Felt(felts[3]),
-        ]
+        [Felt(felts[0]), Felt(felts[1]), Felt(felts[2]), Felt(felts[3])]
     }
 }
 
@@ -740,13 +735,8 @@ impl clap::builder::TypedValueParser for FeltParser {
     ) -> Result<Self::Value, clap::error::Error> {
         use clap::error::{Error, ErrorKind};
 
-        let value = value
-            .to_str()
-            .ok_or_else(|| Error::new(ErrorKind::InvalidUtf8))?
-            .trim();
-        value
-            .parse()
-            .map_err(|err| Error::raw(ErrorKind::ValueValidation, err))
+        let value = value.to_str().ok_or_else(|| Error::new(ErrorKind::InvalidUtf8))?.trim();
+        value.parse().map_err(|err| Error::raw(ErrorKind::ValueValidation, err))
     }
 }
 
@@ -758,8 +748,7 @@ impl core::str::FromStr for Felt {
             u64::from_str_radix(value, 16)
                 .map_err(|err| format!("invalid field element value: {err}"))?
         } else {
-            s.parse::<u64>()
-                .map_err(|err| format!("invalid field element value: {err}"))?
+            s.parse::<u64>().map_err(|err| format!("invalid field element value: {err}"))?
         };
 
         if value > RawFelt::MODULUS {
@@ -893,9 +882,7 @@ impl Arbitrary for Felt {
 
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
         use miden_core::StarkField;
-        (0u64..RawFelt::MODULUS)
-            .prop_map(|v| Felt(RawFelt::new(v)))
-            .boxed()
+        (0u64..RawFelt::MODULUS).prop_map(|v| Felt(RawFelt::new(v))).boxed()
     }
 }
 
@@ -1052,22 +1039,10 @@ mod tests {
         let words = bytes_to_words(&bytes);
         assert_eq!(words.len(), 2);
         // Words should be in little-endian order, elements of the word should be in big-endian
-        assert_eq!(
-            words[0][3].as_int() as u32,
-            u32::from_ne_bytes([1, 2, 3, 4])
-        );
-        assert_eq!(
-            words[0][2].as_int() as u32,
-            u32::from_ne_bytes([5, 6, 7, 8])
-        );
-        assert_eq!(
-            words[0][1].as_int() as u32,
-            u32::from_ne_bytes([9, 10, 11, 12])
-        );
-        assert_eq!(
-            words[0][0].as_int() as u32,
-            u32::from_ne_bytes([13, 14, 15, 16])
-        );
+        assert_eq!(words[0][3].as_int() as u32, u32::from_ne_bytes([1, 2, 3, 4]));
+        assert_eq!(words[0][2].as_int() as u32, u32::from_ne_bytes([5, 6, 7, 8]));
+        assert_eq!(words[0][1].as_int() as u32, u32::from_ne_bytes([9, 10, 11, 12]));
+        assert_eq!(words[0][0].as_int() as u32, u32::from_ne_bytes([13, 14, 15, 16]));
 
         // Make sure bytes_to_words and to_words agree
         let to_words_output = bytes.to_words();

@@ -62,12 +62,14 @@ pub enum BreakpointType {
     /// on LINE
     Line { pattern: Pattern, line: u32 },
     /// Break anytime the given operation occurs
+    #[allow(unused)]
     Opcode(miden_core::Operation),
     /// Break when any cycle causes us to push a frame for PROCEDURE on the call stack
     Called(Pattern),
 }
 impl BreakpointType {
     /// Return true if this breakpoint indicates we should break for `current_op`
+    #[allow(unused)]
     pub fn should_break_for(&self, current_op: &miden_core::Operation) -> bool {
         match self {
             Self::Opcode(op) => current_op == op,
@@ -98,10 +100,7 @@ impl BreakpointType {
 
     /// Returns true if this breakpoint is internal to the debugger (i.e. not creatable via :b)
     pub fn is_internal(&self) -> bool {
-        matches!(
-            self,
-            BreakpointType::Next | BreakpointType::Step | BreakpointType::Finish
-        )
+        matches!(self, BreakpointType::Next | BreakpointType::Step | BreakpointType::Finish)
     }
 
     /// Returns true if this breakpoint is removed upon being hit

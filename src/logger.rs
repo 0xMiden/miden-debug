@@ -16,7 +16,9 @@ struct DebugLoggerImpl {
 
 pub struct LogEntry {
     pub level: Level,
+    #[allow(unused)]
     pub file: Option<Cow<'static, str>>,
+    #[allow(unused)]
     pub line: Option<u32>,
     pub message: String,
 }
@@ -44,10 +46,10 @@ impl Log for DebugLogger {
         if guard.captured.len() > 100 {
             guard.captured.pop_front();
         }
-        if let Some(inner) = guard.inner.as_ref() {
-            if inner.enabled(record.metadata()) {
-                inner.log(record);
-            }
+        if let Some(inner) = guard.inner.as_ref()
+            && inner.enabled(record.metadata())
+        {
+            inner.log(record);
         }
     }
 

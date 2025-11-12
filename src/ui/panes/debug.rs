@@ -105,20 +105,14 @@ impl Pane for DebugPane {
         frame.render_widget(Clear, area);
         let items = self.entries.iter().map(|entry| {
             Line::from(vec![
-                Span::styled(
-                    format!(" {:6} | ", entry.level),
-                    Self::level_color(entry.level),
-                ),
+                Span::styled(format!(" {:6} | ", entry.level), Self::level_color(entry.level)),
                 Span::styled(entry.message.as_str(), Self::level_color(entry.level)),
             ])
         });
         let selected = if self.entries.is_empty() {
             None
         } else {
-            Some(
-                self.selected_entry
-                    .unwrap_or(self.entries.len().saturating_sub(1)),
-            )
+            Some(self.selected_entry.unwrap_or(self.entries.len().saturating_sub(1)))
         };
         let list = List::new(items)
             .block(Block::default().borders(Borders::ALL))

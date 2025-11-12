@@ -60,9 +60,7 @@ impl Page for Home {
             const ARROW: &str = symbols::scrollbar::HORIZONTAL.end;
             let status_line =
                 format!("[l,h {ARROW} pane movement] [: {ARROW} commands] [q {ARROW} quit]");
-            command_tx
-                .send(Action::StatusLine(status_line))
-                .into_diagnostic()?;
+            command_tx.send(Action::StatusLine(status_line)).into_diagnostic()?;
         }
         Ok(())
     }
@@ -103,9 +101,8 @@ impl Page for Home {
                 }
             }
             Action::ToggleFullScreen => {
-                self.fullscreen_pane_index = self
-                    .fullscreen_pane_index
-                    .map_or(Some(self.focused_pane_index), |_| None);
+                self.fullscreen_pane_index =
+                    self.fullscreen_pane_index.map_or(Some(self.focused_pane_index), |_| None);
             }
             Action::FocusFooter(..) => {
                 if let Some(pane) = self.panes.get_mut(self.focused_pane_index) {
@@ -241,44 +238,44 @@ impl Page for Home {
                             return false;
                         }
 
-                        if let Some(loc) = loc.as_ref() {
-                            if bp.should_break_at(loc) {
-                                let retained = !bp.is_one_shot();
-                                if retained {
-                                    state.breakpoints_hit.push(bp.clone());
-                                } else {
-                                    state.breakpoints_hit.push(core::mem::take(bp));
-                                }
-                                return retained;
+                        if let Some(loc) = loc.as_ref()
+                            && bp.should_break_at(loc)
+                        {
+                            let retained = !bp.is_one_shot();
+                            if retained {
+                                state.breakpoints_hit.push(bp.clone());
+                            } else {
+                                state.breakpoints_hit.push(core::mem::take(bp));
                             }
+                            return retained;
                         }
 
-                        if let Some(proc) = proc.as_deref() {
-                            if bp.should_break_in(proc) {
-                                let retained = !bp.is_one_shot();
-                                if retained {
-                                    state.breakpoints_hit.push(bp.clone());
-                                } else {
-                                    state.breakpoints_hit.push(core::mem::take(bp));
-                                }
-                                return retained;
+                        if let Some(proc) = proc.as_deref()
+                            && bp.should_break_in(proc)
+                        {
+                            let retained = !bp.is_one_shot();
+                            if retained {
+                                state.breakpoints_hit.push(bp.clone());
+                            } else {
+                                state.breakpoints_hit.push(core::mem::take(bp));
                             }
+                            return retained;
                         }
 
                         true
                     });
 
-                    if consume_most_recent_finish {
-                        if let Some(id) = breakpoints.iter().rev().find_map(|bp| {
+                    if consume_most_recent_finish
+                        && let Some(id) = breakpoints.iter().rev().find_map(|bp| {
                             if matches!(bp.ty, BreakpointType::Finish) {
                                 Some(bp.id)
                             } else {
                                 None
                             }
-                        }) {
-                            breakpoints.retain(|bp| bp.id != id);
-                            break true;
-                        }
+                        })
+                    {
+                        breakpoints.retain(|bp| bp.id != id);
+                        break true;
                     }
 
                     if !state.breakpoints_hit.is_empty() {

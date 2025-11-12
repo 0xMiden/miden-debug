@@ -132,7 +132,7 @@ impl Iterator for DebugExecutor {
 pub struct MemoryChiplet {
     get_value: Box<dyn Fn(ContextId, u32) -> Option<miden_core::Felt>>,
     get_word: Box<dyn Fn(ContextId, u32) -> Result<Option<miden_core::Word>, MemoryError>>,
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, unused)]
     get_state_at: Box<dyn Fn(ContextId, RowIndex) -> Vec<(MemoryAddress, miden_core::Felt)>>,
 }
 
@@ -147,6 +147,7 @@ impl MemoryChiplet {
         (self.get_word)(context, addr)
     }
 
+    #[allow(unused)]
     #[inline]
     pub fn get_mem_state_at(
         &self,

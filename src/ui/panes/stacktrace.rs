@@ -78,20 +78,14 @@ impl Pane for StackTracePane {
             } else {
                 Span::styled(
                     name,
-                    Style::default()
-                        .fg(Color::White)
-                        .bg(Color::Black)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::White).bg(Color::Black).add_modifier(Modifier::BOLD),
                 )
             };
             parts.push(name);
             if let Some(resolved) = frame.last_resolved(&state.source_manager) {
                 parts.push(Span::styled(" in ", Color::DarkGray));
                 let path = std::path::Path::new(resolved.source_file.as_ref().uri().as_str());
-                let path = path
-                    .strip_prefix(state.config.working_dir())
-                    .ok()
-                    .unwrap_or(path);
+                let path = path.strip_prefix(state.config.working_dir()).ok().unwrap_or(path);
                 let path_str = path.to_string_lossy();
                 let max_width = (area.as_size().width as usize).saturating_sub(4);
                 let path_width = path_str.chars().count();

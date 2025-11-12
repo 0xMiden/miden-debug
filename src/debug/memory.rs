@@ -24,9 +24,7 @@ impl FromStr for ReadMemoryExpr {
         let argv = s.split_whitespace();
         let args = Read::parse(argv)?;
 
-        let ty = args
-            .ty
-            .unwrap_or_else(|| Type::from(ArrayType::new(Type::Felt, 4)));
+        let ty = args.ty.unwrap_or_else(|| Type::from(ArrayType::new(Type::Felt, 4)));
         let addr = match args.mode {
             MemoryMode::Word => NativePtr::new(args.addr, 0),
             MemoryMode::Byte => NativePtr::from_ptr(args.addr),
@@ -89,9 +87,7 @@ impl Read {
             .disable_colored_help(true)
             .no_binary_name(true);
 
-        let mut matches = command
-            .try_get_matches_from(argv)
-            .map_err(|err| err.to_string())?;
+        let mut matches = command.try_get_matches_from(argv).map_err(|err| err.to_string())?;
         <Self as clap::FromArgMatches>::from_arg_matches_mut(&mut matches)
             .map_err(|err| err.to_string())
     }
@@ -111,9 +107,7 @@ impl clap::builder::TypedValueParser for TypeParser {
     ) -> Result<Self::Value, clap::error::Error> {
         use clap::error::{Error, ErrorKind};
 
-        let value = value
-            .to_str()
-            .ok_or_else(|| Error::new(ErrorKind::InvalidUtf8))?;
+        let value = value.to_str().ok_or_else(|| Error::new(ErrorKind::InvalidUtf8))?;
 
         Ok(match value {
             "i1" => Type::I1,
@@ -146,8 +140,7 @@ fn parse_address(s: &str) -> Result<u32, String> {
     } else if s.is_empty() {
         Err(format!("expected memory address at '{s}'"))
     } else {
-        s.parse::<u32>()
-            .map_err(|err| format!("invalid memory address: {err}"))
+        s.parse::<u32>().map_err(|err| format!("invalid memory address: {err}"))
     }
 }
 
@@ -204,12 +197,8 @@ impl clap::builder::TypedValueParser for MemoryModeParser {
     ) -> Result<Self::Value, clap::error::Error> {
         use clap::error::{Error, ErrorKind};
 
-        let value = value
-            .to_str()
-            .ok_or_else(|| Error::new(ErrorKind::InvalidUtf8))?;
-        value
-            .parse()
-            .map_err(|err| Error::raw(ErrorKind::InvalidValue, err))
+        let value = value.to_str().ok_or_else(|| Error::new(ErrorKind::InvalidUtf8))?;
+        value.parse().map_err(|err| Error::raw(ErrorKind::InvalidValue, err))
     }
 }
 
@@ -270,11 +259,7 @@ impl clap::builder::TypedValueParser for FormatTypeParser {
     ) -> Result<Self::Value, clap::error::Error> {
         use clap::error::{Error, ErrorKind};
 
-        let value = value
-            .to_str()
-            .ok_or_else(|| Error::new(ErrorKind::InvalidUtf8))?;
-        value
-            .parse()
-            .map_err(|err| Error::raw(ErrorKind::InvalidValue, err))
+        let value = value.to_str().ok_or_else(|| Error::new(ErrorKind::InvalidUtf8))?;
+        value.parse().map_err(|err| Error::raw(ErrorKind::InvalidValue, err))
     }
 }

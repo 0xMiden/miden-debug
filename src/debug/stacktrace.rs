@@ -52,10 +52,6 @@ impl CallStack {
         self.frames.last_mut()
     }
 
-    pub fn nth_frame(&self, n: usize) -> Option<&CallFrame> {
-        self.frames.iter().nth_back(n)
-    }
-
     pub fn frames(&self) -> &[CallFrame] {
         self.frames.as_slice()
     }
@@ -72,10 +68,8 @@ impl CallStack {
             //}
 
             // Get the current procedure name context, if available
-            let procedure = state
-                .asmop
-                .as_ref()
-                .map(|op| self.cache_procedure_name(op.context_name()));
+            let procedure =
+                state.asmop.as_ref().map(|op| self.cache_procedure_name(op.context_name()));
             /*
                        if procedure.is_none() {
                            dbg!(self.frames.last().map(|frame| frame.procedure.as_deref()));
@@ -127,20 +121,13 @@ impl CallStack {
             // Attempt to supply procedure context from the current span context, if needed +
             // available
             let (procedure, asmop) = match procedure {
-                proc @ Some(_) => (
-                    proc,
-                    state
-                        .asmop
-                        .as_ref()
-                        .map(|info| info.as_ref())
-                        .map(Cow::Borrowed),
-                ),
+                proc @ Some(_) => {
+                    (proc, state.asmop.as_ref().map(|info| info.as_ref()).map(Cow::Borrowed))
+                }
                 None => match self.block_stack.last() {
                     Some(Some(span_ctx)) => {
-                        let proc = self
-                            .frames
-                            .get(span_ctx.frame_index)
-                            .and_then(|f| f.procedure.clone());
+                        let proc =
+                            self.frames.get(span_ctx.frame_index).and_then(|f| f.procedure.clone());
                         let info = state
                             .asmop
                             .as_ref()
@@ -160,14 +147,7 @@ impl CallStack {
                             });
                         (proc, info)
                     }
-                    _ => (
-                        None,
-                        state
-                            .asmop
-                            .as_ref()
-                            .map(|info| info.as_ref())
-                            .map(Cow::Borrowed),
-                    ),
+                    _ => (None, state.asmop.as_ref().map(|info| info.as_ref()).map(Cow::Borrowed)),
                 },
             };
 
@@ -191,19 +171,9 @@ impl CallStack {
                 current_frame.procedure.clone_from(&procedure);
             }
 
-            // If this is the frame pointer prologue/epilogue drop the last op, which should be a
-            // push
-            if matches!(op, Operation::FmpUpdate) {
-                current_frame.context.pop_back();
-            }
-
             // Push op into call frame if this is any op other than `nop` or frame setup
-            if !matches!(op, Operation::Noop | Operation::FmpUpdate) {
-                let cycle_idx = state
-                    .asmop
-                    .as_ref()
-                    .map(|info| info.cycle_idx())
-                    .unwrap_or(1);
+            if !matches!(op, Operation::Noop) {
+                let cycle_idx = state.asmop.as_ref().map(|info| info.cycle_idx()).unwrap_or(1);
                 current_frame.push(op, cycle_idx, asmop.as_deref());
             }
 
@@ -355,9 +325,7 @@ impl CallFrame {
     }
 
     pub fn last_resolved(&self, source_manager: &dyn SourceManager) -> Option<&ResolvedLocation> {
-        self.context
-            .back()
-            .and_then(|op| op.resolve(source_manager))
+        self.context.back().and_then(|op| op.resolve(source_manager))
     }
 
     pub fn recent(&self) -> &VecDeque<OpDetail> {
@@ -469,13 +437,7 @@ pub struct ResolvedLocation {
 }
 impl fmt::Display for ResolvedLocation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}:{}:{}",
-            self.source_file.uri().as_str(),
-            self.line,
-            self.col
-        )
+        write!(f, "{}:{}:{}", self.source_file.uri().as_str(), self.line, self.col)
     }
 }
 
@@ -543,10 +505,7 @@ impl fmt::Display for StackTrace<'_> {
             if is_top {
                 // Print op context
                 let context_size = frame.context.len();
-                writeln!(
-                    f,
-                    ":\n\nLast {context_size} Instructions (of current frame):"
-                )?;
+                writeln!(f, ":\n\nLast {context_size} Instructions (of current frame):")?;
                 for (i, op) in frame.context.iter().enumerate() {
                     let is_last = i + 1 == context_size;
                     if let Some(callee) = op.callee("") {

@@ -20,10 +20,9 @@ impl Default for InputFile {
 impl InputFile {
     pub fn file_name(&self) -> &str {
         match self {
-            Self::Real(path) => path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("<noname>"),
+            Self::Real(path) => {
+                path.file_name().and_then(|name| name.to_str()).unwrap_or("<noname>")
+            }
             Self::Stdin(_) => "<noname>",
         }
     }
@@ -38,11 +37,7 @@ impl InputFile {
     pub fn library_kind(&self) -> Option<LibraryKind> {
         match self {
             Self::Real(path) if path.is_file() => {
-                if path
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .is_some_and(|ext| ext == "masp")
-                {
+                if path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext == "masp") {
                     return Some(LibraryKind::Masp);
                 }
                 let bytes = std::fs::read(path).ok()?;
@@ -53,7 +48,7 @@ impl InputFile {
                 }
             }
             // Assume the path is a MASM project
-            Self::Real(path) => Some(LibraryKind::Masm),
+            Self::Real(_) => Some(LibraryKind::Masm),
             Self::Stdin(bytes) if bytes.starts_with(b"MASP\0") => Some(LibraryKind::Masp),
             // Assume the input is MASM text
             Self::Stdin(_) => Some(LibraryKind::Masm),

@@ -44,14 +44,22 @@ jobs:
 
   upload-artifacts:
     name: upload pre-built miden-debug executable artifacts
-    runs-on: ubuntu-latest
     needs: publish
     if: ${{ github.repository_owner == '0xMiden' && needs.publish.outputs.releases_created == 'true' }}
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     strategy:
       matrix:
+        os: [macos-latest, ubuntu-latest]
         target: [aarch64-apple-darwin, x86_64-unknown-linux-gnu]
+        exclude:
+          - os: macos-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
     steps:
       - *checkout
       - *install-rust
@@ -64,7 +72,14 @@ jobs:
             cargo install cargo-make --force
           fi
       - name: build
-        run: cargo make miden-debug --release --target ${{ matrix.target }}
+        run: |
+          set -e
+          cargo make miden-debug --release --target ${{ matrix.target }}
+          mv target/${{ matrix.target }}/release/miden-debug miden-debug-${{ matrix.target }}
+      - name: attest
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: "miden-debug-${{ matrix.target }}"
       - name: upload
         env:
           RELEASES: ${{ needs.publish.outputs.releases }}
@@ -77,7 +92,6 @@ jobs:
           echo "=================="
           release_version=$(echo "${RELEASES}" | jq -r '.[0].version')
           release_tag=$(echo "${RELEASES}" | jq -r '.[0].tag')
-          mv target/${{ matrix.target }}/release/miden-debug miden-debug-${{ matrix.target }}
           gh release upload ${release_tag} miden-debug-${{ matrix.target }}
 
   release:

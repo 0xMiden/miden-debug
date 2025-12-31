@@ -325,7 +325,14 @@ impl CallFrame {
     }
 
     pub fn last_resolved(&self, source_manager: &dyn SourceManager) -> Option<&ResolvedLocation> {
-        self.context.back().and_then(|op| op.resolve(source_manager))
+        // Search through context in reverse order to find the most recent op with a resolvable
+        // location.
+        for op in self.context.iter().rev() {
+            if let Some(resolved) = op.resolve(source_manager) {
+                return Some(resolved);
+            }
+        }
+        None
     }
 
     pub fn recent(&self) -> &VecDeque<OpDetail> {

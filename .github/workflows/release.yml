@@ -74,7 +74,7 @@ jobs:
       - name: build
         run: |
           set -e
-          cargo make miden-debug --release --target ${{ matrix.target }}
+          cargo make -p production miden-debug --release --target ${{ matrix.target }}
           mv target/${{ matrix.target }}/release/miden-debug miden-debug-${{ matrix.target }}
       - name: attest
         uses: actions/attest-build-provenance@v3

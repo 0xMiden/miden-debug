@@ -33,13 +33,13 @@ MIDEN_DEBUG_BUILD_PROFILE = "release"
 [tasks.init]
 script_runner = "@duckscript"
 script = '''
-args = split ${CARGO_MAKE_TASK_ARGS} " "
+args = split ${CARGO_MAKE_TASK_ARGS} ";"
 while not array_is_empty ${args}
   next_arg = array_get ${args} 0
   if starts_with ${next_arg} "--target"
+      echo "found target"
       target_arg = array_get ${args} 1
-      trimmed_target = trim ${target_arg}
-      set_env CARGO_TARGET_ARG ${trimmed_target}
+      CARGO_TARGET_ARG = trim ${target_arg}
       array_clear ${args}
   else
       array_remove ${args} 0
@@ -81,6 +81,7 @@ echo "    Command: ${CARGO_MAKE_COMMAND}"
 echo "    Working Directory: ${CARGO_MAKE_WORKING_DIRECTORY}"
 echo "    Target Directory: ${CARGO_TARGET_DIR}"
 echo "    Profile: ${CARGO_MAKE_PROFILE}"
+echo "    Cargo Artifact Directory: ${CARGO_ARTIFACT_DIR}"
 echo "    Bin Directory: ${LOCAL_BIN_DIR}"
 echo "    Install Directory: ${LOCAL_INSTALL_DIR}"
 echo "    Target Triple: ${CARGO_MAKE_RUST_TARGET_TRIPLE}"

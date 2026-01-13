@@ -8,8 +8,8 @@ use std::{
 
 use miden_assembly::SourceManager;
 use miden_assembly_syntax::{
-    Library, LibraryNamespace,
-    diagnostics::{IntoDiagnostic, Report, WrapErr},
+    Library, PathBuf as LibraryPathBuf,
+    diagnostics::{IntoDiagnostic, Report},
 };
 
 use crate::config::DebuggerConfig;
@@ -90,19 +90,11 @@ impl LinkLibrary {
     ) -> Result<Arc<Library>, Report> {
         match self.kind {
             LibraryKind::Masm => {
-                let ns = LibraryNamespace::new(&self.name)
-                    .into_diagnostic()
-                    .wrap_err_with(|| format!("invalid library namespace '{}'", &self.name))?;
-
-                let modules = miden_assembly_syntax::parser::read_modules_from_dir(
-                    ns,
-                    path,
-                    &source_manager,
-                )?;
-
-                miden_assembly::Assembler::new(source_manager.clone())
-                    .with_debug_mode(true)
-                    .assemble_library(modules)
+                let namespace = LibraryPathBuf::new(&self.name).map_err(|err| {
+                    Report::msg(format!("invalid library namespace '{}': {err}", &self.name))
+                })?;
+                miden_assembly::Assembler::new(source_manager)
+                    .assemble_library_from_dir(path, &namespace)
                     .map(Arc::new)
             }
             LibraryKind::Masp => {

@@ -1,11 +1,11 @@
-use std::{collections::BTreeMap, num::NonZeroU32, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use miden_assembly::SourceManager;
 use miden_core::Word;
 use miden_debug_types::{Location, SourceFile, SourceSpan};
 use miden_processor::{
-    AdviceProvider, BaseHost, EventHandlerRegistry, ExecutionError, MastForest, MastForestStore,
-    MemMastForestStore, ProcessState, RowIndex, SyncHost,
+    AdviceProvider, BaseHost, EventHandlerRegistry, MastForest, MastForestStore,
+    MemMastForestStore, ProcessState, RowIndex, SyncHost, TraceError,
 };
 
 use super::{TraceEvent, TraceHandler};
@@ -19,7 +19,6 @@ pub struct DebuggerHost<S: SourceManager> {
     store: MemMastForestStore,
     tracing_callbacks: BTreeMap<u32, Vec<Box<TraceHandler>>>,
     _event_handlers: EventHandlerRegistry,
-    on_assert_failed: Option<Box<TraceHandler>>,
     source_manager: Arc<S>,
 }
 impl<S> DebuggerHost<S>
@@ -33,7 +32,6 @@ where
             store: Default::default(),
             tracing_callbacks: Default::default(),
             _event_handlers: EventHandlerRegistry::default(),
-            on_assert_failed: None,
             source_manager: Arc::new(source_manager),
         }
     }
@@ -48,14 +46,6 @@ where
             ev => ev.into(),
         };
         self.tracing_callbacks.entry(key).or_default().push(Box::new(callback));
-    }
-
-    /// Register a handler to be called when an assertion in the VM fails
-    pub fn register_assert_failed_tracer<F>(&mut self, callback: F)
-    where
-        F: FnMut(RowIndex, TraceEvent) + 'static,
-    {
-        self.on_assert_failed = Some(Box::new(callback));
     }
 
     /// Load `forest` into the MAST store for this host
@@ -81,7 +71,7 @@ where
         &mut self,
         process: &mut ProcessState,
         trace_id: u32,
-    ) -> Result<(), ExecutionError> {
+    ) -> Result<(), TraceError> {
         let event = TraceEvent::from(trace_id);
         let clk = process.clk();
         if let Some(handlers) = self.tracing_callbacks.get_mut(&trace_id) {
@@ -90,14 +80,6 @@ where
             }
         }
         Ok(())
-    }
-
-    fn on_assert_failed(&mut self, process: &ProcessState, err_code: miden_core::Felt) {
-        let clk = process.clk();
-        if let Some(handler) = self.on_assert_failed.as_mut() {
-            // TODO: We're truncating the error code here, but we may need to handle the full range
-            handler(clk, TraceEvent::AssertionFailed(NonZeroU32::new(err_code.as_int() as u32)));
-        }
     }
 }
 

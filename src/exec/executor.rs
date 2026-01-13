@@ -156,10 +156,6 @@ impl Executor {
         host.register_trace_handler(TraceEvent::FrameEnd, move |clk, event| {
             frame_end_events.borrow_mut().insert(clk, event);
         });
-        let assertion_events = Rc::clone(&trace_events);
-        host.register_assert_failed_tracer(move |clk, event| {
-            assertion_events.borrow_mut().insert(clk, event);
-        });
 
         let mut process =
             Process::new(program.kernel().clone(), self.stack, self.advice, self.options);

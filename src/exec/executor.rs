@@ -8,7 +8,7 @@ use std::{
 };
 
 use miden_assembly_syntax::{Library, diagnostics::Report};
-use miden_core::{Program, StackInputs};
+use miden_core::{DebugVarInfo, Program, StackInputs};
 use miden_debug_types::{SourceManager, SourceManagerExt};
 use miden_mast_package::{
     Dependency, DependencyResolver, LocalResolvedDependency, MastArtifact,
@@ -20,7 +20,7 @@ use miden_processor::{
 };
 
 use super::{DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent};
-use crate::{debug::CallStack, felt::FromMidenRepr};
+use crate::{debug::{CallStack, DebugVarTracker}, felt::FromMidenRepr};
 
 /// The [Executor] is responsible for executing a program with the Miden VM.
 ///
@@ -157,6 +157,14 @@ impl Executor {
             frame_end_events.borrow_mut().insert(clk, event);
         });
 
+        // Set up debug variable tracking
+        let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
+            Rc::new(Default::default());
+        let debug_var_events_clone = Rc::clone(&debug_var_events);
+        host.register_debug_var_handler(move |clk, var_info| {
+            debug_var_events_clone.borrow_mut().entry(clk).or_default().push(var_info);
+        });
+
         let mut process =
             Process::new(program.kernel().clone(), self.stack, self.advice, self.options);
         let process_state: ProcessState = (&mut process).into();
@@ -165,6 +173,7 @@ impl Executor {
         let stack_outputs = result.as_ref().map(|so| so.clone()).unwrap_or_default();
         let iter = VmStateIterator::new(process, result);
         let callstack = CallStack::new(trace_events);
+        let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
             iter,
             stack_outputs,
@@ -172,6 +181,7 @@ impl Executor {
             root_context,
             current_context: root_context,
             callstack,
+            debug_vars,
             recent: VecDeque::with_capacity(5),
             last: None,
             cycle: 0,

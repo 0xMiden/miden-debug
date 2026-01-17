@@ -8,7 +8,7 @@ use std::{
 
 use miden_assembly::SourceManager;
 use miden_assembly_syntax::{
-    Library, PathBuf as LibraryPathBuf,
+    Library, LibraryNamespace,
     diagnostics::{IntoDiagnostic, Report},
 };
 
@@ -90,11 +90,11 @@ impl LinkLibrary {
     ) -> Result<Arc<Library>, Report> {
         match self.kind {
             LibraryKind::Masm => {
-                let namespace = LibraryPathBuf::new(&self.name).map_err(|err| {
+                let namespace = LibraryNamespace::new(&self.name).map_err(|err| {
                     Report::msg(format!("invalid library namespace '{}': {err}", &self.name))
                 })?;
                 miden_assembly::Assembler::new(source_manager)
-                    .assemble_library_from_dir(path, &namespace)
+                    .assemble_library_from_dir(path, namespace)
                     .map(Arc::new)
             }
             LibraryKind::Masp => {

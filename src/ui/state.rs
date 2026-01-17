@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::{Library, diagnostics::{IntoDiagnostic, Report}};
-use miden_core::{FieldElement, utils::Deserializable};
+use miden_core::{FMP_ADDR, FieldElement, utils::Deserializable};
 use miden_processor::{Felt, StackInputs};
 
 use crate::{
@@ -343,6 +343,14 @@ impl State {
         let context = self.executor.current_context;
         let cycle = miden_processor::RowIndex::from(self.executor.cycle);
 
+        // Read FMP (Frame Memory Pointer) from memory
+        let fmp_addr = FMP_ADDR.as_int() as u32;
+        let fmp: i32 = self
+            .execution_trace
+            .read_memory_element_in_context(fmp_addr, context, cycle)
+            .map(|f| f.as_int() as i32)
+            .unwrap_or(0);
+
         for var_snapshot in debug_vars.current_variables() {
             if !output.is_empty() {
                 output.push_str(", ");
@@ -359,10 +367,15 @@ impl State {
                     self.execution_trace
                         .read_memory_element_in_context(addr, context, cycle)
                 },
-                |_idx| {
-                    // Local resolution would need FMP calculation
-                    // For now, return None
-                    None
+                |fmp_offset| {
+                    // Compute local address: FMP + offset (offset is typically negative)
+                    if fmp > 0 {
+                        let local_addr = (fmp + fmp_offset as i32) as u32;
+                        self.execution_trace
+                            .read_memory_element_in_context(local_addr, context, cycle)
+                    } else {
+                        None
+                    }
                 },
             );
 

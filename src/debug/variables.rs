@@ -89,11 +89,14 @@ impl DebugVarTracker {
 }
 
 /// Resolve a debug variable's value given its location and the current VM state.
+///
+/// The `get_local` closure receives the FMP offset (signed) and should compute
+/// the actual address as `FMP + offset` to read the value.
 pub fn resolve_variable_value(
     location: &DebugVarLocation,
     stack: &[Felt],
     get_memory: impl Fn(u32) -> Option<Felt>,
-    get_local: impl Fn(u16) -> Option<Felt>,
+    get_local: impl Fn(i16) -> Option<Felt>,
 ) -> Option<Felt> {
     match location {
         DebugVarLocation::Stack(pos) => {
@@ -105,8 +108,8 @@ pub fn resolve_variable_value(
         DebugVarLocation::Const(felt) => {
             Some(*felt)
         }
-        DebugVarLocation::Local(idx) => {
-            get_local(*idx)
+        DebugVarLocation::Local(fmp_offset) => {
+            get_local(*fmp_offset)
         }
         DebugVarLocation::Expression(_bytes) => {
             // Expression evaluation would need a more complex implementation

@@ -1,7 +1,7 @@
-use std::{collections::BTreeMap, num::NonZeroU32, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use miden_assembly::SourceManager;
-use miden_core::Word;
+use miden_core::{DebugVarInfo, Word};
 use miden_debug_types::{Location, SourceFile, SourceSpan};
 use miden_processor::{
     AdviceProvider, BaseHost, EventHandlerRegistry, ExecutionError, MastForest, MastForestStore,
@@ -10,17 +10,35 @@ use miden_processor::{
 
 use super::{TraceEvent, TraceHandler};
 
+/// Handler function type for debug variable events.
+///
+/// Called when a DebugVar decorator is encountered during execution.
+/// Parameters are: (clock_cycle, debug_var_info)
+pub type DebugVarHandler = dyn FnMut(RowIndex, DebugVarInfo) + 'static;
+
 /// This is an implementation of [BaseHost] which is essentially [miden_processor::DefaultHost],
 /// but extended with additional functionality for debugging, in particular it manages trace
-/// events that record the entry or exit of a procedure call frame.
-#[derive(Default)]
+/// events that record the entry or exit of a procedure call frame, and debug variable tracking.
 pub struct DebuggerHost<S: SourceManager> {
     _adv_provider: AdviceProvider,
     store: MemMastForestStore,
     tracing_callbacks: BTreeMap<u32, Vec<Box<TraceHandler>>>,
+    debug_var_callback: Option<Box<DebugVarHandler>>,
     _event_handlers: EventHandlerRegistry,
-    on_assert_failed: Option<Box<TraceHandler>>,
     source_manager: Arc<S>,
+}
+
+impl<S: SourceManager + Default> Default for DebuggerHost<S> {
+    fn default() -> Self {
+        Self {
+            _adv_provider: Default::default(),
+            store: Default::default(),
+            tracing_callbacks: Default::default(),
+            debug_var_callback: None,
+            _event_handlers: Default::default(),
+            source_manager: Arc::new(S::default()),
+        }
+    }
 }
 impl<S> DebuggerHost<S>
 where
@@ -32,8 +50,8 @@ where
             _adv_provider,
             store: Default::default(),
             tracing_callbacks: Default::default(),
+            debug_var_callback: None,
             _event_handlers: EventHandlerRegistry::default(),
-            on_assert_failed: None,
             source_manager: Arc::new(source_manager),
         }
     }
@@ -50,12 +68,15 @@ where
         self.tracing_callbacks.entry(key).or_default().push(Box::new(callback));
     }
 
-    /// Register a handler to be called when an assertion in the VM fails
-    pub fn register_assert_failed_tracer<F>(&mut self, callback: F)
+    /// Register a handler for debug variable events.
+    ///
+    /// The handler will be called whenever a DebugVar decorator is encountered
+    /// during program execution, providing the clock cycle and variable info.
+    pub fn register_debug_var_handler<F>(&mut self, callback: F)
     where
-        F: FnMut(RowIndex, TraceEvent) + 'static,
+        F: FnMut(RowIndex, DebugVarInfo) + 'static,
     {
-        self.on_assert_failed = Some(Box::new(callback));
+        self.debug_var_callback = Some(Box::new(callback));
     }
 
     /// Load `forest` into the MAST store for this host
@@ -92,12 +113,16 @@ where
         Ok(())
     }
 
-    fn on_assert_failed(&mut self, process: &ProcessState, err_code: miden_core::Felt) {
+    fn on_debug_var(
+        &mut self,
+        process: &ProcessState,
+        var_info: &DebugVarInfo,
+    ) -> Result<(), ExecutionError> {
         let clk = process.clk();
-        if let Some(handler) = self.on_assert_failed.as_mut() {
-            // TODO: We're truncating the error code here, but we may need to handle the full range
-            handler(clk, TraceEvent::AssertionFailed(NonZeroU32::new(err_code.as_int() as u32)));
+        if let Some(handler) = self.debug_var_callback.as_mut() {
+            handler(clk, var_info.clone());
         }
+        Ok(())
     }
 }
 

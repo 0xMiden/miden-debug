@@ -1,16 +1,22 @@
 use std::sync::Arc;
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
-use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
-use miden_core::{FieldElement, utils::Deserializable};
+use miden_assembly_syntax::{Library, diagnostics::{IntoDiagnostic, Report}};
+use miden_core::{FMP_ADDR, FieldElement, utils::Deserializable};
 use miden_processor::{Felt, StackInputs};
 
 use crate::{
     config::DebuggerConfig,
-    debug::{Breakpoint, BreakpointType, ReadMemoryExpr},
+    debug::{Breakpoint, BreakpointType, ReadMemoryExpr, resolve_variable_value},
     exec::{DebugExecutor, ExecutionTrace, Executor},
     input::InputFile,
 };
+
+/// Get the standard library as an Arc<Library>
+fn get_stdlib() -> Arc<Library> {
+    let stdlib = miden_stdlib::StdLibrary::default();
+    Arc::new(stdlib.into())
+}
 
 pub struct State {
     pub package: Arc<miden_mast_package::Package>,
@@ -46,21 +52,44 @@ impl State {
         let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
         let package = load_package(&config)?;
 
-        let mut executor = Executor::for_package(&package.clone(), args.clone())?;
-        executor.with_advice_inputs(inputs.advice_inputs.clone());
-        let mut libs = Vec::with_capacity(config.link_libraries.len());
+        // Load link libraries first, before creating the executor
+        // This is needed so they can be added to the dependency resolver
+        let mut libs = Vec::with_capacity(config.link_libraries.len() + 1);
         for link_library in config.link_libraries.iter() {
             log::debug!(target: "state", "loading link library {}", link_library.name());
             let lib = link_library.load(&config, source_manager.clone())?;
-            libs.push(lib.clone());
-            executor.with_library(lib);
+            libs.push(lib);
+        }
+
+        // Load the standard library automatically
+        let stdlib = get_stdlib();
+        libs.push(stdlib);
+
+        // Create executor and add link libraries to the dependency resolver
+        // before resolving package dependencies
+        let mut executor = Executor::new(args.clone());
+        for lib in libs.iter() {
+            let digest = *lib.digest();
+            executor.dependency_resolver_mut().add(digest, lib.clone().into());
+        }
+
+        // Now resolve package dependencies (link libraries are already in the resolver)
+        executor.with_dependencies(package.manifest.dependencies())?;
+        executor.with_advice_inputs(inputs.advice_inputs.clone());
+        for lib in libs.iter() {
+            executor.with_library(lib.clone());
         }
 
         let program = package.unwrap_program();
         let executor = executor.into_debug(&program, source_manager.clone());
 
         // Execute the program until it terminates to capture a full trace for use during debugging
-        let mut trace_executor = Executor::for_package(&package, args)?;
+        let mut trace_executor = Executor::new(args);
+        for lib in libs.iter() {
+            let digest = *lib.digest();
+            trace_executor.dependency_resolver_mut().add(digest, lib.clone().into());
+        }
+        trace_executor.with_dependencies(package.manifest.dependencies())?;
         trace_executor.with_advice_inputs(inputs.advice_inputs.clone());
         for lib in libs {
             trace_executor.with_library(lib);
@@ -95,19 +124,38 @@ impl State {
         }
         let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
 
-        let mut executor = Executor::for_package(&package, args.clone())?;
-        executor.with_advice_inputs(inputs.advice_inputs.clone());
-        let mut libs = Vec::with_capacity(self.config.link_libraries.len());
+        // Load link libraries first, before creating the executor
+        let mut libs = Vec::with_capacity(self.config.link_libraries.len() + 1);
         for link_library in self.config.link_libraries.iter() {
             let lib = link_library.load(&self.config, self.source_manager.clone())?;
-            libs.push(lib.clone());
-            executor.with_library(lib);
+            libs.push(lib);
+        }
+
+        // Load the standard library automatically
+        let stdlib = get_stdlib();
+        libs.push(stdlib);
+
+        // Create executor and add link libraries to the dependency resolver
+        let mut executor = Executor::new(args.clone());
+        for lib in libs.iter() {
+            let digest = *lib.digest();
+            executor.dependency_resolver_mut().add(digest, lib.clone().into());
+        }
+        executor.with_dependencies(package.manifest.dependencies())?;
+        executor.with_advice_inputs(inputs.advice_inputs.clone());
+        for lib in libs.iter() {
+            executor.with_library(lib.clone());
         }
         let program = package.unwrap_program();
         let executor = executor.into_debug(&program, self.source_manager.clone());
 
         // Execute the program until it terminates to capture a full trace for use during debugging
-        let mut trace_executor = Executor::for_package(&package, args)?;
+        let mut trace_executor = Executor::new(args);
+        for lib in libs.iter() {
+            let digest = *lib.digest();
+            trace_executor.dependency_resolver_mut().add(digest, lib.clone().into());
+        }
+        trace_executor.with_dependencies(package.manifest.dependencies())?;
         trace_executor.with_advice_inputs(core::mem::take(&mut inputs.advice_inputs));
         for lib in libs {
             trace_executor.with_library(lib);
@@ -269,6 +317,79 @@ impl State {
         }
 
         Ok(output)
+    }
+
+    /// Format the current debug variables as a string for display.
+    ///
+    /// Returns a string describing all tracked variables and their current values,
+    /// or a message indicating no variables are being tracked.
+    pub fn format_variables(&self) -> String {
+        use core::fmt::Write;
+
+        let debug_vars = &self.executor.debug_vars;
+
+        if !debug_vars.has_variables() {
+            return "No debug variables tracked".to_string();
+        }
+
+        let mut output = String::new();
+        let stack: Vec<Felt> = self
+            .executor
+            .last
+            .as_ref()
+            .map(|state| state.stack.clone())
+            .unwrap_or_default();
+
+        let context = self.executor.current_context;
+        let cycle = miden_processor::RowIndex::from(self.executor.cycle);
+
+        // Read FMP (Frame Memory Pointer) from memory
+        let fmp_addr = FMP_ADDR.as_int() as u32;
+        let fmp: i32 = self
+            .execution_trace
+            .read_memory_element_in_context(fmp_addr, context, cycle)
+            .map(|f| f.as_int() as i32)
+            .unwrap_or(0);
+
+        for var_snapshot in debug_vars.current_variables() {
+            if !output.is_empty() {
+                output.push_str(", ");
+            }
+
+            let name = var_snapshot.info.name();
+            let location = var_snapshot.info.value_location();
+
+            // Try to resolve the variable value
+            let value = resolve_variable_value(
+                location,
+                &stack,
+                |addr| {
+                    self.execution_trace
+                        .read_memory_element_in_context(addr, context, cycle)
+                },
+                |fmp_offset| {
+                    // Compute local address: FMP + offset (offset is typically negative)
+                    if fmp > 0 {
+                        let local_addr = (fmp + fmp_offset as i32) as u32;
+                        self.execution_trace
+                            .read_memory_element_in_context(local_addr, context, cycle)
+                    } else {
+                        None
+                    }
+                },
+            );
+
+            match value {
+                Some(felt) => {
+                    write!(&mut output, "{name}={}", felt.as_int()).unwrap();
+                }
+                None => {
+                    write!(&mut output, "{name}={location}").unwrap();
+                }
+            }
+        }
+
+        output
     }
 }
 

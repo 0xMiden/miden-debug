@@ -10,7 +10,7 @@ use miden_processor::{
 };
 
 use super::{DebuggerHost, ExecutionTrace};
-use crate::debug::{CallFrame, CallStack, ControlFlowOp, StepInfo};
+use crate::debug::{CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo};
 
 /// Resolve a future that is expected to complete immediately (synchronous host methods).
 ///
@@ -60,6 +60,8 @@ pub struct DebugExecutor {
     pub current_context: ContextId,
     /// The current call stack
     pub callstack: CallStack,
+    /// Debug variable tracker for source-level variable inspection
+    pub debug_vars: DebugVarTracker,
     /// A sliding window of the last 5 operations successfully executed by the VM
     pub recent: VecDeque<Operation>,
     /// The current clock cycle
@@ -194,6 +196,9 @@ impl DebugExecutor {
                     ctx: self.current_context,
                 };
                 let exited = self.callstack.next(&step_info);
+
+                // Update debug variable tracker to current clock cycle
+                self.debug_vars.update_to_cycle(RowIndex::from(self.cycle as u32));
 
                 Ok(exited)
             }

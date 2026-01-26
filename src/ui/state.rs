@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
-use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
+use miden_assembly_syntax::{Library, diagnostics::{IntoDiagnostic, Report}};
 use miden_core::{FieldElement, utils::Deserializable};
 use miden_processor::{Felt, StackInputs};
 
@@ -11,6 +11,12 @@ use crate::{
     exec::{DebugExecutor, ExecutionTrace, Executor},
     input::InputFile,
 };
+
+/// Get the standard library as an Arc<Library>
+fn get_stdlib() -> Arc<Library> {
+    let stdlib = miden_stdlib::StdLibrary::default();
+    Arc::new(stdlib.into())
+}
 
 pub struct State {
     pub package: Arc<miden_mast_package::Package>,
@@ -46,21 +52,44 @@ impl State {
         let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
         let package = load_package(&config)?;
 
-        let mut executor = Executor::for_package(&package.clone(), args.clone())?;
-        executor.with_advice_inputs(inputs.advice_inputs.clone());
-        let mut libs = Vec::with_capacity(config.link_libraries.len());
+        // Load link libraries first, before creating the executor
+        // This is needed so they can be added to the dependency resolver
+        let mut libs = Vec::with_capacity(config.link_libraries.len() + 1);
         for link_library in config.link_libraries.iter() {
             log::debug!(target: "state", "loading link library {}", link_library.name());
             let lib = link_library.load(&config, source_manager.clone())?;
-            libs.push(lib.clone());
-            executor.with_library(lib);
+            libs.push(lib);
+        }
+
+        // Load the standard library automatically
+        let stdlib = get_stdlib();
+        libs.push(stdlib);
+
+        // Create executor and add link libraries to the dependency resolver
+        // before resolving package dependencies
+        let mut executor = Executor::new(args.clone());
+        for lib in libs.iter() {
+            let digest = *lib.digest();
+            executor.dependency_resolver_mut().add(digest, lib.clone().into());
+        }
+
+        // Now resolve package dependencies (link libraries are already in the resolver)
+        executor.with_dependencies(package.manifest.dependencies())?;
+        executor.with_advice_inputs(inputs.advice_inputs.clone());
+        for lib in libs.iter() {
+            executor.with_library(lib.clone());
         }
 
         let program = package.unwrap_program();
         let executor = executor.into_debug(&program, source_manager.clone());
 
         // Execute the program until it terminates to capture a full trace for use during debugging
-        let mut trace_executor = Executor::for_package(&package, args)?;
+        let mut trace_executor = Executor::new(args);
+        for lib in libs.iter() {
+            let digest = *lib.digest();
+            trace_executor.dependency_resolver_mut().add(digest, lib.clone().into());
+        }
+        trace_executor.with_dependencies(package.manifest.dependencies())?;
         trace_executor.with_advice_inputs(inputs.advice_inputs.clone());
         for lib in libs {
             trace_executor.with_library(lib);
@@ -95,19 +124,38 @@ impl State {
         }
         let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
 
-        let mut executor = Executor::for_package(&package, args.clone())?;
-        executor.with_advice_inputs(inputs.advice_inputs.clone());
-        let mut libs = Vec::with_capacity(self.config.link_libraries.len());
+        // Load link libraries first, before creating the executor
+        let mut libs = Vec::with_capacity(self.config.link_libraries.len() + 1);
         for link_library in self.config.link_libraries.iter() {
             let lib = link_library.load(&self.config, self.source_manager.clone())?;
-            libs.push(lib.clone());
-            executor.with_library(lib);
+            libs.push(lib);
+        }
+
+        // Load the standard library automatically
+        let stdlib = get_stdlib();
+        libs.push(stdlib);
+
+        // Create executor and add link libraries to the dependency resolver
+        let mut executor = Executor::new(args.clone());
+        for lib in libs.iter() {
+            let digest = *lib.digest();
+            executor.dependency_resolver_mut().add(digest, lib.clone().into());
+        }
+        executor.with_dependencies(package.manifest.dependencies())?;
+        executor.with_advice_inputs(inputs.advice_inputs.clone());
+        for lib in libs.iter() {
+            executor.with_library(lib.clone());
         }
         let program = package.unwrap_program();
         let executor = executor.into_debug(&program, self.source_manager.clone());
 
         // Execute the program until it terminates to capture a full trace for use during debugging
-        let mut trace_executor = Executor::for_package(&package, args)?;
+        let mut trace_executor = Executor::new(args);
+        for lib in libs.iter() {
+            let digest = *lib.digest();
+            trace_executor.dependency_resolver_mut().add(digest, lib.clone().into());
+        }
+        trace_executor.with_dependencies(package.manifest.dependencies())?;
         trace_executor.with_advice_inputs(core::mem::take(&mut inputs.advice_inputs));
         for lib in libs {
             trace_executor.with_library(lib);

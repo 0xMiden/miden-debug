@@ -1,9 +1,4 @@
-use std::{
-    cell::RefCell,
-    collections::BTreeMap,
-    fmt,
-    rc::Rc,
-};
+use std::{cell::RefCell, collections::BTreeMap, fmt, rc::Rc};
 
 use miden_core::Felt;
 use miden_processor::RowIndex;

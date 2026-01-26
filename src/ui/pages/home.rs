@@ -148,6 +148,10 @@ impl Page for Home {
                         "debug" => {
                             actions.push(Some(Action::ShowDebug));
                         }
+                        "vars" | "variables" | "locals" => {
+                            let result = state.format_variables();
+                            actions.push(Some(Action::StatusLine(result)));
+                        }
                         invalid => {
                             log::debug!("unknown command: '{invalid}'");
                             actions.push(Some(Action::TimedStatusLine("unknown command".into(), 1)))

@@ -679,12 +679,8 @@ impl State {
         }
 
         let mut output = String::new();
-        let stack: Vec<Felt> = self
-            .executor
-            .last
-            .as_ref()
-            .map(|state| state.stack.clone())
-            .unwrap_or_default();
+        let stack: Vec<Felt> =
+            self.executor.last.as_ref().map(|state| state.stack.clone()).unwrap_or_default();
 
         let context = self.executor.current_context;
         let cycle = miden_processor::RowIndex::from(self.executor.cycle);
@@ -701,10 +697,7 @@ impl State {
             let value = resolve_variable_value(
                 location,
                 &stack,
-                |addr| {
-                    self.execution_trace
-                        .read_memory_element_in_context(addr, context, cycle)
-                },
+                |addr| self.execution_trace.read_memory_element_in_context(addr, context, cycle),
                 |_idx| {
                     // Local resolution would need FMP calculation
                     // For now, return None

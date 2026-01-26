@@ -10,7 +10,7 @@ use miden_processor::{
 };
 
 use super::ExecutionTrace;
-use crate::debug::{CallFrame, CallStack};
+use crate::debug::{CallFrame, CallStack, DebugVarTracker};
 
 /// A special version of [crate::Executor] which provides finer-grained control over execution,
 /// and captures a ton of information about the program being executed, so as to make it possible
@@ -31,6 +31,8 @@ pub struct DebugExecutor {
     pub current_context: ContextId,
     /// The current call stack
     pub callstack: CallStack,
+    /// Debug variable tracker for source-level variable inspection
+    pub debug_vars: DebugVarTracker,
     /// A sliding window of the last 5 operations successfully executed by the VM
     pub recent: VecDeque<Operation>,
     /// The most recent [VmState] produced by the [VmStateIterator]
@@ -68,6 +70,9 @@ impl DebugExecutor {
                 }
 
                 let exited = self.callstack.next(&state);
+
+                // Update debug variable tracker to current clock cycle
+                self.debug_vars.update_to_cycle(state.clk);
 
                 self.last = Some(state);
 

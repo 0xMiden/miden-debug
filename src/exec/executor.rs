@@ -20,7 +20,7 @@ use miden_processor::{
 };
 
 use super::{DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent};
-use crate::{debug::CallStack, felt::FromMidenRepr};
+use crate::{debug::{CallStack, DebugVarInfo, DebugVarTracker}, felt::FromMidenRepr};
 
 /// The [Executor] is responsible for executing a program with the Miden VM.
 ///
@@ -161,6 +161,12 @@ impl Executor {
             assertion_events.borrow_mut().insert(clk, event);
         });
 
+        // Set up debug variable tracking
+        // Note: Currently no debug var events are emitted (requires new miden-core),
+        // but we set up the infrastructure for when they become available.
+        let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
+            Rc::new(Default::default());
+
         let mut process =
             Process::new(program.kernel().clone(), self.stack, self.advice, self.options);
         let process_state: ProcessState = (&mut process).into();
@@ -169,6 +175,7 @@ impl Executor {
         let stack_outputs = result.as_ref().map(|so| so.clone()).unwrap_or_default();
         let iter = VmStateIterator::new(process, result);
         let callstack = CallStack::new(trace_events);
+        let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
             iter,
             stack_outputs,
@@ -176,6 +183,7 @@ impl Executor {
             root_context,
             current_context: root_context,
             callstack,
+            debug_vars,
             recent: VecDeque::with_capacity(5),
             last: None,
             cycle: 0,

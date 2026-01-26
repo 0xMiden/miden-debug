@@ -7,7 +7,7 @@ use miden_processor::{Felt, StackInputs};
 
 use crate::{
     config::DebuggerConfig,
-    debug::{Breakpoint, BreakpointType, ReadMemoryExpr},
+    debug::{Breakpoint, BreakpointType, ReadMemoryExpr, resolve_variable_value},
     exec::{DebugExecutor, ExecutionTrace, Executor},
     input::InputFile,
 };
@@ -269,6 +269,66 @@ impl State {
         }
 
         Ok(output)
+    }
+
+    /// Format the current debug variables as a string for display.
+    ///
+    /// Returns a string describing all tracked variables and their current values,
+    /// or a message indicating no variables are being tracked.
+    pub fn format_variables(&self) -> String {
+        use core::fmt::Write;
+
+        let debug_vars = &self.executor.debug_vars;
+
+        if !debug_vars.has_variables() {
+            return "No debug variables tracked".to_string();
+        }
+
+        let mut output = String::new();
+        let stack: Vec<Felt> = self
+            .executor
+            .last
+            .as_ref()
+            .map(|state| state.stack.clone())
+            .unwrap_or_default();
+
+        let context = self.executor.current_context;
+        let cycle = miden_processor::RowIndex::from(self.executor.cycle);
+
+        for var_snapshot in debug_vars.current_variables() {
+            if !output.is_empty() {
+                output.push_str(", ");
+            }
+
+            let name = var_snapshot.info.name();
+            let location = var_snapshot.info.value_location();
+
+            // Try to resolve the variable value
+            let value = resolve_variable_value(
+                location,
+                &stack,
+                |addr| {
+                    self.execution_trace
+                        .read_memory_element_in_context(addr, context, cycle)
+                },
+                |_idx| {
+                    // Local resolution would need FMP calculation
+                    // For now, return None
+                    None
+                },
+            );
+
+            match value {
+                Some(felt) => {
+                    write!(&mut output, "{name}={}", felt.as_int()).unwrap();
+                }
+                None => {
+                    write!(&mut output, "{name}={location}").unwrap();
+                }
+            }
+        }
+
+        output
     }
 }
 

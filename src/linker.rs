@@ -1,15 +1,15 @@
 use std::{
     borrow::Cow,
     fmt,
-    path::{Path, PathBuf},
+    path::{Path as FsPath, PathBuf},
     str::FromStr,
     sync::Arc,
 };
 
 use miden_assembly::SourceManager;
 use miden_assembly_syntax::{
-    Library, LibraryNamespace,
-    diagnostics::{IntoDiagnostic, Report, WrapErr},
+    Library, Path as LibraryPath,
+    diagnostics::{IntoDiagnostic, Report},
 };
 
 use crate::config::DebuggerConfig;
@@ -85,23 +85,22 @@ impl LinkLibrary {
 
     fn load_from_path(
         &self,
-        path: &Path,
+        path: &FsPath,
         source_manager: Arc<dyn SourceManager>,
     ) -> Result<Arc<Library>, Report> {
         match self.kind {
             LibraryKind::Masm => {
-                let ns = LibraryNamespace::new(&self.name)
-                    .into_diagnostic()
-                    .wrap_err_with(|| format!("invalid library namespace '{}'", &self.name))?;
+                let ns = LibraryPath::validate(self.name.as_ref()).map_err(|err| {
+                    Report::msg(format!("invalid library namespace '{}': {err}", &self.name))
+                })?;
 
                 let modules = miden_assembly_syntax::parser::read_modules_from_dir(
-                    ns,
                     path,
-                    &source_manager,
+                    ns,
+                    source_manager.clone(),
                 )?;
 
-                miden_assembly::Assembler::new(source_manager.clone())
-                    .with_debug_mode(true)
+                miden_assembly::Assembler::new(source_manager)
                     .assemble_library(modules)
                     .map(Arc::new)
             }
@@ -245,7 +244,7 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
             ));
         }
 
-        let maybe_path = Path::new(name);
+        let maybe_path = FsPath::new(name);
         let extension = maybe_path.extension().map(|ext| ext.to_str().unwrap());
         let kind = match kind {
             Some(kind) if !kind.is_empty() => kind.parse::<LibraryKind>().map_err(|_| {

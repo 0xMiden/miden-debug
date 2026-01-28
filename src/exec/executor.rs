@@ -354,6 +354,13 @@ impl Executor {
     pub fn dependency_resolver_mut(&mut self) -> &mut MemDependencyResolverByDigest {
         &mut self.dependency_resolver
     }
+
+    /// Register a library with the dependency resolver so it can be found when resolving package dependencies
+    pub fn register_library_dependency(&mut self, lib: Arc<Library>) {
+        let digest = *lib.digest();
+        self.dependency_resolver
+            .add(digest, ResolvedDependency::Local(LocalResolvedDependency::Library(lib)));
+    }
 }
 
 #[track_caller]

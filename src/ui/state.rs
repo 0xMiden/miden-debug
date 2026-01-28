@@ -46,25 +46,46 @@ impl State {
         let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
         let package = load_package(&config)?;
 
-        let mut executor = Executor::for_package(&package.clone(), args.clone())?;
-        executor.with_advice_inputs(inputs.advice_inputs.clone());
+        // Load libraries from link_libraries and sysroot BEFORE resolving dependencies
         let mut libs = Vec::with_capacity(config.link_libraries.len());
         for link_library in config.link_libraries.iter() {
             log::debug!(target: "state", "loading link library {}", link_library.name());
             let lib = link_library.load(&config, source_manager.clone())?;
             libs.push(lib.clone());
-            executor.with_library(lib);
         }
+
+        // Also load standard library from sysroot if available
+        // The midenup toolchain uses .masp (package) format, not .masl
+        if let Some(toolchain_dir) = config.toolchain_dir()
+            && let Some(std_lib) = load_stdlib_from_sysroot(&toolchain_dir)?
+        {
+            libs.push(std_lib);
+        }
+
+        // Create executor and register libraries with dependency resolver before resolving
+        let mut executor = Executor::new(args.clone());
+        for lib in libs.iter() {
+            executor.register_library_dependency(lib.clone());
+            executor.with_library(lib.clone());
+        }
+
+        // Now resolve package dependencies (they should find the registered libraries)
+        let dependencies = package.manifest.dependencies();
+        executor.with_dependencies(dependencies)?;
+        executor.with_advice_inputs(inputs.advice_inputs.clone());
 
         let program = package.unwrap_program();
         let executor = executor.into_debug(&program, source_manager.clone());
 
         // Execute the program until it terminates to capture a full trace for use during debugging
-        let mut trace_executor = Executor::for_package(&package, args)?;
-        trace_executor.with_advice_inputs(inputs.advice_inputs.clone());
-        for lib in libs {
-            trace_executor.with_library(lib);
+        let mut trace_executor = Executor::new(args);
+        for lib in libs.iter() {
+            trace_executor.register_library_dependency(lib.clone());
+            trace_executor.with_library(lib.clone());
         }
+        let dependencies = package.manifest.dependencies();
+        trace_executor.with_dependencies(dependencies)?;
+        trace_executor.with_advice_inputs(inputs.advice_inputs.clone());
 
         let execution_trace = trace_executor.capture_trace(&program, source_manager.clone());
 
@@ -95,23 +116,45 @@ impl State {
         }
         let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
 
-        let mut executor = Executor::for_package(&package, args.clone())?;
-        executor.with_advice_inputs(inputs.advice_inputs.clone());
+        // Load libraries from link_libraries and sysroot BEFORE resolving dependencies
         let mut libs = Vec::with_capacity(self.config.link_libraries.len());
         for link_library in self.config.link_libraries.iter() {
             let lib = link_library.load(&self.config, self.source_manager.clone())?;
             libs.push(lib.clone());
-            executor.with_library(lib);
         }
+
+        // Also load standard library from sysroot if available
+        // The midenup toolchain uses .masp (package) format, not .masl
+        if let Some(toolchain_dir) = self.config.toolchain_dir()
+            && let Some(std_lib) = load_stdlib_from_sysroot(&toolchain_dir)?
+        {
+            libs.push(std_lib);
+        }
+
+        // Create executor and register libraries with dependency resolver before resolving
+        let mut executor = Executor::new(args.clone());
+        for lib in libs.iter() {
+            executor.register_library_dependency(lib.clone());
+            executor.with_library(lib.clone());
+        }
+
+        // Now resolve package dependencies
+        let dependencies = package.manifest.dependencies();
+        executor.with_dependencies(dependencies)?;
+        executor.with_advice_inputs(inputs.advice_inputs.clone());
+
         let program = package.unwrap_program();
         let executor = executor.into_debug(&program, self.source_manager.clone());
 
         // Execute the program until it terminates to capture a full trace for use during debugging
-        let mut trace_executor = Executor::for_package(&package, args)?;
-        trace_executor.with_advice_inputs(core::mem::take(&mut inputs.advice_inputs));
-        for lib in libs {
-            trace_executor.with_library(lib);
+        let mut trace_executor = Executor::new(args);
+        for lib in libs.iter() {
+            trace_executor.register_library_dependency(lib.clone());
+            trace_executor.with_library(lib.clone());
         }
+        let dependencies = package.manifest.dependencies();
+        trace_executor.with_dependencies(dependencies)?;
+        trace_executor.with_advice_inputs(core::mem::take(&mut inputs.advice_inputs));
         let execution_trace = trace_executor.capture_trace(&program, self.source_manager.clone());
 
         self.package = package;
@@ -270,6 +313,54 @@ impl State {
 
         Ok(output)
     }
+}
+
+// TODO: In v0.20, std.masp will be renamed to core.masp - handle this when upgrading.
+
+/// Attempts to load the standard library from the sysroot/toolchain directory.
+///
+/// Supports both formats:
+/// - `.masp` (package format) - used by the midenup toolchain
+/// - `.masl` (serialized Library) - legacy format
+///
+/// Returns `Ok(None)` if the library is not found in the sysroot.
+fn load_stdlib_from_sysroot(
+    toolchain_dir: &std::path::Path,
+) -> Result<Option<Arc<miden_assembly_syntax::Library>>, Report> {
+    // Try .masp (package format) first - this is what midenup toolchain uses
+    let std_masp_path = toolchain_dir.join("std.masp");
+    if std_masp_path.exists() {
+        log::debug!(target: "state", "loading std library from sysroot (masp): {}", std_masp_path.display());
+        let bytes = std::fs::read(&std_masp_path).into_diagnostic()?;
+        let package = miden_mast_package::Package::read_from_bytes(&bytes)
+            .map_err(|e| Report::msg(format!("failed to load std package: {e}")))?;
+
+        // Extract the library from the package
+        let lib = match package.mast {
+            miden_mast_package::MastArtifact::Library(lib) => lib.clone(),
+            miden_mast_package::MastArtifact::Executable(_) => {
+                return Err(Report::msg(format!(
+                    "expected std.masp to contain a Library, got Executable: '{}'",
+                    std_masp_path.display()
+                )));
+            }
+        };
+        return Ok(Some(lib));
+    }
+
+    // Fall back to .masl (serialized Library format)
+    let std_masl_path = toolchain_dir.join("std.masl");
+    if std_masl_path.exists() {
+        log::debug!(target: "state", "loading std library from sysroot (masl): {}", std_masl_path.display());
+        let bytes = std::fs::read(&std_masl_path).into_diagnostic()?;
+        let std_lib = miden_assembly_syntax::Library::read_from_bytes(&bytes)
+            .map_err(|e| Report::msg(format!("failed to load std library: {e}")))?;
+        return Ok(Some(Arc::new(std_lib)));
+    }
+
+    // No std library found in sysroot - this is fine, not all sysroots have it
+    log::debug!(target: "state", "no std library found in sysroot: {}", toolchain_dir.display());
+    Ok(None)
 }
 
 fn load_package(config: &DebuggerConfig) -> Result<Arc<miden_mast_package::Package>, Report> {

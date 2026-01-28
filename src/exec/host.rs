@@ -4,8 +4,8 @@ use miden_assembly::SourceManager;
 use miden_core::Word;
 use miden_debug_types::{Location, SourceFile, SourceSpan};
 use miden_processor::{
-    AdviceProvider, BaseHost, EventHandlerRegistry, ExecutionError, MastForest, MastForestStore,
-    MemMastForestStore, ProcessState, RowIndex, SyncHost,
+    AdviceProvider, AssertError, BaseHost, EventHandlerRegistry, MastForest, MastForestStore,
+    MemMastForestStore, ProcessState, RowIndex, SyncHost, TraceError,
 };
 
 use super::{TraceEvent, TraceHandler};
@@ -77,11 +77,7 @@ where
         (span, maybe_file)
     }
 
-    fn on_trace(
-        &mut self,
-        process: &mut ProcessState,
-        trace_id: u32,
-    ) -> Result<(), ExecutionError> {
+    fn on_trace(&mut self, process: &mut ProcessState, trace_id: u32) -> Result<(), TraceError> {
         let event = TraceEvent::from(trace_id);
         let clk = process.clk();
         if let Some(handlers) = self.tracing_callbacks.get_mut(&trace_id) {
@@ -92,12 +88,17 @@ where
         Ok(())
     }
 
-    fn on_assert_failed(&mut self, process: &ProcessState, err_code: miden_core::Felt) {
+    fn on_assert_failed(
+        &mut self,
+        process: &ProcessState,
+        err_code: miden_core::Felt,
+    ) -> Option<AssertError> {
         let clk = process.clk();
         if let Some(handler) = self.on_assert_failed.as_mut() {
             // TODO: We're truncating the error code here, but we may need to handle the full range
             handler(clk, TraceEvent::AssertionFailed(NonZeroU32::new(err_code.as_int() as u32)));
         }
+        None
     }
 }
 

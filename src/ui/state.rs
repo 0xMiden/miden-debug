@@ -54,12 +54,9 @@ impl State {
             libs.push(lib.clone());
         }
 
-        // Also load standard library from sysroot if available
-        // The midenup toolchain uses .masp (package) format, not .masl
-        if let Some(toolchain_dir) = config.toolchain_dir()
-            && let Some(std_lib) = load_stdlib_from_sysroot(&toolchain_dir)?
-        {
-            libs.push(std_lib);
+        // Load std and base libraries from sysroot if available
+        if let Some(toolchain_dir) = config.toolchain_dir() {
+            libs.extend(load_sysroot_libs(&toolchain_dir)?);
         }
 
         // Create executor and register libraries with dependency resolver before resolving
@@ -123,12 +120,9 @@ impl State {
             libs.push(lib.clone());
         }
 
-        // Also load standard library from sysroot if available
-        // The midenup toolchain uses .masp (package) format, not .masl
-        if let Some(toolchain_dir) = self.config.toolchain_dir()
-            && let Some(std_lib) = load_stdlib_from_sysroot(&toolchain_dir)?
-        {
-            libs.push(std_lib);
+        // Load std and base libraries from sysroot if available
+        if let Some(toolchain_dir) = self.config.toolchain_dir() {
+            libs.extend(load_sysroot_libs(&toolchain_dir)?);
         }
 
         // Create executor and register libraries with dependency resolver before resolving
@@ -324,42 +318,59 @@ impl State {
 /// - `.masl` (serialized Library) - legacy format
 ///
 /// Returns `Ok(None)` if the library is not found in the sysroot.
-fn load_stdlib_from_sysroot(
+fn load_sysroot_libs(
     toolchain_dir: &std::path::Path,
+) -> Result<Vec<Arc<miden_assembly_syntax::Library>>, Report> {
+    let mut libs = Vec::new();
+
+    // Load each known sysroot library: std and base (miden.masl)
+    for (name, filenames) in [
+        ("std", &["std.masp", "std.masl"][..]),
+        ("base", &["miden.masp", "miden.masl"][..]),
+    ] {
+        if let Some(lib) = load_sysroot_lib(toolchain_dir, name, filenames)? {
+            libs.push(lib);
+        }
+    }
+
+    Ok(libs)
+}
+
+fn load_sysroot_lib(
+    toolchain_dir: &std::path::Path,
+    name: &str,
+    filenames: &[&str],
 ) -> Result<Option<Arc<miden_assembly_syntax::Library>>, Report> {
-    // Try .masp (package format) first - this is what midenup toolchain uses
-    let std_masp_path = toolchain_dir.join("std.masp");
-    if std_masp_path.exists() {
-        log::debug!(target: "state", "loading std library from sysroot (masp): {}", std_masp_path.display());
-        let bytes = std::fs::read(&std_masp_path).into_diagnostic()?;
-        let package = miden_mast_package::Package::read_from_bytes(&bytes)
-            .map_err(|e| Report::msg(format!("failed to load std package: {e}")))?;
+    for filename in filenames {
+        let path = toolchain_dir.join(filename);
+        if !path.exists() {
+            continue;
+        }
 
-        // Extract the library from the package
-        let lib = match package.mast {
-            miden_mast_package::MastArtifact::Library(lib) => lib.clone(),
-            miden_mast_package::MastArtifact::Executable(_) => {
-                return Err(Report::msg(format!(
-                    "expected std.masp to contain a Library, got Executable: '{}'",
-                    std_masp_path.display()
-                )));
-            }
-        };
-        return Ok(Some(lib));
+        log::debug!(target: "state", "loading {name} library from sysroot: {}", path.display());
+        let bytes = std::fs::read(&path).into_diagnostic()?;
+
+        if filename.ends_with(".masp") {
+            let package = miden_mast_package::Package::read_from_bytes(&bytes)
+                .map_err(|e| Report::msg(format!("failed to load {name} package: {e}")))?;
+            let lib = match package.mast {
+                miden_mast_package::MastArtifact::Library(lib) => lib.clone(),
+                miden_mast_package::MastArtifact::Executable(_) => {
+                    return Err(Report::msg(format!(
+                        "expected {filename} to contain a Library, got Executable: '{}'",
+                        path.display()
+                    )));
+                }
+            };
+            return Ok(Some(lib));
+        } else {
+            let lib = miden_assembly_syntax::Library::read_from_bytes(&bytes)
+                .map_err(|e| Report::msg(format!("failed to load {name} library: {e}")))?;
+            return Ok(Some(Arc::new(lib)));
+        }
     }
 
-    // Fall back to .masl (serialized Library format)
-    let std_masl_path = toolchain_dir.join("std.masl");
-    if std_masl_path.exists() {
-        log::debug!(target: "state", "loading std library from sysroot (masl): {}", std_masl_path.display());
-        let bytes = std::fs::read(&std_masl_path).into_diagnostic()?;
-        let std_lib = miden_assembly_syntax::Library::read_from_bytes(&bytes)
-            .map_err(|e| Report::msg(format!("failed to load std library: {e}")))?;
-        return Ok(Some(Arc::new(std_lib)));
-    }
-
-    // No std library found in sysroot - this is fine, not all sysroots have it
-    log::debug!(target: "state", "no std library found in sysroot: {}", toolchain_dir.display());
+    log::debug!(target: "state", "no {name} library found in sysroot: {}", toolchain_dir.display());
     Ok(None)
 }
 

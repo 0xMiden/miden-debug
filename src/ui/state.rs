@@ -46,25 +46,43 @@ impl State {
         let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
         let package = load_package(&config)?;
 
-        let mut executor = Executor::for_package(&package.clone(), args.clone())?;
-        executor.with_advice_inputs(inputs.advice_inputs.clone());
+        // Load libraries from link_libraries and sysroot BEFORE resolving dependencies
         let mut libs = Vec::with_capacity(config.link_libraries.len());
         for link_library in config.link_libraries.iter() {
             log::debug!(target: "state", "loading link library {}", link_library.name());
             let lib = link_library.load(&config, source_manager.clone())?;
             libs.push(lib.clone());
-            executor.with_library(lib);
         }
+
+        // Load std and base libraries from sysroot if available
+        if let Some(toolchain_dir) = config.toolchain_dir() {
+            libs.extend(load_sysroot_libs(&toolchain_dir)?);
+        }
+
+        // Create executor and register libraries with dependency resolver before resolving
+        let mut executor = Executor::new(args.clone());
+        for lib in libs.iter() {
+            executor.register_library_dependency(lib.clone());
+            executor.with_library(lib.clone());
+        }
+
+        // Now resolve package dependencies (they should find the registered libraries)
+        let dependencies = package.manifest.dependencies();
+        executor.with_dependencies(dependencies)?;
+        executor.with_advice_inputs(inputs.advice_inputs.clone());
 
         let program = package.unwrap_program();
         let executor = executor.into_debug(&program, source_manager.clone());
 
         // Execute the program until it terminates to capture a full trace for use during debugging
-        let mut trace_executor = Executor::for_package(&package, args)?;
-        trace_executor.with_advice_inputs(inputs.advice_inputs.clone());
-        for lib in libs {
-            trace_executor.with_library(lib);
+        let mut trace_executor = Executor::new(args);
+        for lib in libs.iter() {
+            trace_executor.register_library_dependency(lib.clone());
+            trace_executor.with_library(lib.clone());
         }
+        let dependencies = package.manifest.dependencies();
+        trace_executor.with_dependencies(dependencies)?;
+        trace_executor.with_advice_inputs(inputs.advice_inputs.clone());
 
         let execution_trace = trace_executor.capture_trace(&program, source_manager.clone());
 
@@ -95,23 +113,42 @@ impl State {
         }
         let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
 
-        let mut executor = Executor::for_package(&package, args.clone())?;
-        executor.with_advice_inputs(inputs.advice_inputs.clone());
+        // Load libraries from link_libraries and sysroot BEFORE resolving dependencies
         let mut libs = Vec::with_capacity(self.config.link_libraries.len());
         for link_library in self.config.link_libraries.iter() {
             let lib = link_library.load(&self.config, self.source_manager.clone())?;
             libs.push(lib.clone());
-            executor.with_library(lib);
         }
+
+        // Load std and base libraries from sysroot if available
+        if let Some(toolchain_dir) = self.config.toolchain_dir() {
+            libs.extend(load_sysroot_libs(&toolchain_dir)?);
+        }
+
+        // Create executor and register libraries with dependency resolver before resolving
+        let mut executor = Executor::new(args.clone());
+        for lib in libs.iter() {
+            executor.register_library_dependency(lib.clone());
+            executor.with_library(lib.clone());
+        }
+
+        // Now resolve package dependencies
+        let dependencies = package.manifest.dependencies();
+        executor.with_dependencies(dependencies)?;
+        executor.with_advice_inputs(inputs.advice_inputs.clone());
+
         let program = package.unwrap_program();
         let executor = executor.into_debug(&program, self.source_manager.clone());
 
         // Execute the program until it terminates to capture a full trace for use during debugging
-        let mut trace_executor = Executor::for_package(&package, args)?;
-        trace_executor.with_advice_inputs(core::mem::take(&mut inputs.advice_inputs));
-        for lib in libs {
-            trace_executor.with_library(lib);
+        let mut trace_executor = Executor::new(args);
+        for lib in libs.iter() {
+            trace_executor.register_library_dependency(lib.clone());
+            trace_executor.with_library(lib.clone());
         }
+        let dependencies = package.manifest.dependencies();
+        trace_executor.with_dependencies(dependencies)?;
+        trace_executor.with_advice_inputs(core::mem::take(&mut inputs.advice_inputs));
         let execution_trace = trace_executor.capture_trace(&program, self.source_manager.clone());
 
         self.package = package;
@@ -270,6 +307,65 @@ impl State {
 
         Ok(output)
     }
+}
+
+/// Attempts to load the standard library from the sysroot/toolchain directory.
+///
+/// Supports both formats:
+/// - `.masp` (package format) - used by the midenup toolchain
+/// - `.masl` (serialized Library) - legacy format
+///   Load all library files (.masp and .masl) from the sysroot directory.
+///
+/// The toolchain determines what libraries are available in the sysroot.
+fn load_sysroot_libs(
+    toolchain_dir: &std::path::Path,
+) -> Result<Vec<Arc<miden_assembly_syntax::Library>>, Report> {
+    let mut libs = Vec::new();
+
+    let entries = match std::fs::read_dir(toolchain_dir) {
+        Ok(entries) => entries,
+        Err(_) => {
+            log::debug!(target: "state", "could not read sysroot directory: {}", toolchain_dir.display());
+            return Ok(libs);
+        }
+    };
+
+    for entry in entries {
+        let entry = entry.into_diagnostic()?;
+        let path = entry.path();
+        let Some(ext) = path.extension() else {
+            continue;
+        };
+
+        if ext == "masp" {
+            log::debug!(target: "state", "loading library from sysroot: {}", path.display());
+            let bytes = std::fs::read(&path).into_diagnostic()?;
+            let package = miden_mast_package::Package::read_from_bytes(&bytes).map_err(|e| {
+                Report::msg(format!("failed to load package '{}': {e}", path.display()))
+            })?;
+            match package.mast {
+                miden_mast_package::MastArtifact::Library(lib) => {
+                    libs.push(lib.clone());
+                }
+                miden_mast_package::MastArtifact::Executable(_) => {
+                    log::debug!(target: "state", "skipping executable package: {}", path.display());
+                }
+            }
+        } else if ext == "masl" {
+            log::debug!(target: "state", "loading library from sysroot: {}", path.display());
+            let bytes = std::fs::read(&path).into_diagnostic()?;
+            let lib = miden_assembly_syntax::Library::read_from_bytes(&bytes).map_err(|e| {
+                Report::msg(format!("failed to load library '{}': {e}", path.display()))
+            })?;
+            libs.push(Arc::new(lib));
+        }
+    }
+
+    if libs.is_empty() {
+        log::debug!(target: "state", "no libraries found in sysroot: {}", toolchain_dir.display());
+    }
+
+    Ok(libs)
 }
 
 fn load_package(config: &DebuggerConfig) -> Result<Arc<miden_mast_package::Package>, Report> {

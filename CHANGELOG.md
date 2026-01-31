@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.6](https://github.com/0xMiden/miden-debug/compare/v0.4.5...v0.4.6) - 2026-01-31
+
+### Other
+
+- Merge pull request #26 from 0xMiden/next
+
 ## [0.4.5](https://github.com/0xMiden/miden-debug/compare/v0.4.4...v0.4.5) - 2026-01-30
 
 ### Other

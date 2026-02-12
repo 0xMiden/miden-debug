@@ -8,15 +8,16 @@ use std::{
 };
 
 use miden_assembly_syntax::{Library, diagnostics::Report};
-use miden_core::{Program, StackInputs};
+use miden_core::field::PrimeField64;
+use miden_core::program::{Program, StackInputs};
 use miden_debug_types::{SourceManager, SourceManagerExt};
 use miden_mast_package::{
     Dependency, DependencyResolver, LocalResolvedDependency, MastArtifact,
     MemDependencyResolverByDigest, ResolvedDependency,
 };
 use miden_processor::{
-    AdviceInputs, AdviceProvider, ExecutionError, ExecutionOptions, Felt, Process, ProcessState,
-    RowIndex, VmStateIterator,
+    ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt, advice::AdviceInputs,
+    trace::RowIndex,
 };
 
 use super::{DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent};
@@ -39,7 +40,7 @@ impl Executor {
     /// Construct an executor with the given arguments on the operand stack
     pub fn new(args: Vec<Felt>) -> Self {
         let config = ExecutionConfig {
-            inputs: StackInputs::new(args).expect("invalid stack inputs"),
+            inputs: StackInputs::new(&args).expect("invalid stack inputs"),
             ..Default::default()
         };
 
@@ -55,7 +56,7 @@ impl Executor {
             advice_inputs,
             options,
         } = config;
-        let options = options.with_tracing().with_debugging(true);
+        let options = options.with_tracing(true).with_debugging(true);
         let dependency_resolver = MemDependencyResolverByDigest::default();
 
         Self {
@@ -141,8 +142,7 @@ impl Executor {
     ) -> DebugExecutor {
         log::debug!("creating debug executor");
 
-        let advice_provider = AdviceProvider::from(self.advice.clone());
-        let mut host = DebuggerHost::new(advice_provider, source_manager.clone());
+        let mut host = DebuggerHost::new(source_manager.clone());
         for lib in core::mem::take(&mut self.libraries) {
             host.load_mast_forest(lib.mast_forest().clone());
         }
@@ -161,23 +161,31 @@ impl Executor {
             assertion_events.borrow_mut().insert(clk, event);
         });
 
-        let mut process =
-            Process::new(program.kernel().clone(), self.stack, self.advice, self.options);
-        let process_state: ProcessState = (&mut process).into();
-        let root_context = process_state.ctx();
-        let result = process.execute(program, &mut host);
-        let stack_outputs = result.as_ref().map(|so| so.clone()).unwrap_or_default();
-        let iter = VmStateIterator::new(process, result);
+        let mut processor = FastProcessor::new(self.stack)
+            .with_advice(self.advice)
+            .with_options(self.options)
+            .with_debugging(true)
+            .with_tracing(true);
+
+        let root_context = ContextId::root();
+        let resume_ctx = processor
+            .get_initial_resume_context(program)
+            .expect("failed to get initial resume context");
+
         let callstack = CallStack::new(trace_events);
         DebugExecutor {
-            iter,
-            stack_outputs,
+            processor,
+            host,
+            resume_ctx: Some(resume_ctx),
+            current_stack: vec![],
+            current_op: None,
+            current_asmop: None,
+            stack_outputs: Default::default(),
             contexts: Default::default(),
             root_context,
             current_context: root_context,
             callstack,
             recent: VecDeque::with_capacity(5),
-            last: None,
             cycle: 0,
             stopped: false,
         }
@@ -190,9 +198,13 @@ impl Executor {
         source_manager: Arc<dyn SourceManager>,
     ) -> ExecutionTrace {
         let mut executor = self.into_debug(program, source_manager);
-        while let Some(step) = executor.next() {
-            if step.is_err() {
-                return executor.into_execution_trace();
+        loop {
+            if executor.stopped {
+                break;
+            }
+            match executor.step() {
+                Ok(_) => continue,
+                Err(_) => break,
             }
         }
         executor.into_execution_trace()
@@ -206,137 +218,36 @@ impl Executor {
         source_manager: Arc<dyn SourceManager>,
     ) -> ExecutionTrace {
         let mut executor = self.into_debug(program, source_manager.clone());
-        while let Some(step) = executor.next() {
-            if let Err(err) = step {
-                render_execution_error(err, &executor, &source_manager);
+        loop {
+            if executor.stopped {
+                break;
             }
-
-            if log::log_enabled!(target: "executor", log::Level::Trace) {
-                let step = step.unwrap();
-                if let Some((op, asmop)) = step.op.as_ref().zip(step.asmop.as_ref()) {
-                    dbg!(&step.stack);
-                    let source_loc = asmop.as_ref().location().map(|loc| {
-                        let path = std::path::Path::new(loc.uri().path());
-                        let file = source_manager.load_file(path).unwrap();
-                        (file, loc.start)
-                    });
-                    if let Some((source_file, line_start)) = source_loc {
-                        let line_number = source_file.content().line_index(line_start).number();
-                        log::trace!(target: "executor", "in {} (located at {}:{})", asmop.context_name(), source_file.deref().uri().as_str(), &line_number);
-                    } else {
-                        log::trace!(target: "executor", "in {} (no source location available)", asmop.context_name());
+            match executor.step() {
+                Ok(_) => {
+                    if log::log_enabled!(target: "executor", log::Level::Trace)
+                        && let (Some(op), Some(asmop)) =
+                            (executor.current_op, executor.current_asmop.as_ref())
+                    {
+                        dbg!(&executor.current_stack);
+                        let source_loc = asmop.location().map(|loc| {
+                            let path = std::path::Path::new(loc.uri().path());
+                            let file = source_manager.load_file(path).unwrap();
+                            (file, loc.start)
+                        });
+                        if let Some((source_file, line_start)) = source_loc {
+                            let line_number = source_file.content().line_index(line_start).number();
+                            log::trace!(target: "executor", "in {} (located at {}:{})", asmop.context_name(), source_file.deref().uri().as_str(), &line_number);
+                        } else {
+                            log::trace!(target: "executor", "in {} (no source location available)", asmop.context_name());
+                        }
+                        log::trace!(target: "executor", "  executed `{op:?}` of `{}` ({} cycles)", asmop.op(), asmop.num_cycles());
+                        log::trace!(target: "executor", "  stack state: {:#?}", &executor.current_stack);
                     }
-                    log::trace!(target: "executor", "  executed `{op:?}` of `{}` (cycle {}/{})", asmop.op(), asmop.cycle_idx(), asmop.num_cycles());
-                    log::trace!(target: "executor", "  stack state: {:#?}", &step.stack);
+                }
+                Err(err) => {
+                    render_execution_error(err, &executor, &source_manager);
                 }
             }
-
-            /*
-            if let Some(op) = state.op {
-                match op {
-                    miden_core::Operation::MLoad => {
-                        let load_addr = last_state
-                            .as_ref()
-                            .map(|state| state.stack[0].as_int())
-                            .unwrap();
-                        let loaded = match state
-                            .memory
-                            .binary_search_by_key(&load_addr, |&(addr, _)| addr)
-                        {
-                            Ok(index) => state.memory[index].1[0].as_int(),
-                            Err(_) => 0,
-                        };
-                        //dbg!(load_addr, loaded, format!("{loaded:08x}"));
-                    }
-                    miden_core::Operation::MLoadW => {
-                        let load_addr = last_state
-                            .as_ref()
-                            .map(|state| state.stack[0].as_int())
-                            .unwrap();
-                        let loaded = match state
-                            .memory
-                            .binary_search_by_key(&load_addr, |&(addr, _)| addr)
-                        {
-                            Ok(index) => {
-                                let word = state.memory[index].1;
-                                [
-                                    word[0].as_int(),
-                                    word[1].as_int(),
-                                    word[2].as_int(),
-                                    word[3].as_int(),
-                                ]
-                            }
-                            Err(_) => [0; 4],
-                        };
-                        let loaded_bytes = {
-                            let word = loaded;
-                            let a = (word[0] as u32).to_be_bytes();
-                            let b = (word[1] as u32).to_be_bytes();
-                            let c = (word[2] as u32).to_be_bytes();
-                            let d = (word[3] as u32).to_be_bytes();
-                            let bytes = [
-                                a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3], c[0], c[1],
-                                c[2], c[3], d[0], d[1], d[2], d[3],
-                            ];
-                            u128::from_be_bytes(bytes)
-                        };
-                        //dbg!(load_addr, loaded, format!("{loaded_bytes:032x}"));
-                    }
-                    miden_core::Operation::MStore => {
-                        let store_addr = last_state
-                            .as_ref()
-                            .map(|state| state.stack[0].as_int())
-                            .unwrap();
-                        let stored = match state
-                            .memory
-                            .binary_search_by_key(&store_addr, |&(addr, _)| addr)
-                        {
-                            Ok(index) => state.memory[index].1[0].as_int(),
-                            Err(_) => 0,
-                        };
-                        //dbg!(store_addr, stored, format!("{stored:08x}"));
-                    }
-                    miden_core::Operation::MStoreW => {
-                        let store_addr = last_state
-                            .as_ref()
-                            .map(|state| state.stack[0].as_int())
-                            .unwrap();
-                        let stored = {
-                            let memory = state
-                                .memory
-                                .iter()
-                                .find_map(|(addr, word)| {
-                                    if addr == &store_addr {
-                                        Some(word)
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .unwrap();
-                            let a = memory[0].as_int();
-                            let b = memory[1].as_int();
-                            let c = memory[2].as_int();
-                            let d = memory[3].as_int();
-                            [a, b, c, d]
-                        };
-                        let stored_bytes = {
-                            let word = stored;
-                            let a = (word[0] as u32).to_be_bytes();
-                            let b = (word[1] as u32).to_be_bytes();
-                            let c = (word[2] as u32).to_be_bytes();
-                            let d = (word[3] as u32).to_be_bytes();
-                            let bytes = [
-                                a[0], a[1], a[2], a[3], b[0], b[1], b[2], b[3], c[0], c[1],
-                                c[2], c[3], d[0], d[1], d[2], d[3],
-                            ];
-                            u128::from_be_bytes(bytes)
-                        };
-                        //dbg!(store_addr, stored, format!("{stored_bytes:032x}"));
-                    }
-                    _ => (),
-                }
-            }
-            */
         }
 
         executor.into_execution_trace()
@@ -377,8 +288,8 @@ fn render_execution_error(
 
     eprintln!("{stacktrace}");
 
-    if let Some(last_state) = execution_state.last.as_ref() {
-        let stack = last_state.stack.iter().map(|elem| elem.as_int());
+    if !execution_state.current_stack.is_empty() {
+        let stack = execution_state.current_stack.iter().map(|elem| elem.as_canonical_u64());
         let stack = DisplayValues::new(stack);
         eprintln!(
             "\nLast Known State (at most recent instruction which succeeded):
@@ -401,7 +312,7 @@ fn render_execution_error(
             labels = labels,
             "program execution failed at step {step} (cycle {cycle}): {err}",
             step = execution_state.cycle,
-            cycle = last_state.clk,
+            cycle = execution_state.cycle,
         );
         let report = match stacktrace
             .current_frame()

@@ -8,11 +8,18 @@ use std::{
     sync::Arc,
 };
 
-use miden_core::AssemblyOp;
+use miden_core::operations::AssemblyOp;
 use miden_debug_types::{Location, SourceFile, SourceManager, SourceManagerExt, SourceSpan};
-use miden_processor::{Operation, RowIndex, VmState};
+use miden_processor::{ContextId, operation::Operation, trace::RowIndex};
 
 use crate::exec::TraceEvent;
+
+pub struct StepInfo<'a> {
+    pub op: Option<Operation>,
+    pub asmop: Option<&'a AssemblyOp>,
+    pub clk: RowIndex,
+    pub ctx: ContextId,
+}
 
 #[derive(Debug, Clone)]
 struct SpanContext {
@@ -56,29 +63,17 @@ impl CallStack {
         self.frames.as_slice()
     }
 
-    /// Updates the call stack from `state`
+    /// Updates the call stack from `info`
     ///
     /// Returns the call frame exited this cycle, if any
-    pub fn next(&mut self, state: &VmState) -> Option<CallFrame> {
-        if let Some(op) = state.op {
-            // Do not do anything if this cycle is a continuation of the last instruction
-            //let skip = state.asmop.as_ref().map(|op| op.cycle_idx() > 1).unwrap_or(false);
-            //if skip {
-            //return;
-            //}
-
+    pub fn next(&mut self, info: &StepInfo<'_>) -> Option<CallFrame> {
+        if let Some(op) = info.op {
             // Get the current procedure name context, if available
-            let procedure =
-                state.asmop.as_ref().map(|op| self.cache_procedure_name(op.context_name()));
-            /*
-                       if procedure.is_none() {
-                           dbg!(self.frames.last().map(|frame| frame.procedure.as_deref()));
-                           dbg!(self.block_stack.last().map(|ctx| ctx.as_ref()));
-                       }
-            */
+            let procedure = info.asmop.map(|op| self.cache_procedure_name(op.context_name()));
+
             // Handle trace events for this cycle
-            let event = self.trace_events.borrow().get(&state.clk).copied();
-            log::trace!("handling {op} at cycle {}: {:?}", state.clk, &event);
+            let event = self.trace_events.borrow().get(&info.clk).copied();
+            log::trace!("handling {op} at cycle {}: {:?}", info.clk, &event);
             let popped_frame = self.handle_trace_event(event, procedure.as_ref());
             let is_frame_end = popped_frame.is_some();
 
@@ -95,11 +90,11 @@ impl CallStack {
             // Manage block stack
             match op {
                 Operation::Span => {
-                    if let Some(asmop) = state.asmop.as_ref() {
+                    if let Some(asmop) = info.asmop {
                         log::debug!("{asmop:#?}");
                         self.block_stack.push(Some(SpanContext {
                             frame_index: self.frames.len().saturating_sub(1),
-                            location: asmop.as_ref().location().cloned(),
+                            location: asmop.location().cloned(),
                         }));
                     } else {
                         self.block_stack.push(None);
@@ -121,33 +116,24 @@ impl CallStack {
             // Attempt to supply procedure context from the current span context, if needed +
             // available
             let (procedure, asmop) = match procedure {
-                proc @ Some(_) => {
-                    (proc, state.asmop.as_ref().map(|info| info.as_ref()).map(Cow::Borrowed))
-                }
+                proc @ Some(_) => (proc, info.asmop.map(Cow::Borrowed)),
                 None => match self.block_stack.last() {
                     Some(Some(span_ctx)) => {
                         let proc =
                             self.frames.get(span_ctx.frame_index).and_then(|f| f.procedure.clone());
-                        let info = state
-                            .asmop
-                            .as_ref()
-                            .map(|info| info.as_ref())
-                            .map(Cow::Borrowed)
-                            .or_else(|| {
-                                let context_name =
-                                    proc.as_deref().unwrap_or("<unknown>").to_string();
-                                let raw_asmop = miden_core::AssemblyOp::new(
-                                    span_ctx.location.clone(),
-                                    context_name,
-                                    1,
-                                    op.to_string(),
-                                    false,
-                                );
-                                Some(Cow::Owned(raw_asmop))
-                            });
-                        (proc, info)
+                        let asmop_cow = info.asmop.map(Cow::Borrowed).or_else(|| {
+                            let context_name = proc.as_deref().unwrap_or("<unknown>").to_string();
+                            let raw_asmop = AssemblyOp::new(
+                                span_ctx.location.clone(),
+                                context_name,
+                                1,
+                                op.to_string(),
+                            );
+                            Some(Cow::Owned(raw_asmop))
+                        });
+                        (proc, asmop_cow)
                     }
-                    _ => (None, state.asmop.as_ref().map(|info| info.as_ref()).map(Cow::Borrowed)),
+                    _ => (None, info.asmop.map(Cow::Borrowed)),
                 },
             };
 
@@ -173,7 +159,7 @@ impl CallStack {
 
             // Push op into call frame if this is any op other than `nop` or frame setup
             if !matches!(op, Operation::Noop) {
-                let cycle_idx = state.asmop.as_ref().map(|info| info.cycle_idx()).unwrap_or(1);
+                let cycle_idx = info.asmop.map(|a| a.num_cycles()).unwrap_or(1);
                 current_frame.push(op, cycle_idx, asmop.as_deref());
             }
 

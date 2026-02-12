@@ -105,7 +105,7 @@ impl LinkLibrary {
                     .map(Arc::new)
             }
             LibraryKind::Masp => {
-                use miden_core::utils::Deserializable;
+                use miden_core::serde::Deserializable;
                 let bytes = std::fs::read(path).into_diagnostic()?;
                 let package =
                     miden_mast_package::Package::read_from_bytes(&bytes).map_err(|e| {

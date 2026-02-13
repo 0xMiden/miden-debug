@@ -1,6 +1,6 @@
 use std::{ffi::OsStr, path::Path};
 
-use miden_processor::{AdviceInputs, ExecutionOptions, StackInputs};
+use miden_processor::{ExecutionOptions, StackInputs, advice::AdviceInputs};
 use serde::Deserialize;
 
 use crate::felt::Felt;
@@ -42,8 +42,9 @@ impl ExecutionConfig {
     }
 
     fn from_inputs_file(file: ExecutionConfigFile) -> Result<Self, String> {
-        let inputs = StackInputs::new(file.inputs.stack.into_iter().map(|felt| felt.0).collect())
-            .map_err(|err| format!("invalid value for 'stack': {err}"))?;
+        let felts: Vec<_> = file.inputs.stack.into_iter().map(|felt| felt.0).collect();
+        let inputs =
+            StackInputs::new(&felts).map_err(|err| format!("invalid value for 'stack': {err}"))?;
         let advice_inputs = AdviceInputs::default()
             .with_stack(file.inputs.advice.stack.into_iter().rev().map(|felt| felt.0))
             .with_map(file.inputs.advice.map.into_iter().map(|entry| {
@@ -167,6 +168,7 @@ where
         ExecutionOptions::new(
             opts.max_cycles,
             opts.expected_cycles,
+            ExecutionOptions::DEFAULT_CORE_TRACE_FRAGMENT_SIZE,
             /* enable_tracing= */ true,
             /* enable_debugging= */ true,
         )
@@ -191,13 +193,13 @@ mod tests {
         .unwrap();
 
         let file = toml::from_str::<ExecutionConfig>(&text).unwrap();
-        let expected_inputs = StackInputs::new(vec![]).unwrap();
+        let expected_inputs = StackInputs::new(&[]).unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert!(file.advice_inputs.stack.is_empty());
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), ExecutionOptions::MAX_CYCLES);
-        assert_eq!(file.options.expected_cycles(), 64);
+        assert_eq!(file.options.expected_cycles(), 2048);
     }
 
     #[test]
@@ -205,18 +207,18 @@ mod tests {
         let text = toml::to_string_pretty(&toml! {
             [inputs]
             [options]
-            max_cycles = 1000
+            max_cycles = 100000
         })
         .unwrap();
 
         let file = ExecutionConfig::parse_str(&text).unwrap();
-        let expected_inputs = StackInputs::new(vec![]).unwrap();
+        let expected_inputs = StackInputs::new(&[]).unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert!(file.advice_inputs.stack.is_empty());
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
-        assert_eq!(file.options.max_cycles(), 1000);
-        assert_eq!(file.options.expected_cycles(), 64);
+        assert_eq!(file.options.max_cycles(), 100000);
+        assert_eq!(file.options.expected_cycles(), 2048);
     }
 
     #[test]
@@ -226,19 +228,19 @@ mod tests {
             stack = [1, 2, 3]
 
             [options]
-            max_cycles = 1000
+            max_cycles = 100000
         })
         .unwrap();
 
         let file = ExecutionConfig::parse_str(&text).unwrap();
         let expected_inputs =
-            StackInputs::new(vec![RawFelt::new(1), RawFelt::new(2), RawFelt::new(3)]).unwrap();
+            StackInputs::new(&[RawFelt::new(1), RawFelt::new(2), RawFelt::new(3)]).unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert!(file.advice_inputs.stack.is_empty());
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
-        assert_eq!(file.options.max_cycles(), 1000);
-        assert_eq!(file.options.expected_cycles(), 64);
+        assert_eq!(file.options.max_cycles(), 100000);
+        assert_eq!(file.options.expected_cycles(), 2048);
     }
 
     #[test]
@@ -255,7 +257,7 @@ mod tests {
             values = [1, 2, 3, 4]
 
             [options]
-            max_cycles = 1000
+            max_cycles = 100000
         })
         .unwrap();
         let digest = miden_core::Word::try_from(
@@ -264,7 +266,7 @@ mod tests {
         .unwrap();
         let file = ExecutionConfig::parse_str(&text).unwrap_or_else(|err| panic!("{err}"));
         let expected_inputs =
-            StackInputs::new(vec![RawFelt::new(1), RawFelt::new(2), RawFelt::new(3)]).unwrap();
+            StackInputs::new(&[RawFelt::new(1), RawFelt::new(2), RawFelt::new(3)]).unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert_eq!(
             file.advice_inputs.stack,
@@ -276,7 +278,7 @@ mod tests {
         );
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
-        assert_eq!(file.options.max_cycles(), 1000);
-        assert_eq!(file.options.expected_cycles(), 64);
+        assert_eq!(file.options.max_cycles(), 100000);
+        assert_eq!(file.options.expected_cycles(), 2048);
     }
 }

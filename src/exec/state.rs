@@ -5,8 +5,8 @@ use miden_core::{
     operations::AssemblyOp,
 };
 use miden_processor::{
-    ContextId, ExecutionError, FastProcessor, Felt, ResumeContext, StackOutputs,
-    continuation_stack::Continuation, operation::Operation, trace::RowIndex,
+    ContextId, Continuation, ExecutionError, FastProcessor, Felt, ResumeContext, StackOutputs,
+    operation::Operation, trace::RowIndex,
 };
 
 use super::{DebuggerHost, ExecutionTrace};

@@ -1,6 +1,6 @@
 use miden_core::Word;
 use miden_core::field::{PrimeCharacteristicRing, PrimeField64};
-use miden_processor::{ContextId, Felt, Memory, StackOutputs, trace::RowIndex};
+use miden_processor::{ContextId, FastProcessor, Felt, StackOutputs, trace::RowIndex};
 use smallvec::SmallVec;
 
 use super::TraceEvent;
@@ -26,7 +26,7 @@ pub enum MemoryReadError {
 pub struct ExecutionTrace {
     pub(super) root_context: ContextId,
     pub(super) last_cycle: RowIndex,
-    pub(super) memory: Memory,
+    pub(super) processor: FastProcessor,
     pub(super) outputs: StackOutputs,
 }
 
@@ -72,7 +72,7 @@ impl ExecutionTrace {
     ) -> Option<Word> {
         const ZERO: Word = Word::new([Felt::ZERO; 4]);
 
-        match self.memory.read_word(ctx, Felt::new(addr as u64), clk) {
+        match self.processor.memory().read_word(ctx, Felt::new(addr as u64), clk) {
             Ok(word) => Some(word),
             Err(_) => Some(ZERO),
         }
@@ -81,7 +81,7 @@ impl ExecutionTrace {
     /// Read the element at the given Miden memory address
     #[track_caller]
     pub fn read_memory_element(&self, addr: u32) -> Option<Felt> {
-        self.memory.read_element(self.root_context, Felt::new(addr as u64)).ok()
+        self.processor.memory().read_element(self.root_context, Felt::new(addr as u64)).ok()
     }
 
     /// Read the element at the given Miden memory address, under `ctx`, at cycle `clk`
@@ -92,7 +92,7 @@ impl ExecutionTrace {
         ctx: ContextId,
         _clk: RowIndex,
     ) -> Option<Felt> {
-        self.memory.read_element(ctx, Felt::new(addr as u64)).ok()
+        self.processor.memory().read_element(ctx, Felt::new(addr as u64)).ok()
     }
 
     /// Read a raw byte vector from `addr`, under `ctx`, at cycle `clk`, sufficient to hold a value

@@ -187,13 +187,10 @@ impl DebugExecutor {
 
     /// Consume the [DebugExecutor], converting it into an [ExecutionTrace] at the current cycle.
     pub fn into_execution_trace(self) -> ExecutionTrace {
-        let last_cycle = self.cycle;
-        let memory = self.processor.memory().clone();
-
         ExecutionTrace {
             root_context: self.root_context,
-            last_cycle: RowIndex::from(last_cycle as u32),
-            memory,
+            last_cycle: RowIndex::from(self.cycle as u32),
+            processor: self.processor,
             outputs: self.stack_outputs,
         }
     }

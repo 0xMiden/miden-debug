@@ -1,6 +1,6 @@
 use miden_core::Word;
 use miden_core::field::{PrimeCharacteristicRing, PrimeField64};
-use miden_processor::{ContextId, Felt, StackOutputs, fast::Memory, trace::RowIndex};
+use miden_processor::{ContextId, Felt, Memory, StackOutputs, trace::RowIndex};
 use smallvec::SmallVec;
 
 use super::TraceEvent;

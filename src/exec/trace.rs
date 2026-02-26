@@ -1,5 +1,4 @@
 use miden_core::Word;
-use miden_core::field::{PrimeCharacteristicRing, PrimeField64};
 use miden_processor::{ContextId, FastProcessor, Felt, StackOutputs, trace::RowIndex};
 use smallvec::SmallVec;
 
@@ -81,7 +80,10 @@ impl ExecutionTrace {
     /// Read the element at the given Miden memory address
     #[track_caller]
     pub fn read_memory_element(&self, addr: u32) -> Option<Felt> {
-        self.processor.memory().read_element(self.root_context, Felt::new(addr as u64)).ok()
+        self.processor
+            .memory()
+            .read_element(self.root_context, Felt::new(addr as u64))
+            .ok()
     }
 
     /// Read the element at the given Miden memory address, under `ctx`, at cycle `clk`

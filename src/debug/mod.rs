@@ -7,5 +7,7 @@ pub use self::{
     breakpoint::{Breakpoint, BreakpointType},
     memory::{FormatType, MemoryMode, ReadMemoryExpr},
     native_ptr::NativePtr,
-    stacktrace::{CallFrame, CallStack, CurrentFrame, OpDetail, ResolvedLocation, StackTrace},
+    stacktrace::{
+        CallFrame, CallStack, CurrentFrame, OpDetail, ResolvedLocation, StackTrace, StepInfo,
+    },
 };

@@ -1,16 +1,32 @@
-use std::{
-    collections::{BTreeSet, VecDeque},
-    rc::Rc,
-};
+use std::collections::{BTreeSet, VecDeque};
 
-use miden_core::Word;
+use miden_core::{
+    mast::{MastNode, MastNodeId},
+    operations::AssemblyOp,
+};
 use miden_processor::{
-    ContextId, ExecutionError, MemoryAddress, MemoryError, Operation, RowIndex, StackOutputs,
-    VmState, VmStateIterator,
+    ContextId, Continuation, ExecutionError, FastProcessor, Felt, ResumeContext, StackOutputs,
+    operation::Operation, trace::RowIndex,
 };
 
-use super::ExecutionTrace;
-use crate::debug::{CallFrame, CallStack};
+use super::{DebuggerHost, ExecutionTrace};
+use crate::debug::{CallFrame, CallStack, StepInfo};
+
+/// Resolve a future that is expected to complete immediately (synchronous host methods).
+///
+/// We use a noop waker because our Host methods all return `std::future::ready(...)`.
+/// This avoids calling `step_sync()` which would create its own tokio runtime and
+/// panic inside the TUI's existing tokio current-thread runtime.
+/// TODO: Revisit this (djole).
+fn poll_immediately<T>(fut: impl std::future::Future<Output = T>) -> T {
+    let waker = std::task::Waker::noop();
+    let mut cx = std::task::Context::from_waker(waker);
+    let mut fut = std::pin::pin!(fut);
+    match fut.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(val) => val,
+        std::task::Poll::Pending => panic!("future was expected to complete immediately"),
+    }
+}
 
 /// A special version of [crate::Executor] which provides finer-grained control over execution,
 /// and captures a ton of information about the program being executed, so as to make it possible
@@ -19,8 +35,21 @@ use crate::debug::{CallFrame, CallStack};
 /// This is used by the debugger to execute programs, and provide all of the functionality made
 /// available by the TUI.
 pub struct DebugExecutor {
-    /// The underlying [VmStateIterator] being driven
-    pub iter: VmStateIterator,
+    /// The underlying [FastProcessor] being driven
+    pub processor: FastProcessor,
+    /// The host providing debugging callbacks
+    pub host: DebuggerHost<dyn miden_assembly::SourceManager>,
+    /// The resume context for the next step (None if program has finished)
+    pub resume_ctx: Option<ResumeContext>,
+
+    // State from last step (replaces VmState fields)
+    /// The current operand stack state
+    pub current_stack: Vec<Felt>,
+    /// The operation that was just executed
+    pub current_op: Option<Operation>,
+    /// The assembly-level operation info for the current op
+    pub current_asmop: Option<AssemblyOp>,
+
     /// The final outcome of the program being executed
     pub stack_outputs: StackOutputs,
     /// The set of contexts allocated during execution so far
@@ -33,12 +62,50 @@ pub struct DebugExecutor {
     pub callstack: CallStack,
     /// A sliding window of the last 5 operations successfully executed by the VM
     pub recent: VecDeque<Operation>,
-    /// The most recent [VmState] produced by the [VmStateIterator]
-    pub last: Option<VmState>,
     /// The current clock cycle
     pub cycle: usize,
     /// Whether or not execution has terminated
     pub stopped: bool,
+}
+
+/// Extract the current operation and assembly info from the continuation stack
+/// before a step is executed. This lets us know what operation will run next.
+fn extract_current_op(
+    ctx: &ResumeContext,
+) -> (Option<Operation>, Option<MastNodeId>, Option<usize>) {
+    let forest = ctx.current_forest();
+    for cont in ctx.continuation_stack().iter_continuations_for_next_clock() {
+        match cont {
+            Continuation::ResumeBasicBlock {
+                node_id,
+                batch_index,
+                op_idx_in_batch,
+            } => {
+                let node = &forest[*node_id];
+                if let MastNode::Block(block) = node {
+                    // Compute global op index within the basic block
+                    let mut global_idx = 0;
+                    for batch in &block.op_batches()[..*batch_index] {
+                        global_idx += batch.ops().len();
+                    }
+                    global_idx += op_idx_in_batch;
+                    let op = block.op_batches()[*batch_index].ops().get(*op_idx_in_batch).copied();
+                    return (op, Some(*node_id), Some(global_idx));
+                }
+            }
+            Continuation::StartNode(node_id) => {
+                return (None, Some(*node_id), None);
+            }
+            Continuation::FinishBasicBlock(_) => {
+                return (Some(Operation::End), None, None);
+            }
+            other if other.increments_clk() => {
+                return (None, None, None);
+            }
+            _ => continue,
+        }
+    }
+    (None, None, None)
 }
 
 impl DebugExecutor {
@@ -52,108 +119,79 @@ impl DebugExecutor {
         if self.stopped {
             return Ok(None);
         }
-        match self.iter.next() {
-            Some(Ok(state)) => {
+
+        let resume_ctx = match self.resume_ctx.take() {
+            Some(ctx) => ctx,
+            None => {
+                self.stopped = true;
+                return Ok(None);
+            }
+        };
+
+        // Before step: peek continuation to determine what will execute
+        let (op, node_id, op_idx) = extract_current_op(&resume_ctx);
+        let asmop = node_id
+            .and_then(|nid| resume_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
+
+        // Execute one step
+        match poll_immediately(self.processor.step(&mut self.host, resume_ctx)) {
+            Ok(Some(new_ctx)) => {
+                self.resume_ctx = Some(new_ctx);
                 self.cycle += 1;
-                if self.current_context != state.ctx {
-                    self.contexts.insert(state.ctx);
-                    self.current_context = state.ctx;
+
+                // Query processor state
+                let state = self.processor.state();
+                let ctx = state.ctx();
+                self.current_stack = state.get_stack_state();
+
+                if self.current_context != ctx {
+                    self.contexts.insert(ctx);
+                    self.current_context = ctx;
                 }
 
-                if let Some(op) = state.op {
+                // Track operation
+                self.current_op = op;
+                self.current_asmop = asmop.clone();
+
+                if let Some(op) = op {
                     if self.recent.len() == 5 {
                         self.recent.pop_front();
                     }
                     self.recent.push_back(op);
                 }
 
-                let exited = self.callstack.next(&state);
-
-                self.last = Some(state);
+                // Update call stack
+                let step_info = StepInfo {
+                    op,
+                    asmop: self.current_asmop.as_ref(),
+                    clk: RowIndex::from(self.cycle as u32),
+                    ctx: self.current_context,
+                };
+                let exited = self.callstack.next(&step_info);
 
                 Ok(exited)
             }
-            Some(Err(err)) => {
+            Ok(None) => {
+                // Program completed
+                self.stopped = true;
+                let state = self.processor.state();
+                self.current_stack = state.get_stack_state();
+                Ok(None)
+            }
+            Err(err) => {
                 self.stopped = true;
                 Err(err)
-            }
-            None => {
-                self.stopped = true;
-                Ok(None)
             }
         }
     }
 
     /// Consume the [DebugExecutor], converting it into an [ExecutionTrace] at the current cycle.
     pub fn into_execution_trace(self) -> ExecutionTrace {
-        let last_cycle = self.cycle;
-        let trace_len_summary = *self.iter.trace_len_summary();
-        let (_, _, _, chiplets, _) = self.iter.into_parts();
-        let chiplets = Rc::new(chiplets);
-
-        let chiplets0 = chiplets.clone();
-        let get_state_at = move |context, clk| chiplets0.memory.get_state_at(context, clk);
-        let chiplets1 = chiplets.clone();
-        let get_word = move |context, addr| chiplets1.memory.get_word(context, addr);
-        let get_value = move |context, addr| chiplets.memory.get_value(context, addr);
-
-        let memory = MemoryChiplet {
-            get_value: Box::new(get_value),
-            get_word: Box::new(get_word),
-            get_state_at: Box::new(get_state_at),
-        };
-
         ExecutionTrace {
             root_context: self.root_context,
-            last_cycle: RowIndex::from(last_cycle),
-            memory,
+            last_cycle: RowIndex::from(self.cycle as u32),
+            processor: self.processor,
             outputs: self.stack_outputs,
-            trace_len_summary,
         }
-    }
-}
-impl core::iter::FusedIterator for DebugExecutor {}
-impl Iterator for DebugExecutor {
-    type Item = Result<VmState, ExecutionError>;
-
-    #[inline]
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.stopped {
-            return None;
-        }
-        match self.step() {
-            Ok(_) => self.last.clone().map(Ok),
-            Err(err) => Some(Err(err)),
-        }
-    }
-}
-
-// Dirty, gross, horrible hack until miden_processor::chiplets::Chiplets is exported
-pub struct MemoryChiplet {
-    get_value: Box<dyn Fn(ContextId, u32) -> Option<miden_core::Felt>>,
-    get_word: Box<dyn Fn(ContextId, u32) -> Result<Option<miden_core::Word>, MemoryError>>,
-    #[allow(clippy::type_complexity, unused)]
-    get_state_at: Box<dyn Fn(ContextId, RowIndex) -> Vec<(MemoryAddress, miden_core::Felt)>>,
-}
-
-impl MemoryChiplet {
-    #[inline]
-    pub fn get_value(&self, context: ContextId, addr: u32) -> Option<miden_core::Felt> {
-        (self.get_value)(context, addr)
-    }
-
-    #[inline]
-    pub fn get_word(&self, context: ContextId, addr: u32) -> Result<Option<Word>, MemoryError> {
-        (self.get_word)(context, addr)
-    }
-
-    #[allow(unused)]
-    #[inline]
-    pub fn get_mem_state_at(
-        &self,
-        context: ContextId,
-        clk: RowIndex,
-    ) -> Vec<(MemoryAddress, miden_core::Felt)> {
-        (self.get_state_at)(context, clk)
     }
 }

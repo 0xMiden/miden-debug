@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
-use miden_core::{FieldElement, utils::Deserializable};
+use miden_core::field::{PrimeCharacteristicRing, PrimeField64};
+use miden_core::serde::Deserializable;
 use miden_processor::{Felt, StackInputs};
 
 use crate::{
@@ -40,8 +41,8 @@ impl State {
         let source_manager = Arc::new(DefaultSourceManager::default());
         let mut inputs = config.inputs.clone().unwrap_or_default();
         if !config.args.is_empty() {
-            inputs.inputs =
-                StackInputs::new(config.args.iter().map(|n| n.0).collect()).into_diagnostic()?;
+            inputs.inputs = StackInputs::new(&config.args.iter().map(|n| n.0).collect::<Vec<_>>())
+                .into_diagnostic()?;
         }
         let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
         let package = load_package(&config)?;
@@ -107,9 +108,10 @@ impl State {
 
         let mut inputs = self.config.inputs.clone().unwrap_or_default();
         if !self.config.args.is_empty() {
-            inputs.inputs =
-                StackInputs::new(self.config.args.iter().copied().map(|n| n.0).collect())
-                    .into_diagnostic()?;
+            inputs.inputs = StackInputs::new(
+                &self.config.args.iter().copied().map(|n| n.0).collect::<Vec<_>>(),
+            )
+            .into_diagnostic()?;
         }
         let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
 
@@ -222,7 +224,7 @@ impl State {
 
         use crate::debug::FormatType;
 
-        let cycle = miden_processor::RowIndex::from(self.executor.cycle);
+        let cycle = miden_processor::trace::RowIndex::from(self.executor.cycle);
         let context = self.executor.current_context;
         let mut output = String::new();
         if expr.count > 1 {
@@ -237,7 +239,7 @@ impl State {
                 .execution_trace
                 .read_memory_element_in_context(expr.addr.addr, context, cycle)
                 .unwrap_or(Felt::ZERO);
-            write_with_format_type!(output, expr, felt.as_int());
+            write_with_format_type!(output, expr, felt.as_canonical_u64());
         } else if matches!(
             expr.ty,
             Type::Array(ref array_ty) if array_ty.element_type() == &Type::Felt && array_ty.len() == 4
@@ -251,7 +253,7 @@ impl State {
                 if i > 0 {
                     output.push_str(", ");
                 }
-                write_with_format_type!(output, expr, elem.as_int());
+                write_with_format_type!(output, expr, elem.as_canonical_u64());
             }
             output.push(']');
         } else {

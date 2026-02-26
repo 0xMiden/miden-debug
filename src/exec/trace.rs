@@ -1,9 +1,8 @@
-use miden_assembly_syntax::ast::types::Type;
-use miden_core::{FieldElement, Word};
-use miden_processor::{ContextId, Felt, RowIndex, StackOutputs, TraceLenSummary};
+use miden_core::Word;
+use miden_processor::{ContextId, FastProcessor, Felt, StackOutputs, trace::RowIndex};
 use smallvec::SmallVec;
 
-use super::{MemoryChiplet, TraceEvent};
+use super::TraceEvent;
 use crate::{debug::NativePtr, felt::FromMidenRepr};
 
 /// A callback to be executed when a [TraceEvent] occurs at a given clock cycle
@@ -26,9 +25,8 @@ pub enum MemoryReadError {
 pub struct ExecutionTrace {
     pub(super) root_context: ContextId,
     pub(super) last_cycle: RowIndex,
-    pub(super) memory: MemoryChiplet,
+    pub(super) processor: FastProcessor,
     pub(super) outputs: StackOutputs,
-    pub(super) trace_len_summary: TraceLenSummary,
 }
 
 impl ExecutionTrace {
@@ -38,7 +36,7 @@ impl ExecutionTrace {
         T: FromMidenRepr,
     {
         let size = <T as FromMidenRepr>::size_in_felts();
-        let stack = self.outputs.stack_truncated(size);
+        let stack = self.outputs.get_num_elements(size);
         if stack.len() < size {
             return None;
         }
@@ -59,12 +57,6 @@ impl ExecutionTrace {
         &self.outputs
     }
 
-    /// Return a reference to the trace length summary
-    #[inline]
-    pub fn trace_len_summary(&self) -> &TraceLenSummary {
-        &self.trace_len_summary
-    }
-
     /// Read the word at the given Miden memory address
     pub fn read_memory_word(&self, addr: u32) -> Option<Word> {
         self.read_memory_word_in_context(addr, self.root_context, self.last_cycle)
@@ -75,28 +67,26 @@ impl ExecutionTrace {
         &self,
         addr: u32,
         ctx: ContextId,
-        _clk: RowIndex,
+        clk: RowIndex,
     ) -> Option<Word> {
-        use miden_core::FieldElement;
-
         const ZERO: Word = Word::new([Felt::ZERO; 4]);
 
-        Some(
-            self.memory
-                .get_word(ctx, addr)
-                .unwrap_or_else(|err| panic!("{err}"))
-                .unwrap_or(ZERO),
-        )
+        match self.processor.memory().read_word(ctx, Felt::new(addr as u64), clk) {
+            Ok(word) => Some(word),
+            Err(_) => Some(ZERO),
+        }
     }
 
-    /// Read the word at the given Miden memory address and element offset
+    /// Read the element at the given Miden memory address
     #[track_caller]
     pub fn read_memory_element(&self, addr: u32) -> Option<Felt> {
-        self.memory.get_value(self.root_context, addr)
+        self.processor
+            .memory()
+            .read_element(self.root_context, Felt::new(addr as u64))
+            .ok()
     }
 
-    /// Read the word at the given Miden memory address and element offset, under `ctx`, at cycle
-    /// `clk`
+    /// Read the element at the given Miden memory address, under `ctx`, at cycle `clk`
     #[track_caller]
     pub fn read_memory_element_in_context(
         &self,
@@ -104,7 +94,7 @@ impl ExecutionTrace {
         ctx: ContextId,
         _clk: RowIndex,
     ) -> Option<Felt> {
-        self.memory.get_value(ctx, addr)
+        self.processor.memory().read_element(ctx, Felt::new(addr as u64)).ok()
     }
 
     /// Read a raw byte vector from `addr`, under `ctx`, at cycle `clk`, sufficient to hold a value
@@ -112,7 +102,7 @@ impl ExecutionTrace {
     pub fn read_bytes_for_type(
         &self,
         addr: NativePtr,
-        ty: &Type,
+        ty: &miden_assembly_syntax::ast::types::Type,
         ctx: ContextId,
         clk: RowIndex,
     ) -> Result<Vec<u8>, MemoryReadError> {
@@ -134,7 +124,7 @@ impl ExecutionTrace {
 
         let mut needed = size - buf.len();
         for elem in elems {
-            let bytes = ((elem.as_int() & U32_MASK) as u32).to_be_bytes();
+            let bytes = ((elem.as_canonical_u64() & U32_MASK) as u32).to_be_bytes();
             let take = core::cmp::min(needed, 4);
             buf.extend(&bytes[0..take]);
             needed -= take;

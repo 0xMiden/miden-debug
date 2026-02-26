@@ -9,7 +9,7 @@ pub use self::{
     config::ExecutionConfig,
     executor::Executor,
     host::DebuggerHost,
-    state::{DebugExecutor, MemoryChiplet},
+    state::DebugExecutor,
     trace::{ExecutionTrace, TraceHandler},
     trace_event::TraceEvent,
 };

@@ -6,6 +6,9 @@ mod felt;
 mod input;
 mod linker;
 mod logger;
+#[cfg(feature = "repl")]
+mod repl;
+#[cfg(feature = "tui")]
 mod ui;
 
 use std::env;
@@ -47,7 +50,29 @@ pub fn main() -> Result<(), Report> {
         config.working_dir = Some(cwd);
     }
 
-    ui::run(config, logger)
+    #[cfg(all(feature = "tui", feature = "repl"))]
+    {
+        if config.repl {
+            repl::run(config, logger)
+        } else {
+            ui::run(config, logger)
+        }
+    }
+
+    #[cfg(all(feature = "tui", not(feature = "repl")))]
+    {
+        if config.repl {
+            return Err(Report::msg(
+                "--repl flag requires the 'repl' feature. Rebuild with: cargo build --features repl",
+            ));
+        }
+        ui::run(config, logger)
+    }
+
+    #[cfg(all(feature = "repl", not(feature = "tui")))]
+    {
+        repl::run(config, logger)
+    }
 }
 
 fn setup_diagnostics() {

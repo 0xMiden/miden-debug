@@ -4,37 +4,32 @@ use miden_assembly::SourceManager;
 use miden_core::Word;
 use miden_debug_types::{Location, SourceFile, SourceSpan};
 use miden_processor::{
-    AdviceProvider, AssertError, BaseHost, EventHandlerRegistry, MastForest, MastForestStore,
-    MemMastForestStore, ProcessState, RowIndex, SyncHost, TraceError,
+    FutureMaybeSend, Host, MastForestStore, MemMastForestStore, ProcessorState, TraceError,
+    advice::AdviceMutation, event::EventError, mast::MastForest, trace::RowIndex,
 };
 
 use super::{TraceEvent, TraceHandler};
 
-/// This is an implementation of [BaseHost] which is essentially [miden_processor::DefaultHost],
+/// This is an implementation of [Host] which is essentially [miden_processor::DefaultHost],
 /// but extended with additional functionality for debugging, in particular it manages trace
 /// events that record the entry or exit of a procedure call frame.
-#[derive(Default)]
-pub struct DebuggerHost<S: SourceManager> {
-    _adv_provider: AdviceProvider,
+pub struct DebuggerHost<S: SourceManager + ?Sized> {
     store: MemMastForestStore,
     tracing_callbacks: BTreeMap<u32, Vec<Box<TraceHandler>>>,
-    _event_handlers: EventHandlerRegistry,
     on_assert_failed: Option<Box<TraceHandler>>,
     source_manager: Arc<S>,
 }
 impl<S> DebuggerHost<S>
 where
-    S: SourceManager,
+    S: SourceManager + ?Sized,
 {
-    /// Construct a new instance of [DebuggerHost] with the given advice provider.
-    pub fn new(_adv_provider: AdviceProvider, source_manager: S) -> Self {
+    /// Construct a new instance of [DebuggerHost] with the given source manager.
+    pub fn new(source_manager: Arc<S>) -> Self {
         Self {
-            _adv_provider,
             store: Default::default(),
             tracing_callbacks: Default::default(),
-            _event_handlers: EventHandlerRegistry::default(),
             on_assert_failed: None,
-            source_manager: Arc::new(source_manager),
+            source_manager,
         }
     }
 
@@ -58,15 +53,25 @@ where
         self.on_assert_failed = Some(Box::new(callback));
     }
 
+    /// Invoke the assert-failed handler, if registered.
+    ///
+    /// This is called externally when `step()` returns an assertion error, since
+    /// `on_assert_failed` no longer exists on the Host trait in 0.21.
+    pub fn handle_assert_failed(&mut self, clk: RowIndex, err_code: Option<NonZeroU32>) {
+        if let Some(handler) = self.on_assert_failed.as_mut() {
+            handler(clk, TraceEvent::AssertionFailed(err_code));
+        }
+    }
+
     /// Load `forest` into the MAST store for this host
     pub fn load_mast_forest(&mut self, forest: Arc<MastForest>) {
         self.store.insert(forest);
     }
 }
 
-impl<S> BaseHost for DebuggerHost<S>
+impl<S> Host for DebuggerHost<S>
 where
-    S: SourceManager,
+    S: SourceManager + ?Sized,
 {
     fn get_label_and_source_file(
         &self,
@@ -77,43 +82,25 @@ where
         (span, maybe_file)
     }
 
-    fn on_trace(&mut self, process: &mut ProcessState, trace_id: u32) -> Result<(), TraceError> {
+    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
+        std::future::ready(self.store.get(node_digest))
+    }
+
+    fn on_event(
+        &mut self,
+        _process: &ProcessorState<'_>,
+    ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    fn on_trace(&mut self, process: &ProcessorState<'_>, trace_id: u32) -> Result<(), TraceError> {
         let event = TraceEvent::from(trace_id);
-        let clk = process.clk();
+        let clk = process.clock();
         if let Some(handlers) = self.tracing_callbacks.get_mut(&trace_id) {
             for handler in handlers.iter_mut() {
                 handler(clk, event);
             }
         }
         Ok(())
-    }
-
-    fn on_assert_failed(
-        &mut self,
-        process: &ProcessState,
-        err_code: miden_core::Felt,
-    ) -> Option<AssertError> {
-        let clk = process.clk();
-        if let Some(handler) = self.on_assert_failed.as_mut() {
-            // TODO: We're truncating the error code here, but we may need to handle the full range
-            handler(clk, TraceEvent::AssertionFailed(NonZeroU32::new(err_code.as_int() as u32)));
-        }
-        None
-    }
-}
-
-impl<S> SyncHost for DebuggerHost<S>
-where
-    S: SourceManager,
-{
-    fn get_mast_forest(&self, node_digest: &Word) -> Option<Arc<MastForest>> {
-        self.store.get(node_digest)
-    }
-
-    fn on_event(
-        &mut self,
-        _process: &ProcessState,
-    ) -> Result<Vec<miden_processor::AdviceMutation>, miden_processor::EventError> {
-        Ok(Vec::new())
     }
 }

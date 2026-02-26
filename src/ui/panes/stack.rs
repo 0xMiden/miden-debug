@@ -1,4 +1,5 @@
 use miden_assembly_syntax::diagnostics::Report;
+use miden_core::field::PrimeField64;
 use ratatui::{
     prelude::*,
     widgets::{block::*, *},
@@ -57,14 +58,18 @@ impl Pane for OperandStackPane {
     }
 
     fn draw(&mut self, frame: &mut Frame<'_>, area: Rect, state: &State) -> Result<(), Report> {
-        let lines = match state.executor.last.as_ref() {
-            None => vec![],
-            Some(state) => state
-                .stack
+        let lines: Vec<Line<'_>> = if state.executor.current_stack.is_empty() {
+            vec![]
+        } else {
+            state
+                .executor
+                .current_stack
                 .iter()
                 .rev()
-                .map(|item| Line::from(Span::styled(format!(" {}", item.as_int()), Color::White)))
-                .collect(),
+                .map(|item| {
+                    Line::from(Span::styled(format!(" {}", item.as_canonical_u64()), Color::White))
+                })
+                .collect()
         };
 
         let depth = lines.len();

@@ -148,6 +148,10 @@ impl Page for Home {
                         "debug" => {
                             actions.push(Some(Action::ShowDebug));
                         }
+                        "vars" | "variables" | "locals" => {
+                            let result = state.format_variables();
+                            actions.push(Some(Action::StatusLine(result)));
+                        }
                         invalid => {
                             log::debug!("unknown command: '{invalid}'");
                             actions.push(Some(Action::TimedStatusLine("unknown command".into(), 1)))
@@ -188,28 +192,26 @@ impl Page for Home {
                         continue;
                     }
 
-                    let (_op, is_op_boundary, proc, loc) = match state.executor.last.as_ref() {
-                        Some(last_state) => {
-                            let op = last_state.op;
-                            let is_boundary = last_state
-                                .asmop
-                                .as_ref()
-                                .map(|info| info.cycle_idx() == 1)
-                                .unwrap_or(false);
-                            let (proc, loc) = match state.executor.callstack.current_frame() {
-                                Some(frame) => {
-                                    let loc = frame
-                                        .recent()
-                                        .back()
-                                        .and_then(|detail| detail.resolve(&state.source_manager))
-                                        .cloned();
-                                    (frame.procedure(""), loc)
-                                }
-                                None => (None, None),
-                            };
-                            (op, is_boundary, proc, loc)
-                        }
-                        None => (None, false, None, None),
+                    let (_op, is_op_boundary, proc, loc) = {
+                        let op = state.executor.current_op;
+                        let is_boundary = state
+                            .executor
+                            .current_asmop
+                            .as_ref()
+                            .map(|_info| true)
+                            .unwrap_or(false);
+                        let (proc, loc) = match state.executor.callstack.current_frame() {
+                            Some(frame) => {
+                                let loc = frame
+                                    .recent()
+                                    .back()
+                                    .and_then(|detail| detail.resolve(&state.source_manager))
+                                    .cloned();
+                                (frame.procedure(""), loc)
+                            }
+                            None => (None, None),
+                        };
+                        (op, is_boundary, proc, loc)
                     };
 
                     // Remove all breakpoints triggered at this cycle

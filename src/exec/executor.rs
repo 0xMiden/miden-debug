@@ -8,7 +8,6 @@ use std::{
 };
 
 use miden_assembly_syntax::{Library, diagnostics::Report};
-use miden_core::field::PrimeField64;
 use miden_core::program::{Program, StackInputs};
 use miden_debug_types::{SourceManager, SourceManagerExt};
 use miden_mast_package::{

@@ -1,5 +1,5 @@
 use miden_core::Word;
-use miden_core::field::{PrimeCharacteristicRing, PrimeField64};
+use miden_core::field::PrimeField64;
 use miden_processor::Felt as RawFelt;
 #[cfg(feature = "proptest")]
 use proptest::{
@@ -887,7 +887,6 @@ impl Arbitrary for Felt {
 #[cfg(test)]
 mod tests {
     use miden_core::Word;
-    use miden_core::field::PrimeField64;
 
     use super::{FromMidenRepr, ToMidenRepr, bytes_to_words};
 

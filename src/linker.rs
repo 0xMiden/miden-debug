@@ -98,6 +98,7 @@ impl LinkLibrary {
                     path,
                     ns,
                     source_manager.clone(),
+                    false,
                 )?;
 
                 miden_assembly::Assembler::new(source_manager)

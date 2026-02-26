@@ -8,22 +8,25 @@ use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile, linker::LinkLib
 
 /// Run a compiled Miden program with the Miden VM
 #[derive(Default, Debug)]
-#[cfg_attr(feature = "tui", derive(clap::Parser))]
-#[cfg_attr(feature = "tui", command(author, version, about = "The interactive Miden debugger", long_about = None))]
+#[cfg_attr(any(feature = "tui", feature = "repl"), derive(clap::Parser))]
+#[cfg_attr(any(feature = "tui", feature = "repl"), command(author, version, about = "The interactive Miden debugger", long_about = None))]
 pub struct DebuggerConfig {
     /// Specify the path to a Miden program file to execute.
     ///
     /// Miden Assembly programs are emitted by the compiler with a `.masp` extension.
     ///
     /// You may use `-` as a file name to read a file from stdin.
-    #[cfg_attr(feature = "tui", arg(required(true), value_name = "FILE"))]
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl"),
+        arg(required(true), value_name = "FILE")
+    )]
     pub input: InputFile,
     /// Specify the path to a file containing program inputs.
     ///
     /// Program inputs are stack and advice provider values which the program can
     /// access during execution. The inputs file is a TOML file which describes
     /// what the inputs are, or where to source them from.
-    #[cfg_attr(feature = "tui", arg(long, value_name = "FILE"))]
+    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(long, value_name = "FILE"))]
     pub inputs: Option<ExecutionConfig>,
     /// Arguments to place on the operand stack before calling the program entrypoint.
     ///
@@ -34,13 +37,16 @@ pub struct DebuggerConfig {
     /// These arguments must be valid field element values expressed in decimal format.
     ///
     /// NOTE: These arguments will override any stack values provided via --inputs
-    #[cfg_attr(feature = "tui", arg(last(true), value_name = "ARGV"))]
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl"),
+        arg(last(true), value_name = "ARGV")
+    )]
     pub args: Vec<Felt>,
     /// The working directory for the debugger
     ///
     /// By default this will be the working directory the debugger is executed from
     #[cfg_attr(
-        feature = "tui",
+        any(feature = "tui", feature = "repl"),
         arg(long, value_name = "DIR", help_heading = "Execution")
     )]
     pub working_dir: Option<PathBuf>,
@@ -48,7 +54,7 @@ pub struct DebuggerConfig {
     ///
     /// By default this is assumed to be `$(midenup show home)/toolchains/$(midenup show active-toolchain)
     #[cfg_attr(
-        feature = "tui",
+        any(feature = "tui", feature = "repl"),
         arg(
             long,
             value_name = "DIR",
@@ -58,7 +64,7 @@ pub struct DebuggerConfig {
     )]
     pub sysroot: Option<PathBuf>,
     /// Whether, and how, to color terminal output
-    #[cfg_attr(feature = "tui", arg(
+    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(
         long,
         value_enum,
         default_value_t = ColorChoice::Auto,
@@ -69,11 +75,14 @@ pub struct DebuggerConfig {
     pub color: ColorChoice,
     /// Specify the function to call as the entrypoint for the program
     /// in the format `<module_name>::<function>`
-    #[cfg_attr(feature = "tui", arg(long, help_heading = "Execution"))]
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl"),
+        arg(long, help_heading = "Execution")
+    )]
     pub entrypoint: Option<String>,
     /// Specify one or more search paths for link libraries requested via `-l`
     #[cfg_attr(
-        feature = "tui",
+        any(feature = "tui", feature = "repl"),
         arg(
             long = "search-path",
             short = 'L',
@@ -93,7 +102,7 @@ pub struct DebuggerConfig {
     ///
     /// See below for valid KINDs:
     #[cfg_attr(
-        feature = "tui",
+        any(feature = "tui", feature = "repl"),
         arg(
             long = "link-library",
             short = 'l',
@@ -104,6 +113,9 @@ pub struct DebuggerConfig {
         )
     )]
     pub link_libraries: Vec<LinkLibrary>,
+    /// Run in REPL mode instead of TUI
+    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(long, short = 'r'))]
+    pub repl: bool,
 }
 
 /// ColorChoice represents the color preferences of an end user.
@@ -115,7 +127,7 @@ pub struct DebuggerConfig {
 /// string of the variant name to the corresponding variant. Any other string
 /// results in an error.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "tui", derive(clap::ValueEnum))]
+#[cfg_attr(any(feature = "tui", feature = "repl"), derive(clap::ValueEnum))]
 pub enum ColorChoice {
     /// Try very hard to emit colors. This includes emitting ANSI colors
     /// on Windows if the console API is unavailable.
@@ -164,7 +176,7 @@ impl ColorChoice {
         }
     }
 
-    #[cfg(all(feature = "tui", not(windows)))]
+    #[cfg(all(any(feature = "tui", feature = "repl"), not(windows)))]
     pub fn env_allows_color(&self) -> bool {
         match std::env::var_os("TERM") {
             // If TERM isn't set, then we are in a weird environment that
@@ -184,7 +196,7 @@ impl ColorChoice {
         true
     }
 
-    #[cfg(all(feature = "tui", windows))]
+    #[cfg(all(any(feature = "tui", feature = "repl"), windows))]
     pub fn env_allows_color(&self) -> bool {
         // On Windows, if TERM isn't set, then we shouldn't automatically
         // assume that colors aren't allowed. This is unlike Unix environments
@@ -206,7 +218,7 @@ impl ColorChoice {
     ///
     /// It's possible that ANSI is still the correct choice even if this
     /// returns false.
-    #[cfg(all(feature = "tui", windows))]
+    #[cfg(all(any(feature = "tui", feature = "repl"), windows))]
     pub fn should_ansi(&self) -> bool {
         match *self {
             ColorChoice::Always => false,
@@ -228,7 +240,7 @@ impl ColorChoice {
     ///
     /// It's possible that ANSI is still the correct choice even if this
     /// returns false.
-    #[cfg(not(feature = "tui"))]
+    #[cfg(not(any(feature = "tui", feature = "repl")))]
     pub fn should_ansi(&self) -> bool {
         match *self {
             ColorChoice::Always => false,

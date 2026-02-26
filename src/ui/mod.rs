@@ -3,7 +3,7 @@ mod app;
 mod duration;
 mod pages;
 mod panes;
-mod state;
+pub mod state;
 mod syntax_highlighting;
 mod tui;
 

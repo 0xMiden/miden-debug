@@ -20,7 +20,10 @@ use miden_processor::{
 };
 
 use super::{DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent};
-use crate::{debug::CallStack, felt::FromMidenRepr};
+use crate::{
+    debug::{CallStack, DebugVarTracker},
+    felt::FromMidenRepr,
+};
 
 /// The [Executor] is responsible for executing a program with the Miden VM.
 ///
@@ -172,6 +175,7 @@ impl Executor {
             .expect("failed to get initial resume context");
 
         let callstack = CallStack::new(trace_events);
+        let debug_vars = DebugVarTracker::new();
         DebugExecutor {
             processor,
             host,
@@ -184,6 +188,7 @@ impl Executor {
             root_context,
             current_context: root_context,
             callstack,
+            debug_vars,
             recent: VecDeque::with_capacity(5),
             cycle: 0,
             stopped: false,

@@ -24,9 +24,10 @@ bench = false
 required-features = ["tui"]
 
 [features]
-default = ["tui"]
+default = ["tui", "repl"]
 tui = ["std", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect"]
-std = ["dep:glob", "clap/std", "clap/env", "miden-assembly-syntax/std"]
+repl = ["std", "dep:env_logger", "dep:rustyline"]
+std = ["dep:glob", "clap/std", "clap/env", "miden-assembly/std", "miden-assembly-syntax/std"]
 proptest = ["dep:proptest"]
 
 [dependencies]
@@ -65,6 +66,7 @@ syntect = { version = "5.2.0", optional = true, default-features = false, featur
 thiserror = { package = "miden-thiserror", version = "1.0" }
 toml = { version = "0.8", features = ["preserve_order"] }
 tui-input = { version = "0.11", optional = true }
+rustyline = { version = "15.0", optional = true }
 
 tokio = { version = "1.39.2", features = ["rt", "time", "macros", "rt-multi-thread"] }
 tokio-util = "0.7.11"

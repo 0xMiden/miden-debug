@@ -10,7 +10,7 @@ use miden_processor::{
 };
 
 use super::{DebuggerHost, ExecutionTrace};
-use crate::debug::{CallFrame, CallStack, StepInfo};
+use crate::debug::{CallFrame, CallStack, DebugVarTracker, StepInfo};
 
 /// Resolve a future that is expected to complete immediately (synchronous host methods).
 ///
@@ -60,6 +60,8 @@ pub struct DebugExecutor {
     pub current_context: ContextId,
     /// The current call stack
     pub callstack: CallStack,
+    /// Debug variable tracker for source-level variable inspection
+    pub debug_vars: DebugVarTracker,
     /// A sliding window of the last 5 operations successfully executed by the VM
     pub recent: VecDeque<Operation>,
     /// The current clock cycle
@@ -130,8 +132,17 @@ impl DebugExecutor {
 
         // Before step: peek continuation to determine what will execute
         let (op, node_id, op_idx) = extract_current_op(&resume_ctx);
-        let asmop = node_id
-            .and_then(|nid| resume_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
+        let forest = resume_ctx.current_forest();
+        let asmop = node_id.and_then(|nid| forest.get_assembly_op(nid, op_idx).cloned());
+
+        // Query debug variables from the MAST forest for this operation
+        if let (Some(nid), Some(idx)) = (node_id, op_idx) {
+            for &debug_var_id in forest.debug_vars_for_operation(nid, idx) {
+                if let Some(var_info) = forest.debug_var(debug_var_id) {
+                    self.debug_vars.record(self.cycle, var_info);
+                }
+            }
+        }
 
         // Execute one step
         match poll_immediately(self.processor.step(&mut self.host, resume_ctx)) {

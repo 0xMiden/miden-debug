@@ -2,13 +2,14 @@ use std::sync::Arc;
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
-use miden_core::field::{PrimeCharacteristicRing, PrimeField64};
+use miden_core::FMP_ADDR;
+use miden_core::field::PrimeField64;
 use miden_core::serde::Deserializable;
 use miden_processor::{Felt, StackInputs};
 
 use crate::{
     config::DebuggerConfig,
-    debug::{Breakpoint, BreakpointType, ReadMemoryExpr},
+    debug::{Breakpoint, BreakpointType, ReadMemoryExpr, resolve_variable_value},
     exec::{DebugExecutor, ExecutionTrace, Executor},
     input::InputFile,
 };
@@ -308,6 +309,71 @@ impl State {
         }
 
         Ok(output)
+    }
+
+    /// Format the current debug variables as a string for display.
+    ///
+    /// Returns a string describing all tracked variables and their current values,
+    /// or a message indicating no variables are being tracked.
+    pub fn format_variables(&self) -> String {
+        use core::fmt::Write;
+
+        let debug_vars = &self.executor.debug_vars;
+
+        if !debug_vars.has_variables() {
+            return "No debug variables tracked".to_string();
+        }
+
+        let mut output = String::new();
+        let stack: &[Felt] = &self.executor.current_stack;
+
+        let context = self.executor.current_context;
+        let cycle = miden_processor::trace::RowIndex::from(self.executor.cycle);
+
+        // Read FMP (Frame Memory Pointer) from memory
+        let fmp_addr = FMP_ADDR.as_canonical_u64() as u32;
+        let fmp: i32 = self
+            .execution_trace
+            .read_memory_element_in_context(fmp_addr, context, cycle)
+            .map(|f| f.as_canonical_u64() as i32)
+            .unwrap_or(0);
+
+        for var_snapshot in debug_vars.current_variables() {
+            if !output.is_empty() {
+                output.push_str(", ");
+            }
+
+            let name = var_snapshot.info.name();
+            let location = var_snapshot.info.value_location();
+
+            // Try to resolve the variable value
+            let value = resolve_variable_value(
+                location,
+                stack,
+                |addr| self.execution_trace.read_memory_element_in_context(addr, context, cycle),
+                |fmp_offset| {
+                    // Compute local address: FMP + offset (offset is typically negative)
+                    if fmp > 0 {
+                        let local_addr = (fmp + fmp_offset as i32) as u32;
+                        self.execution_trace
+                            .read_memory_element_in_context(local_addr, context, cycle)
+                    } else {
+                        None
+                    }
+                },
+            );
+
+            match value {
+                Some(felt) => {
+                    write!(&mut output, "{name}={}", felt.as_canonical_u64()).unwrap();
+                }
+                None => {
+                    write!(&mut output, "{name}={location}").unwrap();
+                }
+            }
+        }
+
+        output
     }
 }
 

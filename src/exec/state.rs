@@ -176,6 +176,11 @@ impl DebugExecutor {
                 self.stopped = true;
                 let state = self.processor.state();
                 self.current_stack = state.get_stack_state();
+
+                // Capture the final stack as StackOutputs (truncate to 16 elements)
+                let len = self.current_stack.len().min(16);
+                self.stack_outputs = StackOutputs::new(&self.current_stack[..len])
+                    .expect("invalid stack outputs");
                 Ok(None)
             }
             Err(err) => {

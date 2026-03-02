@@ -397,7 +397,7 @@ impl ToMidenRepr for u64 {
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
         let lo = (*self as u32) as u64;
-        let hi = (*self >> 32) as u64;
+        let hi = *self >> 32;
         smallvec![RawFelt::new(lo), RawFelt::new(hi)]
     }
 }

@@ -389,14 +389,13 @@ impl FromMidenRepr for i32 {
 
 impl ToMidenRepr for u64 {
     fn to_bytes(&self) -> SmallVec<[u8; 16]> {
-        SmallVec::from_slice(&self.to_be_bytes())
+        SmallVec::from_slice(&self.to_le_bytes())
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
-        let bytes = self.to_be_bytes();
-        let hi = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-        let lo = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-        smallvec![RawFelt::new(hi as u64), RawFelt::new(lo as u64)]
+        let lo = (*self as u32) as u64;
+        let hi = (*self >> 32) as u64;
+        smallvec![RawFelt::new(lo), RawFelt::new(hi)]
     }
 }
 
@@ -408,22 +407,22 @@ impl FromMidenRepr for u64 {
 
     fn from_bytes(bytes: &[u8]) -> Self {
         assert!(bytes.len() >= 8);
-        u64::from_be_bytes([
+        u64::from_le_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ])
     }
 
     fn from_felts(felts: &[RawFelt]) -> Self {
         assert!(felts.len() >= 2);
-        let hi = (felts[0].as_canonical_u64() as u32).to_be_bytes();
-        let lo = (felts[1].as_canonical_u64() as u32).to_be_bytes();
-        u64::from_be_bytes([hi[0], hi[1], hi[2], hi[3], lo[0], lo[1], lo[2], lo[3]])
+        let lo = felts[0].as_canonical_u64() as u32 as u64;
+        let hi = felts[1].as_canonical_u64() as u32 as u64;
+        lo | (hi << 32)
     }
 }
 
 impl ToMidenRepr for i64 {
     fn to_bytes(&self) -> SmallVec<[u8; 16]> {
-        SmallVec::from_slice(&self.to_be_bytes())
+        SmallVec::from_slice(&self.to_le_bytes())
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
@@ -448,23 +447,15 @@ impl FromMidenRepr for i64 {
 
 impl ToMidenRepr for u128 {
     fn to_bytes(&self) -> SmallVec<[u8; 16]> {
-        SmallVec::from_slice(&self.to_be_bytes())
+        SmallVec::from_slice(&self.to_le_bytes())
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
-        let bytes = self.to_be_bytes();
-        let hi_h =
-            RawFelt::new(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64);
-        let hi_l =
-            RawFelt::new(u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as u64);
-        let lo_h =
-            RawFelt::new(u32::from_be_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as u64);
-        let lo_l =
-            RawFelt::new(u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]) as u64);
-
-        // The 64-bit limbs are little endian, (lo, hi), but the 32-bit limbs of those 64-bit
-        // values are big endian, (lo_h, lo_l) and (hi_h, hi_l).
-        smallvec![lo_h, lo_l, hi_h, hi_l]
+        let lo_lo = RawFelt::new((*self as u32) as u64);
+        let lo_hi = RawFelt::new(((*self >> 32) as u32) as u64);
+        let hi_lo = RawFelt::new(((*self >> 64) as u32) as u64);
+        let hi_hi = RawFelt::new(((*self >> 96) as u32) as u64);
+        smallvec![lo_lo, lo_hi, hi_lo, hi_hi]
     }
 }
 
@@ -476,7 +467,7 @@ impl FromMidenRepr for u128 {
 
     fn from_bytes(bytes: &[u8]) -> Self {
         assert!(bytes.len() >= 16);
-        u128::from_be_bytes([
+        u128::from_le_bytes([
             bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
             bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
         ])
@@ -484,20 +475,17 @@ impl FromMidenRepr for u128 {
 
     fn from_felts(felts: &[RawFelt]) -> Self {
         assert!(felts.len() >= 4);
-        let hi_h = (felts[0].as_canonical_u64() as u32).to_be_bytes();
-        let hi_l = (felts[1].as_canonical_u64() as u32).to_be_bytes();
-        let lo_h = (felts[2].as_canonical_u64() as u32).to_be_bytes();
-        let lo_l = (felts[3].as_canonical_u64() as u32).to_be_bytes();
-        u128::from_be_bytes([
-            hi_h[0], hi_h[1], hi_h[2], hi_h[3], hi_l[0], hi_l[1], hi_l[2], hi_l[3], lo_h[0],
-            lo_h[1], lo_h[2], lo_h[3], lo_l[0], lo_l[1], lo_l[2], lo_l[3],
-        ])
+        let lo_lo = felts[0].as_canonical_u64() as u32 as u128;
+        let lo_hi = felts[1].as_canonical_u64() as u32 as u128;
+        let hi_lo = felts[2].as_canonical_u64() as u32 as u128;
+        let hi_hi = felts[3].as_canonical_u64() as u32 as u128;
+        lo_lo | (lo_hi << 32) | (hi_lo << 64) | (hi_hi << 96)
     }
 }
 
 impl ToMidenRepr for i128 {
     fn to_bytes(&self) -> SmallVec<[u8; 16]> {
-        SmallVec::from_slice(&self.to_be_bytes())
+        SmallVec::from_slice(&self.to_le_bytes())
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {

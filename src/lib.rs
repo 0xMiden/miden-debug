@@ -8,6 +8,6 @@ mod linker;
 pub use self::{
     debug::*,
     exec::*,
-    felt::{Felt, FromMidenRepr, ToMidenRepr, bytes_to_words},
+    felt::{Felt, FromMidenRepr, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack},
     linker::{LibraryKind, LinkLibrary},
 };

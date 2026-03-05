@@ -1084,8 +1084,8 @@ mod tests {
         push_wasm_ty_to_operand_stack(i16::MIN, &mut stack);
         push_wasm_ty_to_operand_stack(u32::MAX, &mut stack);
 
-        assert_eq!(stack[0].as_int(), ((i8::MIN as i32) as u32) as u64);
-        assert_eq!(stack[1].as_int(), ((i16::MIN as i32) as u32) as u64);
-        assert_eq!(stack[2].as_int(), u32::MAX as u64);
+        assert_eq!(stack[0].as_canonical_u64(), ((i8::MIN as i32) as u32) as u64);
+        assert_eq!(stack[1].as_canonical_u64(), ((i16::MIN as i32) as u32) as u64);
+        assert_eq!(stack[2].as_canonical_u64(), u32::MAX as u64);
     }
 }

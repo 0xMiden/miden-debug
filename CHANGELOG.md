@@ -10,6 +10,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Add function `push_wasm_ty_to_operand_stack`
 
+## [0.4.6](https://github.com/0xMiden/miden-debug/compare/v0.4.5...v0.4.6) - 2026-01-31
+
+### Other
+
+- Merge pull request #26 from 0xMiden/next
+
+## [0.4.5](https://github.com/0xMiden/miden-debug/compare/v0.4.4...v0.4.5) - 2026-01-30
+
+### Other
+
+- load all libs from sysroot
+- load base as well
+- load libraries BEFORE resolving package dependencies
+
+## [0.4.4](https://github.com/0xMiden/miden-debug/compare/v0.4.3...v0.4.4) - 2025-12-31
+
+### Other
+
+- ensure release builds use correct profile
+
+## [0.4.3](https://github.com/0xMiden/miden-debug/compare/v0.4.2...v0.4.3) - 2025-12-31
+
+### Other
+
+- update deps
+- Merge branch 'next' into main
+- *(release)* use separate runner for macos artifact builds
+- *(release)* generate build attestations
+- release v0.4.2
+
+
 ## [0.4.2](https://github.com/0xMiden/miden-debug/compare/v0.4.1...v0.4.2) - 2025-12-31
 
 ### Other

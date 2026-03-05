@@ -61,6 +61,9 @@ pub trait ToMidenRepr {
     }
 
     /// Push this value on the given operand stack using [Self::to_felts] representation
+    ///
+    /// If pushing arguments for functions compiled from Wasm, consider using
+    /// [`push_wasm_ty_to_operand_stack`] instead.
     fn push_to_operand_stack(&self, stack: &mut Vec<RawFelt>) {
         let felts = self.to_felts();
         for felt in felts.into_iter().rev() {
@@ -886,11 +889,35 @@ impl Arbitrary for Felt {
     }
 }
 
+/// Converts `value` to its corresponding Wasm ABI type and pushes it to the stack.
+///
+/// It differs from [`ToMidenRepr::push_to_operand_stack`] because it sign-extends `i8` and `i16`
+/// values to `i32` before pushing them to the stack.
+pub fn push_wasm_ty_to_operand_stack<T>(value: T, stack: &mut Vec<RawFelt>)
+where
+    T: ToMidenRepr + num_traits::PrimInt,
+{
+    let ty_size = std::mem::size_of::<T>();
+    if ty_size > 2 {
+        value.push_to_operand_stack(stack);
+        return;
+    }
+
+    let is_signed = T::min_value() < T::zero();
+    // The unwraps below are safe because `value` is at most 16 bits wide.
+    let value_u32 = if is_signed {
+        value.to_i32().unwrap() as u32
+    } else {
+        value.to_u32().unwrap()
+    };
+    value_u32.push_to_operand_stack(stack);
+}
+
 #[cfg(test)]
 mod tests {
     use miden_core::Word;
 
-    use super::{FromMidenRepr, ToMidenRepr, bytes_to_words};
+    use super::{FromMidenRepr, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack};
 
     #[test]
     fn bool_roundtrip() {
@@ -1062,5 +1089,17 @@ mod tests {
         let out = <[u8; 32] as FromMidenRepr>::from_words(&words);
 
         assert_eq!(&out, &bytes);
+    }
+
+    #[test]
+    fn push_wasm_ty_to_operand_stack_test() {
+        let mut stack = Vec::default();
+        push_wasm_ty_to_operand_stack(i8::MIN, &mut stack);
+        push_wasm_ty_to_operand_stack(i16::MIN, &mut stack);
+        push_wasm_ty_to_operand_stack(u32::MAX, &mut stack);
+
+        assert_eq!(stack[0].as_int(), ((i8::MIN as i32) as u32) as u64);
+        assert_eq!(stack[1].as_int(), ((i16::MIN as i32) as u32) as u64);
+        assert_eq!(stack[2].as_int(), u32::MAX as u64);
     }
 }

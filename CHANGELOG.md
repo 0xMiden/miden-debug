@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add function `push_wasm_ty_to_operand_stack`
+
 ## [0.4.6](https://github.com/0xMiden/miden-debug/compare/v0.4.5...v0.4.6) - 2026-01-31
 
 ### Other
@@ -35,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - *(release)* use separate runner for macos artifact builds
 - *(release)* generate build attestations
 - release v0.4.2
+
 
 ## [0.4.2](https://github.com/0xMiden/miden-debug/compare/v0.4.1...v0.4.2) - 2025-12-31
 

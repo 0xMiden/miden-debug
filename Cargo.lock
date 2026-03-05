@@ -1347,6 +1347,7 @@ dependencies = [
  "miden-mast-package",
  "miden-processor",
  "miden-thiserror",
+ "num-traits",
  "proptest",
  "ratatui",
  "rustc-demangle",

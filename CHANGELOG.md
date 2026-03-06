@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/0xMiden/miden-debug/compare/v0.4.7...v0.5.0) - 2026-03-06
+
+### Added
+
+- migrate to miden-vm v0.21 FastProcessor API
+
+### Fixed
+
+- fix rust fmt
+- fix felts endianess
+- populate StackOutputs on program completion
+- use module path for Continuation import
+
+### Other
+
+- Merge pull request #36 from 0xMiden/next
+- fix felt accessor in wasm stack test
+- use crates.io miden-vm 0.21.1 deps
+- use miden-vm v0.21.1 git deps for CI
+- Use self.processor.memory
+- use re-exported Continuation and Memory
+
 ## [0.4.7](https://github.com/0xMiden/miden-debug/compare/v0.4.6...v0.4.7) - 2026-03-05
 
 ### Added

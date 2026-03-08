@@ -142,7 +142,7 @@ impl Pane for BreakpointsPane {
         let user_breakpoints_hit =
             self.breakpoints_hit.iter().filter(|bp| !bp.is_internal()).count();
 
-        let fg = Color::White;
+        let fg = Color::Gray;
         let bg = Color::Black;
         let yellow = Color::Yellow;
         let gray = Color::Gray;

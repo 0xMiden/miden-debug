@@ -161,7 +161,21 @@ impl Page for Home {
                 }
             }
             Action::Continue => {
+                // DAP client mode: send step commands over the network
+                #[cfg(feature = "dap")]
+                if state.debug_mode == crate::ui::state::DebugMode::RemoteDap {
+                    self.step_remote(state, &mut actions)?;
+                    // Send any pending actions
+                    if let Some(tx) = &mut self.command_tx {
+                        actions.into_iter().flatten().for_each(|action| {
+                            tx.send(action).ok();
+                        });
+                    }
+                    return Ok(None);
+                }
+
                 let start_cycle = state.executor.cycle;
+                let start_asmop = state.executor.current_asmop.clone();
                 let mut breakpoints = core::mem::take(&mut state.breakpoints);
                 state.stopped = false;
                 let stopped = loop {
@@ -231,6 +245,7 @@ impl Page for Home {
                         if cycles_stepped > 0
                             && is_op_boundary
                             && matches!(&bp.ty, BreakpointType::Next)
+                            && state.executor.current_asmop != start_asmop
                         {
                             state.breakpoints_hit.push(core::mem::take(bp));
                             return false;
@@ -437,6 +452,67 @@ impl Page for Home {
             self.panes[3].draw(frame, right_panes[0], state)?;
             self.panes[4].draw(frame, right_panes[1], state)?;
         }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "dap")]
+impl Home {
+    /// Handle stepping in DAP remote mode.
+    ///
+    /// Determines which DAP command to send based on the current breakpoints,
+    /// sends it, waits for the response, and updates the TUI state.
+    fn step_remote(
+        &mut self,
+        state: &mut State,
+        actions: &mut Vec<Option<Action>>,
+    ) -> Result<(), Report> {
+        use crate::exec::DapStopReason;
+
+        let client = state.dap_client.as_mut().ok_or_else(|| Report::msg("no DAP client"))?;
+
+        // Determine what DAP command to send based on breakpoints
+        let has_step = state.breakpoints.iter().any(|bp| matches!(bp.ty, BreakpointType::Step));
+        let has_next = state.breakpoints.iter().any(|bp| matches!(bp.ty, BreakpointType::Next));
+        let has_finish = state.breakpoints.iter().any(|bp| matches!(bp.ty, BreakpointType::Finish));
+
+        let result = if has_step {
+            client.step_in()
+        } else if has_next {
+            client.step_over()
+        } else if has_finish {
+            client.step_out()
+        } else {
+            client.continue_()
+        };
+
+        // Consume one-shot breakpoints
+        state.breakpoints.retain(|bp| !bp.is_one_shot());
+
+        match result {
+            Ok(DapStopReason::Stopped) => {
+                state
+                    .refresh_from_dap()
+                    .map_err(|e| Report::msg(format!("failed to refresh state from DAP: {e}")))?;
+                state.stopped = true;
+            }
+            Ok(DapStopReason::Terminated) => {
+                state.executor.stopped = true;
+                state.stopped = true;
+                actions.push(Some(Action::StatusLine("program terminated successfully".into())));
+            }
+            Err(e) => {
+                state.executor.stopped = true;
+                state.stopped = true;
+                actions.push(Some(Action::StatusLine(format!("DAP error: {e}"))));
+            }
+        }
+
+        // Update panes with latest state
+        for pane in self.panes.iter_mut() {
+            actions.push(pane.update(Action::Update, state)?);
+        }
+
         Ok(())
     }
 }

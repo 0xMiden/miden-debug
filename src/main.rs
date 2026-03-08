@@ -47,6 +47,12 @@ pub fn main() -> Result<(), Report> {
         config.working_dir = Some(cwd);
     }
 
+    #[cfg(feature = "dap")]
+    if let Some(addr) = config.dap_connect.as_ref() {
+        let state = ui::State::new_for_dap(addr)?;
+        return ui::run_with_state(state, logger);
+    }
+
     ui::run(config, logger)
 }
 

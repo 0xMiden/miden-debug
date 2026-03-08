@@ -1,3 +1,4 @@
+#[cfg(feature = "tui")]
 use std::{ffi::OsStr, path::Path};
 
 use miden_processor::{ExecutionOptions, StackInputs, advice::AdviceInputs};

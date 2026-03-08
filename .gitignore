@@ -13,6 +13,7 @@ site/
 venv/
 env/
 *.out
+examples/*.masp
 node_modules/
 *DS_Store
 ._*

@@ -43,6 +43,17 @@ impl CallStack {
         }
     }
 
+    /// Build a [CallStack] from pre-built frames — used in DAP client mode.
+    #[cfg(feature = "dap")]
+    pub fn from_remote_frames(frames: Vec<CallFrame>) -> Self {
+        Self {
+            trace_events: Rc::new(RefCell::new(BTreeMap::new())),
+            contexts: BTreeSet::default(),
+            frames,
+            block_stack: vec![],
+        }
+    }
+
     pub fn stacktrace<'a>(
         &'a self,
         recent: &'a VecDeque<Operation>,
@@ -198,6 +209,32 @@ impl CallFrame {
         Self {
             procedure,
             context: Default::default(),
+            display_name: Default::default(),
+            finishing: false,
+        }
+    }
+
+    /// Build a frame from remote (DAP) data — used in DAP client mode.
+    ///
+    /// The frame stores the procedure name and an optional [ResolvedLocation]
+    /// as a pre-resolved `OpDetail::Full` entry so that `last_resolved()` and
+    /// `recent()` work correctly for pane rendering.
+    #[cfg(feature = "dap")]
+    pub fn from_remote(name: Option<String>, resolved: Option<ResolvedLocation>) -> Self {
+        let procedure = name.map(|n| Rc::from(n.into_boxed_str()));
+        let mut context = VecDeque::new();
+        if let Some(loc) = resolved {
+            let cell = OnceCell::new();
+            cell.set(Some(loc)).ok();
+            context.push_back(OpDetail::Full {
+                op: miden_processor::operation::Operation::Noop,
+                location: None,
+                resolved: cell,
+            });
+        }
+        Self {
+            procedure,
+            context,
             display_name: Default::default(),
             finishing: false,
         }

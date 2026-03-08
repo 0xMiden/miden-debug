@@ -70,7 +70,7 @@ pub struct DebugExecutor {
 
 /// Extract the current operation and assembly info from the continuation stack
 /// before a step is executed. This lets us know what operation will run next.
-fn extract_current_op(
+pub(crate) fn extract_current_op(
     ctx: &ResumeContext,
 ) -> (Option<Operation>, Option<MastNodeId>, Option<usize>) {
     let forest = ctx.current_forest();

@@ -69,7 +69,7 @@ impl Pane for StackTracePane {
                 Span::styled(" |-> ", Color::Gray)
             };
             */
-            let gutter = Span::styled(" ", Color::White);
+            let gutter = Span::styled(" ", Color::Gray);
             parts.push(gutter);
             let name = frame.procedure("");
             let name = name.as_deref().unwrap_or("<unknown>").to_string();
@@ -78,7 +78,7 @@ impl Pane for StackTracePane {
             } else {
                 Span::styled(
                     name,
-                    Style::default().fg(Color::White).bg(Color::Black).add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::Cyan).bg(Color::Black).add_modifier(Modifier::BOLD),
                 )
             };
             parts.push(name);
@@ -131,7 +131,7 @@ impl Pane for StackTracePane {
             .block(Block::default().borders(Borders::ALL))
             .highlight_symbol(symbols::scrollbar::HORIZONTAL.end)
             .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+            .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
         let mut list_state = ListState::default().with_selected(Some(selected_line));
 
         frame.render_stateful_widget(list, area, &mut list_state);

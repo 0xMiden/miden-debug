@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
-use miden_core::field::{PrimeCharacteristicRing, PrimeField64};
-use miden_core::serde::Deserializable;
+use miden_core::{
+    field::{PrimeCharacteristicRing, PrimeField64},
+    serde::Deserializable,
+};
 use miden_processor::{Felt, StackInputs};
 
 use crate::{

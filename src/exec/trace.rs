@@ -154,43 +154,13 @@ impl ExecutionTrace {
     where
         T: core::any::Any + FromMidenRepr,
     {
-        use core::any::TypeId;
-
         let ptr = NativePtr::from_ptr(addr);
-        if TypeId::of::<T>() == TypeId::of::<Felt>() {
-            assert_eq!(ptr.offset, 0, "cannot read values of type Felt from unaligned addresses");
-        }
         assert_eq!(ptr.offset, 0, "support for unaligned reads is not yet implemented");
-        match <T as FromMidenRepr>::size_in_felts() {
-            1 => {
-                let felt = self.read_memory_element_in_context(ptr.addr, ctx, clk)?;
-                Some(T::from_felts(&[felt]))
-            }
-            2 => {
-                let lo = self.read_memory_element_in_context(ptr.addr, ctx, clk)?;
-                let hi = self.read_memory_element_in_context(ptr.addr + 1, ctx, clk)?;
-                Some(T::from_felts(&[lo, hi]))
-            }
-            3 => {
-                let lo_l = self.read_memory_element_in_context(ptr.addr, ctx, clk)?;
-                let lo_h = self.read_memory_element_in_context(ptr.addr + 1, ctx, clk)?;
-                let hi_l = self.read_memory_element_in_context(ptr.addr + 2, ctx, clk)?;
-                Some(T::from_felts(&[lo_l, lo_h, hi_l]))
-            }
-            n => {
-                assert_ne!(n, 0);
-                let num_words = n.next_multiple_of(4) / 4;
-                let mut words = SmallVec::<[_; 2]>::with_capacity(num_words);
-                for word_index in 0..(num_words as u32) {
-                    let addr = ptr.addr + (word_index * 4);
-                    let mut word = self.read_memory_word(addr)?;
-                    word.reverse();
-                    dbg!(word_index, word);
-                    words.push(word);
-                }
-                words.resize(num_words, Word::new([Felt::ZERO; 4]));
-                Some(T::from_words(&words))
-            }
+        let size = <T as FromMidenRepr>::size_in_felts();
+        let mut felts = SmallVec::<[_; 4]>::with_capacity(size);
+        for index in 0..(size as u32) {
+            felts.push(self.read_memory_element_in_context(ptr.addr + index, ctx, clk)?);
         }
+        Some(T::from_felts(&felts))
     }
 }

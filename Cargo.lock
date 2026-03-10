@@ -1350,7 +1350,6 @@ dependencies = [
  "miden-assembly",
  "miden-assembly-syntax",
  "miden-core",
- "miden-crypto",
  "miden-debug-types",
  "miden-mast-package",
  "miden-processor",

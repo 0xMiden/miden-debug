@@ -8,7 +8,8 @@ use miden_core::{
 use miden_debug_types::{Location, SourceFile, SourceSpan};
 use miden_processor::{
     ExecutionError, FutureMaybeSend, Host, MastForestStore, MemMastForestStore, ProcessorState,
-    TraceError, advice::AdviceMutation,
+    TraceError,
+    advice::AdviceMutation,
     event::{EventError, EventHandler, EventHandlerRegistry},
     mast::MastForest,
     trace::RowIndex,
@@ -116,7 +117,7 @@ where
                 struct UnhandledEvent;
 
                 Err(UnhandledEvent.into())
-            },
+            }
             Err(err) => Err(err),
         };
         std::future::ready(result)

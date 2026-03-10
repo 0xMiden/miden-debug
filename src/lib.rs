@@ -4,6 +4,8 @@ mod exec;
 mod felt;
 mod input;
 mod linker;
+#[cfg(test)]
+mod test_utils;
 
 pub use self::{
     debug::*,

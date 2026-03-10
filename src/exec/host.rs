@@ -1,11 +1,17 @@
 use std::{collections::BTreeMap, num::NonZeroU32, sync::Arc};
 
 use miden_assembly::SourceManager;
-use miden_core::Word;
+use miden_core::{
+    Word,
+    events::{EventId, EventName},
+};
 use miden_debug_types::{Location, SourceFile, SourceSpan};
 use miden_processor::{
-    FutureMaybeSend, Host, MastForestStore, MemMastForestStore, ProcessorState, TraceError,
-    advice::AdviceMutation, event::EventError, mast::MastForest, trace::RowIndex,
+    ExecutionError, FutureMaybeSend, Host, MastForestStore, MemMastForestStore, ProcessorState,
+    TraceError, advice::AdviceMutation,
+    event::{EventError, EventHandler, EventHandlerRegistry},
+    mast::MastForest,
+    trace::RowIndex,
 };
 
 use super::{TraceEvent, TraceHandler};
@@ -15,6 +21,7 @@ use super::{TraceEvent, TraceHandler};
 /// events that record the entry or exit of a procedure call frame.
 pub struct DebuggerHost<S: SourceManager + ?Sized> {
     store: MemMastForestStore,
+    event_handlers: EventHandlerRegistry,
     tracing_callbacks: BTreeMap<u32, Vec<Box<TraceHandler>>>,
     on_assert_failed: Option<Box<TraceHandler>>,
     source_manager: Arc<S>,
@@ -27,6 +34,7 @@ where
     pub fn new(source_manager: Arc<S>) -> Self {
         Self {
             store: Default::default(),
+            event_handlers: EventHandlerRegistry::default(),
             tracing_callbacks: Default::default(),
             on_assert_failed: None,
             source_manager,
@@ -67,6 +75,15 @@ where
     pub fn load_mast_forest(&mut self, forest: Arc<MastForest>) {
         self.store.insert(forest);
     }
+
+    /// Registers an event handler for use during program execution.
+    pub fn register_event_handler(
+        &mut self,
+        event: EventName,
+        handler: Arc<dyn EventHandler>,
+    ) -> Result<(), ExecutionError> {
+        self.event_handlers.register(event, handler)
+    }
 }
 
 impl<S> Host for DebuggerHost<S>
@@ -88,9 +105,21 @@ where
 
     fn on_event(
         &mut self,
-        _process: &ProcessorState<'_>,
+        process: &ProcessorState<'_>,
     ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
-        std::future::ready(Ok(Vec::new()))
+        let event_id = EventId::from_felt(process.get_stack_item(0));
+        let result = match self.event_handlers.handle_event(event_id, process) {
+            Ok(Some(mutations)) => Ok(mutations),
+            Ok(None) => {
+                #[derive(Debug, thiserror::Error)]
+                #[error("no event handler registered")]
+                struct UnhandledEvent;
+
+                Err(UnhandledEvent.into())
+            },
+            Err(err) => Err(err),
+        };
+        std::future::ready(result)
     }
 
     fn on_trace(&mut self, process: &ProcessorState<'_>, trace_id: u32) -> Result<(), TraceError> {
@@ -102,5 +131,9 @@ where
             }
         }
         Ok(())
+    }
+
+    fn resolve_event(&self, event_id: EventId) -> Option<&EventName> {
+        self.event_handlers.resolve_event(event_id)
     }
 }

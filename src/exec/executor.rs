@@ -15,7 +15,9 @@ use miden_mast_package::{
     MemDependencyResolverByDigest, ResolvedDependency,
 };
 use miden_processor::{
-    ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt, advice::AdviceInputs,
+    ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt,
+    advice::AdviceInputs,
+    event::{EventHandler, EventName},
     trace::RowIndex,
 };
 
@@ -33,6 +35,7 @@ pub struct Executor {
     advice: AdviceInputs,
     options: ExecutionOptions,
     libraries: Vec<Arc<Library>>,
+    event_handlers: Vec<(EventName, Arc<dyn EventHandler>)>,
     dependency_resolver: MemDependencyResolverByDigest,
 }
 impl Executor {
@@ -63,6 +66,7 @@ impl Executor {
             advice: advice_inputs,
             options,
             libraries: Default::default(),
+            event_handlers: Default::default(),
             dependency_resolver,
         }
     }
@@ -132,6 +136,16 @@ impl Executor {
         self
     }
 
+    /// Register a VM event handler to be available during execution.
+    pub fn register_event_handler(
+        &mut self,
+        event: EventName,
+        handler: Arc<dyn EventHandler>,
+    ) -> Result<&mut Self, ExecutionError> {
+        self.event_handlers.push((event, handler));
+        Ok(self)
+    }
+
     /// Convert this [Executor] into a [DebugExecutor], which captures much more information
     /// about the program being executed, and must be stepped manually.
     pub fn into_debug(
@@ -144,6 +158,10 @@ impl Executor {
         let mut host = DebuggerHost::new(source_manager.clone());
         for lib in core::mem::take(&mut self.libraries) {
             host.load_mast_forest(lib.mast_forest().clone());
+        }
+        for (event, handler) in core::mem::take(&mut self.event_handlers) {
+            host.register_event_handler(event, handler)
+                .expect("failed to register debug executor event handler");
         }
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());

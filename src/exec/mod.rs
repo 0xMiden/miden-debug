@@ -11,6 +11,12 @@ mod trace;
 mod trace_event;
 mod tx_executor;
 
+#[cfg(feature = "dap")]
+pub use self::dap::{DapConfig, DapExecutor};
+#[cfg(feature = "dap")]
+pub use self::dap_client::{DapClient, DapStopReason, SCOPE_MEMORY, SCOPE_STACK};
+#[doc(hidden)]
+pub use self::tx_executor::ProgramExecutor;
 pub use self::{
     config::ExecutionConfig,
     diagnostic::DiagnosticExecutor,
@@ -21,11 +27,3 @@ pub use self::{
     trace_event::TraceEvent,
     tx_executor::TransactionProgramExecutor,
 };
-
-#[doc(hidden)]
-pub use self::tx_executor::ProgramExecutor;
-
-#[cfg(feature = "dap")]
-pub use self::dap::{DapConfig, DapExecutor};
-#[cfg(feature = "dap")]
-pub use self::dap_client::{DapClient, DapStopReason, SCOPE_MEMORY, SCOPE_STACK};

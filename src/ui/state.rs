@@ -2,8 +2,7 @@ use std::{collections::VecDeque, sync::Arc};
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
-use miden_core::program::Program;
-use miden_core::serde::Deserializable;
+use miden_core::{program::Program, serde::Deserializable};
 use miden_processor::{
     Felt, StackInputs,
     advice::{AdviceInputs, AdviceMutation},
@@ -438,8 +437,10 @@ impl State {
 
         use miden_processor::{ContextId, FastProcessor};
 
-        use crate::debug::{CallFrame, CallStack};
-        use crate::exec::{DebuggerHost, SCOPE_STACK};
+        use crate::{
+            debug::{CallFrame, CallStack},
+            exec::{DebuggerHost, SCOPE_STACK},
+        };
 
         let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
 
@@ -515,8 +516,10 @@ impl State {
 
     /// Refresh the executor state from the DAP server after a step command.
     pub fn refresh_from_dap(&mut self) -> Result<(), Report> {
-        use crate::debug::{CallFrame, CallStack};
-        use crate::exec::SCOPE_STACK;
+        use crate::{
+            debug::{CallFrame, CallStack},
+            exec::SCOPE_STACK,
+        };
 
         let client = self.dap_client.as_mut().ok_or_else(|| Report::msg("no DAP client"))?;
 

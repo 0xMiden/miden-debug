@@ -1,12 +1,16 @@
-use std::io::{BufReader, BufWriter};
-use std::net::TcpListener;
-use std::sync::{Arc, OnceLock};
+use std::{
+    io::{BufReader, BufWriter},
+    net::TcpListener,
+    sync::{Arc, OnceLock},
+};
 
 use dap::prelude::*;
-use miden_core::Word;
-use miden_core::operations::{AssemblyOp, DebugOptions};
-use miden_core::precompile::PrecompileTranscript;
-use miden_core::program::Program;
+use miden_core::{
+    Word,
+    operations::{AssemblyOp, DebugOptions},
+    precompile::PrecompileTranscript,
+    program::Program,
+};
 use miden_processor::{
     ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend, Host,
     ProcessorState, ResumeContext, StackInputs, StackOutputs, TraceError,
@@ -15,8 +19,7 @@ use miden_processor::{
     mast::MastForest,
 };
 
-use super::state::extract_current_op;
-use super::{TraceEvent, TransactionProgramExecutor};
+use super::{TraceEvent, TransactionProgramExecutor, state::extract_current_op};
 
 // DAP CONFIG
 // ================================================================================================

@@ -4,12 +4,16 @@
 //! but no client-side equivalent. This module implements a simple DAP client using the
 //! same types for requests, responses, and events.
 
-use std::io::{BufRead, BufReader, BufWriter, Read, Write};
-use std::net::TcpStream;
+use std::{
+    io::{BufRead, BufReader, BufWriter, Read, Write},
+    net::TcpStream,
+};
 
-use dap::events::Event;
-use dap::responses::{Response, ResponseBody};
-use dap::types;
+use dap::{
+    events::Event,
+    responses::{Response, ResponseBody},
+    types,
+};
 
 /// Variables reference IDs for scopes (must match the DAP server).
 pub const SCOPE_STACK: i64 = 1;

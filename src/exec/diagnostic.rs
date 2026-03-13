@@ -1,9 +1,6 @@
-use std::sync::Arc;
-use std::vec::Vec;
+use std::{sync::Arc, vec::Vec};
 
-use miden_core::Word;
-use miden_core::operations::DebugOptions;
-use miden_core::program::Program;
+use miden_core::{Word, operations::DebugOptions, program::Program};
 use miden_processor::{
     ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, Felt, FutureMaybeSend, Host,
     ProcessorState, StackInputs, TraceError,

@@ -13,6 +13,7 @@ pub use self::state::{DebugMode, State};
 use self::{action::Action, app::App};
 use crate::config::DebuggerConfig;
 
+#[allow(dead_code)]
 pub fn run(config: Box<DebuggerConfig>, logger: Box<dyn log::Log>) -> Result<(), Report> {
     let mut builder = tokio::runtime::Builder::new_current_thread();
     let rt = builder.enable_all().build().into_diagnostic()?;
@@ -29,6 +30,7 @@ pub fn run_with_state(state: State, logger: Box<dyn log::Log>) -> Result<(), Rep
     rt.block_on(async move { start_ui_with_state(state, logger).await })
 }
 
+#[allow(dead_code)]
 pub async fn start_ui(
     config: Box<DebuggerConfig>,
     logger: Box<dyn log::Log>,

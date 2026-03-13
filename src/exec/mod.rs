@@ -13,19 +13,19 @@ mod tx_executor;
 
 pub use self::{
     config::ExecutionConfig,
-    diagnostic::{DiagnosticExecutor, DiagnosticExecutorFactory},
+    diagnostic::DiagnosticExecutor,
     executor::Executor,
     host::DebuggerHost,
     state::DebugExecutor,
     trace::{ExecutionTrace, TraceHandler},
     trace_event::TraceEvent,
-    tx_executor::{TransactionProgramExecutor, TransactionProgramExecutorFactory},
+    tx_executor::TransactionProgramExecutor,
 };
 
 #[doc(hidden)]
-pub use self::tx_executor::{ProgramExecutor, ProgramExecutorFactory};
+pub use self::tx_executor::ProgramExecutor;
 
 #[cfg(feature = "dap")]
-pub use self::dap::{DapConfig, DapExecutor, DapExecutorFactory};
+pub use self::dap::{DapConfig, DapExecutor};
 #[cfg(feature = "dap")]
 pub use self::dap_client::{DapClient, DapStopReason, SCOPE_MEMORY, SCOPE_STACK};

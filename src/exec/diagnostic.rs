@@ -13,7 +13,7 @@ use miden_processor::{
     trace::RowIndex,
 };
 
-use super::{TraceEvent, TransactionProgramExecutor, TransactionProgramExecutorFactory};
+use super::{TraceEvent, TransactionProgramExecutor};
 
 // DIAGNOSTIC HOST WRAPPER
 // ================================================================================================
@@ -131,10 +131,10 @@ impl<H: Host> Host for DiagnosticHostWrapper<'_, H> {
 ///
 /// ```ignore
 /// use miden_tx::TransactionExecutor;
-/// use miden_debug::DiagnosticExecutorFactory;
+/// use miden_debug::DiagnosticExecutor;
 ///
 /// let executor = TransactionExecutor::new(&store)
-///     .with_executor_factory::<DiagnosticExecutorFactory>()
+///     .with_program_executor::<DiagnosticExecutor>()
 ///     .execute_transaction(account_id, block_num, notes, tx_args)
 ///     .await;
 /// ```
@@ -145,6 +145,18 @@ pub struct DiagnosticExecutor {
 }
 
 impl TransactionProgramExecutor for DiagnosticExecutor {
+    fn new(
+        stack_inputs: StackInputs,
+        advice_inputs: AdviceInputs,
+        options: ExecutionOptions,
+    ) -> Self {
+        DiagnosticExecutor {
+            stack_inputs,
+            advice_inputs,
+            options,
+        }
+    }
+
     fn execute<H: Host + Send>(
         self,
         program: &Program,
@@ -166,32 +178,6 @@ impl TransactionProgramExecutor for DiagnosticExecutor {
                     Err(err)
                 }
             }
-        }
-    }
-}
-
-// DIAGNOSTIC EXECUTOR FACTORY
-// ================================================================================================
-
-/// Factory that creates [`DiagnosticExecutor`] instances for use with [`TransactionExecutor`].
-///
-/// This is meant to plug into the transaction-layer executor factory hook once the
-/// `miden-protocol` / `miden-tx` follow-up lands. At that point it provides enhanced error
-/// diagnostics when transactions fail.
-pub struct DiagnosticExecutorFactory;
-
-impl TransactionProgramExecutorFactory for DiagnosticExecutorFactory {
-    type Executor = DiagnosticExecutor;
-
-    fn create_executor(
-        stack_inputs: StackInputs,
-        advice_inputs: AdviceInputs,
-        options: ExecutionOptions,
-    ) -> DiagnosticExecutor {
-        DiagnosticExecutor {
-            stack_inputs,
-            advice_inputs,
-            options,
         }
     }
 }

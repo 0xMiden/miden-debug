@@ -16,7 +16,7 @@ use miden_processor::{
 };
 
 use super::state::extract_current_op;
-use super::{TraceEvent, TransactionProgramExecutor, TransactionProgramExecutorFactory};
+use super::{TraceEvent, TransactionProgramExecutor};
 
 // DAP CONFIG
 // ================================================================================================
@@ -151,34 +151,6 @@ fn resolve_asmop_location<H: Host>(asmop: &AssemblyOp, host: &H) -> Option<(Stri
     Some((path, line))
 }
 
-// DAP EXECUTOR FACTORY
-// ================================================================================================
-
-/// Factory that creates [`DapExecutor`] instances for use with `TransactionExecutor`.
-///
-/// This is meant to plug into the transaction-layer executor factory hook once the
-/// `miden-protocol` / `miden-tx` follow-up lands. At that point it starts a DAP debug server
-/// instead of running the program to completion.
-pub struct DapExecutorFactory;
-
-impl TransactionProgramExecutorFactory for DapExecutorFactory {
-    type Executor = DapExecutor;
-
-    fn create_executor(
-        stack_inputs: StackInputs,
-        advice_inputs: AdviceInputs,
-        options: ExecutionOptions,
-    ) -> DapExecutor {
-        let config = DAP_CONFIG.get().cloned().unwrap_or_default();
-        DapExecutor {
-            stack_inputs,
-            advice_inputs,
-            options,
-            config,
-        }
-    }
-}
-
 // DAP EXECUTOR
 // ================================================================================================
 
@@ -200,6 +172,20 @@ const SCOPE_STACK: i64 = 1;
 const SCOPE_MEMORY: i64 = 2;
 
 impl TransactionProgramExecutor for DapExecutor {
+    fn new(
+        stack_inputs: StackInputs,
+        advice_inputs: AdviceInputs,
+        options: ExecutionOptions,
+    ) -> Self {
+        let config = DAP_CONFIG.get().cloned().unwrap_or_default();
+        DapExecutor {
+            stack_inputs,
+            advice_inputs,
+            options,
+            config,
+        }
+    }
+
     fn execute<H: Host + Send>(
         self,
         program: &Program,

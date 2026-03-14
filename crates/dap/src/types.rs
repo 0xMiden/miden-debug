@@ -227,8 +227,8 @@ struct ValueFaker;
 impl Dummy<ValueFaker> for CustomValue {
     fn dummy_with_rng<R: Rng + ?Sized>(_: &ValueFaker, rng: &mut R) -> Self {
         CustomValue(match rng.gen_range(0..=5) {
-            1 => Value::Bool(rng.gen()),
-            2 => Value::Number(serde_json::Number::from_f64(rng.gen()).unwrap()),
+            1 => Value::Bool(rng.r#gen()),
+            2 => Value::Number(serde_json::Number::from_f64(rng.r#gen()).unwrap()),
             3 => Value::String(Faker.fake::<String>()),
             _ => Value::Null,
         })
@@ -404,11 +404,12 @@ pub struct ExceptionFilterOptions {
 /// break.
 ///
 /// Specification: [`ExceptionBreakMode`](https://microsoft.github.io/debug-adapter-protocol/specification#Types_ExceptionBreakMode)
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(feature = "integration_testing", derive(Dummy))]
 pub enum ExceptionBreakMode {
     /// never breaks
+    #[default]
     Never,
     /// always breaks
     Always,
@@ -416,12 +417,6 @@ pub enum ExceptionBreakMode {
     Unhandled,
     /// breaks if the exception is not handled by user code
     UserUnhandled,
-}
-
-impl Default for ExceptionBreakMode {
-    fn default() -> Self {
-        ExceptionBreakMode::Never
-    }
 }
 
 /// An ExceptionPathSegment represents a segment in a path that is used to match leafs or nodes in
@@ -753,7 +748,6 @@ pub enum VariablesArgumentsFilter {
 }
 
 /// Properties of a breakpoint location returned from the breakpointLocations request.
-
 /// Specfication: [BreakpointLocation](https://microsoft.github.io/debug-adapter-protocol/specification#Types_BreakpointLocation)
 #[derive(Deserialize, Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]

@@ -25,5 +25,4 @@ pub use self::{
     state::DebugExecutor,
     trace::{ExecutionTrace, TraceHandler},
     trace_event::TraceEvent,
-    tx_executor::TransactionProgramExecutor,
 };

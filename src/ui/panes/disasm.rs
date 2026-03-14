@@ -57,13 +57,13 @@ impl Pane for DisassemblyPane {
     }
 
     fn draw(&mut self, frame: &mut Frame<'_>, area: Rect, state: &State) -> Result<(), Report> {
-        let (current_proc, lines) = match state.executor.callstack.current_frame() {
+        let (current_proc, lines) = match state.executor().callstack.current_frame() {
             None => {
                 let proc = Line::from("in <unknown>").right_aligned();
                 (
                     proc,
                     state
-                        .executor
+                        .executor()
                         .recent
                         .iter()
                         .map(|op| Line::from(vec![Span::styled(format!(" | {op}"), Color::Gray)]))
@@ -110,7 +110,7 @@ impl Pane for DisassemblyPane {
                 .title_bottom(current_proc)
                 .title(
                     Line::styled(
-                        format!(" at cycle {}", state.executor.cycle),
+                        format!(" at cycle {}", state.executor().cycle),
                         Style::default().add_modifier(Modifier::ITALIC),
                     )
                     .right_aligned(),

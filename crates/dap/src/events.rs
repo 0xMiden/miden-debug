@@ -9,7 +9,7 @@ use crate::types::{
     Source, StoppedEventReason, ThreadEventReason,
 };
 
-//// Arguments for a Breakpoint event.
+/// Arguments for a Breakpoint event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -22,7 +22,7 @@ pub struct BreakpointEventBody {
     pub breakpoint: Breakpoint,
 }
 
-//// Arguments for a Capabilities event
+/// Arguments for a Capabilities event
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -30,7 +30,7 @@ pub struct CapabilitiesEventBody {
     pub capabilities: Capabilities,
 }
 
-//// Arguments for a Continued event.
+/// Arguments for a Continued event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -42,7 +42,7 @@ pub struct ContinuedEventBody {
     pub all_threads_continued: Option<bool>,
 }
 
-//// Arguments for a Exited event
+/// Arguments for a Exited event
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -51,7 +51,7 @@ pub struct ExitedEventBody {
     pub exit_code: i64,
 }
 
-//// Arguments for a Invalidated event
+/// Arguments for a Invalidated event
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -70,7 +70,7 @@ pub struct InvalidatedEventBody {
     pub stack_frame_id: Option<i64>,
 }
 
-//// Arguments for a LoadedSource event.
+/// Arguments for a LoadedSource event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -82,7 +82,7 @@ pub struct LoadedSourceEventBody {
     pub source: Source,
 }
 
-//// Arguments for a Memory event.
+/// Arguments for a Memory event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -95,7 +95,7 @@ pub struct MemoryEventBody {
     pub count: i64,
 }
 
-//// Arguments for a Module event.
+/// Arguments for a Module event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -108,7 +108,7 @@ pub struct ModuleEventBody {
     pub module: Module,
 }
 
-//// Arguments for an Output event.
+/// Arguments for an Output event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -165,7 +165,7 @@ pub struct OutputEventBody {
     pub data: Option<Value>,
 }
 
-//// Arguments for an Process event.
+/// Arguments for an Process event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -191,7 +191,7 @@ pub struct ProcessEventBody {
     pub pointer_size: Option<i64>,
 }
 
-//// Arguments for a ProgressEnd event.
+/// Arguments for a ProgressEnd event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -203,7 +203,7 @@ pub struct ProgressEndEventBody {
     pub message: Option<String>,
 }
 
-//// Arguments for a ProgressStart event.
+/// Arguments for a ProgressStart event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -235,7 +235,7 @@ pub struct ProgressStartEventBody {
     pub percentage: Option<i64>,
 }
 
-//// Arguments for a ProgressUpdate event.
+/// Arguments for a ProgressUpdate event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -250,7 +250,7 @@ pub struct ProgressUpdateEventBody {
     pub percentage: Option<i64>,
 }
 
-//// Arguments for a Stopped event.
+/// Arguments for a Stopped event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -274,23 +274,25 @@ pub struct StoppedEventBody {
     pub text: Option<String>,
     /// If `allThreadsStopped` is true, a debug adapter can announce that all
     /// threads have stopped.
+    ///
     /// - The client should use this information to enable that all threads can
-    /// be expanded to access their stacktraces.
+    ///   be expanded to access their stacktraces.
     /// - If the attribute is missing or false, only the thread with the given
-    /// `threadId` can be expanded.
+    ///   `threadId` can be expanded.
     pub all_threads_stopped: Option<bool>,
     /// Ids of the breakpoints that triggered the event. In most cases there is
     /// only a single breakpoint but here are some examples for multiple
     /// breakpoints:
+    ///
     /// - Different types of breakpoints map to the same location.
     /// - Multiple source breakpoints get collapsed to the same instruction by
-    /// the compiler/runtime.
+    ///   the compiler/runtime.
     /// - Multiple function breakpoints with different function names map to the
-    /// same location.
+    ///   same location.
     pub hit_breakpoint_ids: Option<Vec<i64>>,
 }
 
-//// Arguments for a Terminated event.
+/// Arguments for a Terminated event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -302,7 +304,7 @@ pub struct TerminatedEventBody {
     pub restart: Option<Value>,
 }
 
-//// Arguments for a Thread event.
+/// Arguments for a Thread event.
 #[cfg_attr(feature = "client", derive(Deserialize))]
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]

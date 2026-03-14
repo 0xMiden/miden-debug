@@ -464,15 +464,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dap"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -538,6 +529,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "deunicode"
+version = "1.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abd57806937c9cc163efc8ea3910e00a62e2aeb0b8119f1793a978088f8f6b04"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -554,6 +551,18 @@ name = "dissimilar"
 version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8975ffdaa0ef3661bfe02dbdcc06c9f829dfafe6a3c474de366a8d5e44276921"
+
+[[package]]
+name = "dummy"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cac124e13ae9aa56acc4241f8c8207501d93afdd8d8e62f0c1f2e12f6508c65"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.112",
+]
 
 [[package]]
 name = "ecdsa"
@@ -665,6 +674,17 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "fake"
+version = "2.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d391ba4af7f1d93f01fcf7b2f29e2bc9348e109dfdbf4dcbdc51dfa38dab0b6"
+dependencies = [
+ "deunicode",
+ "dummy",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -1385,7 +1405,6 @@ version = "0.5.0"
 dependencies = [
  "clap",
  "crossterm",
- "dap",
  "env_logger",
  "futures",
  "glob",
@@ -1393,11 +1412,14 @@ dependencies = [
  "miden-assembly",
  "miden-assembly-syntax",
  "miden-core",
+ "miden-crypto",
+ "miden-debug-dap",
  "miden-debug-types",
  "miden-mast-package",
  "miden-processor",
  "miden-protocol",
  "miden-thiserror",
+ "miden-tx",
  "num-traits",
  "proptest",
  "ratatui",
@@ -1411,6 +1433,17 @@ dependencies = [
  "tokio-util",
  "toml 0.8.23",
  "tui-input",
+]
+
+[[package]]
+name = "miden-debug-dap"
+version = "0.1.0"
+dependencies = [
+ "fake",
+ "rand 0.9.2",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1443,7 +1476,7 @@ dependencies = [
  "p3-field",
  "p3-goldilocks",
  "paste",
- "rand",
+ "rand 0.9.2",
  "serde",
  "thiserror 2.0.17",
 ]
@@ -1542,7 +1575,7 @@ dependencies = [
  "miden-protocol-macros",
  "miden-utils-sync",
  "miden-verifier",
- "rand",
+ "rand 0.9.2",
  "regex",
  "semver 1.0.27",
  "thiserror 2.0.17",
@@ -1559,6 +1592,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "miden-prover"
+version = "0.21.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0fe4c03cc2a5c0404596f10c076e8e265d87fb7a9c5fbe21b15bc12874f7855"
+dependencies = [
+ "bincode",
+ "miden-air",
+ "miden-core",
+ "miden-crypto",
+ "miden-debug-types",
+ "miden-processor",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "miden-serde-utils"
 version = "0.22.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1566,6 +1616,21 @@ checksum = "1fe74c2e7d8a8b8758e067de10665816928222c1d0561d95c12ac4bcaefc2a2a"
 dependencies = [
  "p3-field",
  "p3-goldilocks",
+]
+
+[[package]]
+name = "miden-standards"
+version = "0.14.0-alpha.1"
+dependencies = [
+ "fs-err",
+ "miden-assembly",
+ "miden-core",
+ "miden-core-lib",
+ "miden-processor",
+ "miden-protocol",
+ "regex",
+ "thiserror 2.0.17",
+ "walkdir",
 ]
 
 [[package]]
@@ -1586,6 +1651,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "miden-tx"
+version = "0.14.0-alpha.1"
+dependencies = [
+ "miden-processor",
+ "miden-protocol",
+ "miden-prover",
+ "miden-standards",
+ "miden-verifier",
+ "thiserror 2.0.17",
 ]
 
 [[package]]
@@ -1912,7 +1989,7 @@ dependencies = [
  "p3-maybe-rayon",
  "p3-util",
  "paste",
- "rand",
+ "rand 0.9.2",
  "serde",
  "tracing",
 ]
@@ -1932,7 +2009,7 @@ dependencies = [
  "p3-symmetric",
  "p3-util",
  "paste",
- "rand",
+ "rand 0.9.2",
  "serde",
 ]
 
@@ -1970,7 +2047,7 @@ dependencies = [
  "p3-field",
  "p3-maybe-rayon",
  "p3-util",
- "rand",
+ "rand 0.9.2",
  "serde",
  "tracing",
  "transpose",
@@ -1992,7 +2069,7 @@ dependencies = [
  "p3-field",
  "p3-symmetric",
  "p3-util",
- "rand",
+ "rand 0.9.2",
 ]
 
 [[package]]
@@ -2008,7 +2085,7 @@ dependencies = [
  "p3-maybe-rayon",
  "p3-symmetric",
  "p3-util",
- "rand",
+ "rand 0.9.2",
  "serde",
  "thiserror 2.0.17",
  "tracing",
@@ -2040,7 +2117,7 @@ dependencies = [
  "p3-matrix",
  "p3-maybe-rayon",
  "p3-util",
- "rand",
+ "rand 0.9.2",
  "serde",
  "tracing",
 ]
@@ -2104,7 +2181,7 @@ dependencies = [
  "p3-symmetric",
  "p3-util",
  "paste",
- "rand",
+ "rand 0.9.2",
  "serde",
  "spin 0.10.0",
  "tracing",
@@ -2121,7 +2198,7 @@ dependencies = [
  "p3-mds",
  "p3-symmetric",
  "p3-util",
- "rand",
+ "rand 0.9.2",
 ]
 
 [[package]]
@@ -2304,8 +2381,8 @@ dependencies = [
  "bit-vec",
  "bitflags",
  "num-traits",
- "rand",
- "rand_chacha",
+ "rand 0.9.2",
+ "rand_chacha 0.9.0",
  "rand_xorshift",
  "regex-syntax",
  "rusty-fork",
@@ -2342,12 +2419,33 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
+version = "0.8.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
+dependencies = [
+ "libc",
+ "rand_chacha 0.3.1",
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand"
 version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6db2770f06117d490610c7488547d543617b21bfa07796d7a12f6f1bd53850d1"
 dependencies = [
  "rand_chacha",
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rand_chacha"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.6.4",
 ]
 
 [[package]]

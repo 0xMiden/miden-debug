@@ -57,11 +57,11 @@ impl Pane for OperandStackPane {
     }
 
     fn draw(&mut self, frame: &mut Frame<'_>, area: Rect, state: &State) -> Result<(), Report> {
-        let lines: Vec<Line<'_>> = if state.executor.current_stack.is_empty() {
+        let lines: Vec<Line<'_>> = if state.executor().current_stack.is_empty() {
             vec![]
         } else {
             state
-                .executor
+                .executor()
                 .current_stack
                 .iter()
                 .rev()

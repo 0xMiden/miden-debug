@@ -1,1 +1,1 @@
-pub use miden_protocol::transaction::{ProgramExecutor, TransactionProgramExecutor};
+pub use miden_tx::ProgramExecutor;

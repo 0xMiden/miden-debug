@@ -16,11 +16,7 @@ pub struct DebuggerConfig {
     /// Miden Assembly programs are emitted by the compiler with a `.masp` extension.
     ///
     /// You may use `-` as a file name to read a file from stdin.
-    #[cfg_attr(all(feature = "tui", feature = "dap"), arg(value_name = "FILE"))]
-    #[cfg_attr(
-        all(feature = "tui", not(feature = "dap")),
-        arg(required = true, value_name = "FILE")
-    )]
+    #[cfg_attr(feature = "tui", arg(value_name = "FILE"))]
     pub input: Option<InputFile>,
     /// Specify the path to a file containing program inputs.
     ///
@@ -78,7 +74,7 @@ pub struct DebuggerConfig {
     /// Connect to a remote DAP debug server instead of running a local program.
     ///
     /// Specify the address of the DAP server (e.g. "127.0.0.1:4711").
-    /// When this flag is set, no input file is required.
+    /// When this flag is set, the debugger connects to an existing remote session.
     #[cfg(feature = "dap")]
     #[cfg_attr(
         feature = "tui",
@@ -178,7 +174,7 @@ impl ColorChoice {
         }
     }
 
-    #[cfg(all(feature = "std", not(windows)))]
+    #[cfg(not(windows))]
     pub fn env_allows_color(&self) -> bool {
         match std::env::var_os("TERM") {
             // If TERM isn't set, then we are in a weird environment that
@@ -198,7 +194,7 @@ impl ColorChoice {
         true
     }
 
-    #[cfg(all(feature = "std", windows))]
+    #[cfg(windows)]
     pub fn env_allows_color(&self) -> bool {
         // On Windows, if TERM isn't set, then we shouldn't automatically
         // assume that colors aren't allowed. This is unlike Unix environments

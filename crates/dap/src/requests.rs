@@ -24,7 +24,7 @@ pub enum PathFormat {
     Other(String),
 }
 
-//// Arguments for an Initialize request.
+/// Arguments for an Initialize request.
 /// In specification: [Initialize](https://microsoft.github.io/debug-adapter-protocol/specification#Requests_Initialize)
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone)]
@@ -67,7 +67,7 @@ pub struct InitializeArguments {
     pub supports_start_debugging_request: Option<bool>,
 }
 
-//// Arguments for an SetBreakpoints request.
+/// Arguments for an SetBreakpoints request.
 /// In specification: [SetBreakpoints](https://microsoft.github.io/debug-adapter-protocol/specification#Requests_Initialize)
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone)]
@@ -128,7 +128,7 @@ pub struct SetFunctionBreakpointsArguments {
     pub breakpoints: Vec<FunctionBreakpoint>,
 }
 
-//// Arguments for a Launch request.
+/// Arguments for a Launch request.
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -149,7 +149,7 @@ pub struct LaunchRequestArguments {
     pub additional_data: Option<Value>,
 }
 
-//// Arguments for an Attach request.
+/// Arguments for an Attach request.
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -165,8 +165,8 @@ pub struct AttachRequestArguments {
     pub additional_data: Option<Value>,
 }
 
-//// Union of Attach and Launch arguments for the Restart request.
-//// Currently the same as LaunchRequestArguments but might not be in the future.
+/// Union of Attach and Launch arguments for the Restart request.
+/// Currently the same as LaunchRequestArguments but might not be in the future.
 #[derive(Deserialize, Debug, Default, Clone)]
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[serde(rename_all = "camelCase")]
@@ -186,7 +186,7 @@ pub struct AttachOrLaunchArguments {
     pub additional_data: Option<Value>,
 }
 
-//// Arguments for a BreakpointLocations request.
+/// Arguments for a BreakpointLocations request.
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -212,7 +212,7 @@ pub struct BreakpointLocationsArguments {
     pub end_column: Option<i64>,
 }
 
-//// Arguments for a Completions request.
+/// Arguments for a Completions request.
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -232,7 +232,7 @@ pub struct CompletionsArguments {
     pub line: Option<i64>,
 }
 
-//// Arguments for a Continue request.
+/// Arguments for a Continue request.
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -246,7 +246,7 @@ pub struct ContinueArguments {
     pub single_thread: Option<bool>,
 }
 
-//// Arguments for a DataBreakpointInfo request.
+/// Arguments for a DataBreakpointInfo request.
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -266,7 +266,7 @@ pub struct DataBreakpointInfoArguments {
     pub frame_id: Option<i64>,
 }
 
-//// Arguments for a Disassemble request.
+/// Arguments for a Disassemble request.
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -291,7 +291,7 @@ pub struct DisassembleArguments {
     pub resolve_symbols: Option<bool>,
 }
 
-//// Arguments for a Disconnect request.
+/// Arguments for a Disconnect request.
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -313,7 +313,7 @@ pub struct DisconnectArguments {
     pub suspend_debuggee: Option<bool>,
 }
 
-//// Arguments for a Evaluate request.
+/// Arguments for a Evaluate request.
 #[cfg_attr(feature = "client", derive(Serialize))]
 #[derive(Deserialize, Debug, Default, Clone)]
 #[serde(rename_all = "camelCase")]

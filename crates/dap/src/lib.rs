@@ -1,4 +1,4 @@
-//! # dap-rs, a Rust implementation of the Debug Adapter Protocol
+//! # miden-debug-dap, a Rust implementation of the Debug Adapter Protocol
 //!
 //! ## Introduction
 //!
@@ -17,16 +17,16 @@
 //!
 //! ## Minimal example
 //!
-//! To get started, create a binary project and add `dap` to your Cargo.toml:
+//! To get started, create a binary project and add `miden-debug-dap` to your Cargo.toml:
 //!
 //! ```toml
 //! [package]
 //! name = "dummy-server"
 //! version = "*"
-//! edition = "2021"
+//! edition = "2024"
 //!
 //! [dependencies]
-//! dap = "*"
+//! miden-debug-dap = "*"
 //! ```
 //!
 //! Our dummy server is going to read its input from a text file and write the output to stdout.

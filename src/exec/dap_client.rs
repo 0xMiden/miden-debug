@@ -15,6 +15,8 @@ use dap::{
     types,
 };
 
+use crate::debug::ReadMemoryExpr;
+
 /// Variables reference IDs for scopes (must match the DAP server).
 pub const SCOPE_STACK: i64 = 1;
 pub const SCOPE_MEMORY: i64 = 2;
@@ -152,6 +154,11 @@ impl DapClient {
             Some(ResponseBody::Evaluate(e)) => Ok(e.result),
             _ => Err("unexpected response to evaluate".into()),
         }
+    }
+
+    /// Read memory from the remote debuggee via the DAP server.
+    pub fn read_memory(&mut self, expr: &ReadMemoryExpr) -> Result<String, String> {
+        self.evaluate(&format!("__miden_read_memory {expr}"))
     }
 
     /// Set breakpoints for a source file.

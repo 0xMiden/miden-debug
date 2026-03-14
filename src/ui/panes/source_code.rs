@@ -104,7 +104,7 @@ impl SourceCodePane {
 
     /// Get the [ResolvedLocation] for the current state
     fn current_location(&self, state: &State) -> Option<ResolvedLocation> {
-        match state.executor.callstack.current_frame() {
+        match state.executor().callstack.current_frame() {
             Some(frame) => {
                 let resolved = frame.last_resolved(&state.source_manager);
                 resolved.cloned()
@@ -203,7 +203,7 @@ impl SourceCodePane {
         self.selected_line = 0;
         self.current_file = None;
 
-        if let Some(frame) = state.executor.callstack.current_frame()
+        if let Some(frame) = state.executor().callstack.current_frame()
             && let Some(loc) = frame.last_resolved(&state.source_manager)
         {
             self.current_file = Some(self.highlight_file(loc));
@@ -248,7 +248,7 @@ impl Pane for SourceCodePane {
     fn init(&mut self, state: &State) -> Result<(), Report> {
         self.enable_syntax_highlighting(state);
 
-        if let Some(frame) = state.executor.callstack.current_frame()
+        if let Some(frame) = state.executor().callstack.current_frame()
             && let Some(loc) = frame.last_resolved(&state.source_manager)
         {
             self.current_file = Some(self.highlight_file(loc));

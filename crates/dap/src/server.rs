@@ -86,7 +86,7 @@ impl<R: Read, W: Write> Server<R, W> {
                                             Err(_) => {
                                                 return Err(ServerError::HeaderParseError {
                                                     line: buffer,
-                                                })
+                                                });
                                             }
                                         };
                                         buffer.clear();
@@ -96,7 +96,7 @@ impl<R: Read, W: Write> Server<R, W> {
                                     other => {
                                         return Err(ServerError::UnknownHeader {
                                             header: other.to_string(),
-                                        })
+                                        });
                                     }
                                 }
                             } else {

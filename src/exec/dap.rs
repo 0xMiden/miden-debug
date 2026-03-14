@@ -17,9 +17,11 @@ use miden_processor::{
     advice::{AdviceInputs, AdviceMutation},
     event::EventError,
     mast::MastForest,
+    trace::RowIndex,
 };
 
-use super::{TraceEvent, TransactionProgramExecutor, state::extract_current_op};
+use super::{ProgramExecutor, TraceEvent, state::extract_current_op};
+use crate::debug::{FormatType, ReadMemoryExpr};
 
 // DAP CONFIG
 // ================================================================================================
@@ -128,6 +130,144 @@ fn poll_immediately<T>(fut: impl std::future::Future<Output = T>) -> T {
     }
 }
 
+macro_rules! write_with_format_type {
+    ($out:ident, $read_expr:ident, $value:expr) => {
+        match $read_expr.format {
+            FormatType::Decimal => write!(&mut $out, "{}", $value).unwrap(),
+            FormatType::Hex => write!(&mut $out, "{:0x}", $value).unwrap(),
+            FormatType::Binary => write!(&mut $out, "{:0b}", $value).unwrap(),
+        }
+    };
+}
+
+fn read_memory_at_current_state(
+    processor: &mut FastProcessor,
+    cycle: usize,
+    expr: &ReadMemoryExpr,
+) -> Result<String, String> {
+    use core::fmt::Write;
+
+    use miden_assembly_syntax::ast::types::Type;
+
+    const U32_MASK: u64 = u32::MAX as u64;
+
+    if expr.count > 1 {
+        return Err("-count with value > 1 is not yet implemented".into());
+    }
+
+    let cycle = RowIndex::from(u32::try_from(cycle).map_err(|_| "cycle value overflowed u32")?);
+    let ctx = processor.state().ctx();
+    let mut output = String::new();
+
+    if matches!(expr.ty, Type::Felt) {
+        if !expr.addr.is_element_aligned() {
+            return Err("read failed: type 'felt' must be aligned to an element boundary".into());
+        }
+
+        let felt = processor
+            .memory()
+            .read_element(ctx, miden_processor::Felt::new(u64::from(expr.addr.addr)))
+            .ok()
+            .unwrap_or(miden_processor::Felt::ZERO);
+        write_with_format_type!(output, expr, felt.as_canonical_u64());
+        return Ok(output);
+    }
+
+    if matches!(
+        expr.ty,
+        Type::Array(ref array_ty) if array_ty.element_type() == &Type::Felt && array_ty.len() == 4
+    ) {
+        if !expr.addr.is_word_aligned() {
+            return Err("read failed: type 'word' must be aligned to a word boundary".into());
+        }
+
+        let word = processor
+            .memory()
+            .read_word(ctx, miden_processor::Felt::new(u64::from(expr.addr.addr)), cycle)
+            .ok()
+            .unwrap_or_default();
+
+        output.push('[');
+        for (i, elem) in word.iter().enumerate() {
+            if i > 0 {
+                output.push_str(", ");
+            }
+            write_with_format_type!(output, expr, elem.as_canonical_u64());
+        }
+        output.push(']');
+        return Ok(output);
+    }
+
+    if !expr.addr.is_element_aligned() {
+        return Err("invalid read: unaligned reads are not supported yet".into());
+    }
+
+    let mut elems = Vec::with_capacity(expr.ty.size_in_felts());
+    for i in 0..expr.ty.size_in_felts() {
+        let addr = expr
+            .addr
+            .addr
+            .checked_add(u32::try_from(i).map_err(|_| "address overflow")?)
+            .ok_or_else(|| {
+                "invalid read: attempted to read beyond end of linear memory".to_string()
+            })?;
+        let felt = processor
+            .memory()
+            .read_element(ctx, miden_processor::Felt::new(u64::from(addr)))
+            .ok()
+            .unwrap_or_default();
+        elems.push(felt);
+    }
+
+    let mut bytes = Vec::with_capacity(expr.ty.size_in_bytes());
+    let mut needed = expr.ty.size_in_bytes();
+    for elem in elems {
+        let elem_bytes = ((elem.as_canonical_u64() & U32_MASK) as u32).to_be_bytes();
+        let take = core::cmp::min(needed, 4);
+        bytes.extend(&elem_bytes[..take]);
+        needed -= take;
+    }
+
+    match &expr.ty {
+        Type::I1 => match expr.format {
+            FormatType::Decimal => write!(&mut output, "{}", bytes[0] != 0).unwrap(),
+            FormatType::Hex => write!(&mut output, "{:#0x}", (bytes[0] != 0) as u8).unwrap(),
+            FormatType::Binary => write!(&mut output, "{:#0b}", (bytes[0] != 0) as u8).unwrap(),
+        },
+        Type::I8 => write_with_format_type!(output, expr, bytes[0] as i8),
+        Type::U8 => write_with_format_type!(output, expr, bytes[0]),
+        Type::I16 => {
+            write_with_format_type!(output, expr, i16::from_be_bytes([bytes[0], bytes[1]]))
+        }
+        Type::U16 => {
+            write_with_format_type!(output, expr, u16::from_be_bytes([bytes[0], bytes[1]]))
+        }
+        Type::I32 => write_with_format_type!(
+            output,
+            expr,
+            i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+        ),
+        Type::U32 => write_with_format_type!(
+            output,
+            expr,
+            u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+        ),
+        ty @ (Type::I64 | Type::U64) => {
+            let hi = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64;
+            let lo = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as u64;
+            let val = (hi << 32) | lo;
+            if matches!(ty, Type::I64) {
+                write_with_format_type!(output, expr, val as i64);
+            } else {
+                write_with_format_type!(output, expr, val);
+            }
+        }
+        ty => return Err(format!("support for reads of type '{ty}' are not implemented yet")),
+    }
+
+    Ok(output)
+}
+
 // BREAKPOINT STORAGE
 // ================================================================================================
 
@@ -157,7 +297,7 @@ fn resolve_asmop_location<H: Host>(asmop: &AssemblyOp, host: &H) -> Option<(Stri
 // DAP EXECUTOR
 // ================================================================================================
 
-/// A [`TransactionProgramExecutor`] that starts a DAP TCP server and steps through the program
+/// A [`ProgramExecutor`] that starts a DAP TCP server and steps through the program
 /// interactively.
 ///
 /// When used with `TransactionExecutor`, instead of running to completion, `execute()` binds a TCP
@@ -174,7 +314,7 @@ pub struct DapExecutor {
 const SCOPE_STACK: i64 = 1;
 const SCOPE_MEMORY: i64 = 2;
 
-impl TransactionProgramExecutor for DapExecutor {
+impl ProgramExecutor for DapExecutor {
     fn new(
         stack_inputs: StackInputs,
         advice_inputs: AdviceInputs,
@@ -580,6 +720,37 @@ impl DapExecutor {
                         memory_reference: None,
                     }));
                     server.respond(resp).ok();
+                }
+
+                Command::Evaluate(ref args)
+                    if args.expression.starts_with("__miden_read_memory ") =>
+                {
+                    let expr = args
+                        .expression
+                        .strip_prefix("__miden_read_memory ")
+                        .expect("prefix checked above");
+
+                    match expr
+                        .parse::<ReadMemoryExpr>()
+                        .and_then(|expr| read_memory_at_current_state(&mut processor, cycle, &expr))
+                    {
+                        Ok(result) => {
+                            let resp =
+                                req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
+                                    result,
+                                    type_field: Some("string".into()),
+                                    presentation_hint: None,
+                                    variables_reference: 0,
+                                    named_variables: None,
+                                    indexed_variables: None,
+                                    memory_reference: None,
+                                }));
+                            server.respond(resp).ok();
+                        }
+                        Err(err) => {
+                            server.respond(req.error(&err)).ok();
+                        }
+                    }
                 }
 
                 Command::Evaluate(ref _args) => {

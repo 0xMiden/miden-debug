@@ -10,7 +10,7 @@ use miden_processor::{
     trace::RowIndex,
 };
 
-use super::{TraceEvent, TransactionProgramExecutor};
+use super::{ProgramExecutor, TraceEvent};
 
 // DIAGNOSTIC HOST WRAPPER
 // ================================================================================================
@@ -114,7 +114,7 @@ impl<H: Host> Host for DiagnosticHostWrapper<'_, H> {
 // DIAGNOSTIC EXECUTOR
 // ================================================================================================
 
-/// A [`TransactionProgramExecutor`] that wraps [`FastProcessor`] with diagnostic capabilities.
+/// A [`ProgramExecutor`] that wraps [`FastProcessor`] with diagnostic capabilities.
 ///
 /// When execution fails, it captures and reports rich diagnostic information including:
 /// - The clock cycle at failure
@@ -141,7 +141,7 @@ pub struct DiagnosticExecutor {
     options: ExecutionOptions,
 }
 
-impl TransactionProgramExecutor for DiagnosticExecutor {
+impl ProgramExecutor for DiagnosticExecutor {
     fn new(
         stack_inputs: StackInputs,
         advice_inputs: AdviceInputs,

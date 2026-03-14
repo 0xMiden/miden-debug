@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/dap"]
+members = [".", "crates/dap", "crates/engine"]
 resolver = "2"
 
 [package]
@@ -33,15 +33,16 @@ required-features = ["std"]
 
 [features]
 default = ["tui"]
-tui = ["std", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect"]
-dap = ["dep:dap"]
-std = ["dep:glob", "clap/std", "clap/env", "miden-assembly-syntax/std"]
-proptest = ["dep:proptest"]
+tui = ["std", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect", "miden-debug-engine/tui"]
+dap = ["dep:dap", "miden-debug-engine/dap"]
+std = ["dep:glob", "clap/std", "clap/env", "miden-assembly-syntax/std", "miden-debug-engine/std"]
+proptest = ["dep:proptest", "miden-debug-engine/proptest"]
 
 [dependencies]
 clap = { version = "4.5", default-features = false, features = ["derive", "std", "env", "help", "suggestions", "error-context"]}
 crossterm = { version = "0.28.1", optional = true, features = ["event-stream"] }
 dap = { package = "miden-debug-dap", path = "crates/dap", optional = true, features = ["client"] }
+miden-debug-engine = { path = "crates/engine", default-features = false }
 serde_json = "1"
 env_logger = { version = "0.11", optional = true }
 log = "0.4"

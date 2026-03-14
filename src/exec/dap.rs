@@ -268,6 +268,47 @@ fn read_memory_at_current_state(
     Ok(output)
 }
 
+fn build_ui_state<H: Host>(
+    processor: &mut FastProcessor,
+    host: &DapHostWrapper<'_, H>,
+    current_asmop: Option<&AssemblyOp>,
+    cycle: usize,
+) -> crate::exec::DapUiState {
+    let callstack = match current_asmop {
+        Some(asmop) => {
+            let loc = resolve_asmop_location(asmop, host);
+            let (source_path, line) = loc.map_or((None, 0), |(path, line)| (Some(path), line));
+            vec![crate::exec::DapUiFrame {
+                name: asmop.context_name().to_string(),
+                source_path,
+                line,
+                column: 0,
+            }]
+        }
+        None => {
+            vec![crate::exec::DapUiFrame {
+                name: format!("cycle {cycle}"),
+                source_path: None,
+                line: 0,
+                column: 0,
+            }]
+        }
+    };
+
+    let current_stack = processor
+        .state()
+        .get_stack_state()
+        .iter()
+        .map(|felt| felt.as_canonical_u64())
+        .collect();
+
+    crate::exec::DapUiState {
+        cycle,
+        current_stack,
+        callstack,
+    }
+}
+
 // BREAKPOINT STORAGE
 // ================================================================================================
 
@@ -705,13 +746,16 @@ impl DapExecutor {
                 }
 
                 // --- Evaluate (custom state query) ---
-                Command::Evaluate(ref args) if args.expression == "__miden_state" => {
-                    let state_json = serde_json::json!({
-                        "cycle": cycle,
-                        "stopped": resume_ctx.is_none(),
-                    });
+                Command::Evaluate(ref args) if args.expression == "__miden_ui_state" => {
+                    let state_json = serde_json::to_string(&build_ui_state(
+                        &mut processor,
+                        &wrapper,
+                        current_asmop.as_ref(),
+                        cycle,
+                    ))
+                    .expect("bundled DAP UI state should serialize");
                     let resp = req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
-                        result: state_json.to_string(),
+                        result: state_json,
                         type_field: Some("json".into()),
                         presentation_hint: None,
                         variables_reference: 0,

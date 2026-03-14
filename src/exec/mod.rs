@@ -3,6 +3,8 @@ mod config;
 mod dap;
 #[cfg(feature = "dap")]
 mod dap_client;
+#[cfg(feature = "dap")]
+mod dap_types;
 mod diagnostic;
 mod executor;
 mod host;
@@ -15,6 +17,8 @@ mod tx_executor;
 pub use self::dap::{DapConfig, DapExecutor};
 #[cfg(feature = "dap")]
 pub use self::dap_client::{DapClient, DapStopReason, SCOPE_MEMORY, SCOPE_STACK};
+#[cfg(feature = "dap")]
+pub use self::dap_types::{DapUiFrame, DapUiState};
 #[doc(hidden)]
 pub use self::tx_executor::ProgramExecutor;
 pub use self::{

@@ -1,7 +1,6 @@
+pub use miden_debug_engine::{debug, exec, felt};
+
 mod config;
-mod debug;
-mod exec;
-mod felt;
 mod input;
 mod linker;
 #[cfg(test)]
@@ -13,10 +12,12 @@ mod logger;
 mod ui;
 
 #[cfg(feature = "tui")]
-pub use self::ui::{DebugMode, State, run_with_state};
+pub use self::ui::{DebugMode, State, run, run_with_state};
 pub use self::{
+    config::{ColorChoice, DebuggerConfig},
     debug::*,
     exec::*,
     felt::{Felt, FromMidenRepr, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack},
+    input::InputFile,
     linker::{LibraryKind, LinkLibrary},
 };

@@ -15,6 +15,7 @@ use dap::{
     types,
 };
 
+use super::DapUiState;
 use crate::debug::ReadMemoryExpr;
 
 /// Variables reference IDs for scopes (must match the DAP server).
@@ -154,6 +155,13 @@ impl DapClient {
             Some(ResponseBody::Evaluate(e)) => Ok(e.result),
             _ => Err("unexpected response to evaluate".into()),
         }
+    }
+
+    /// Fetch a bundled snapshot of the remote UI state in one roundtrip.
+    pub fn ui_state(&mut self) -> Result<DapUiState, String> {
+        let payload = self.evaluate("__miden_ui_state")?;
+        serde_json::from_str(&payload)
+            .map_err(|err| format!("invalid remote UI state payload: {err}"))
     }
 
     /// Read memory from the remote debuggee via the DAP server.

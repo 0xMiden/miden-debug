@@ -158,6 +158,14 @@ impl RemoteState {
     ) -> Result<RemoteSnapshot, Report> {
         snapshot_remote_state(&mut self.client, source_manager)
     }
+
+    fn refresh_executor(&mut self, source_manager: &Arc<dyn SourceManager>) -> Result<(), Report> {
+        let snapshot = self.snapshot(source_manager)?;
+        self.executor.current_stack = snapshot.current_stack;
+        self.executor.callstack = snapshot.callstack;
+        self.executor.cycle = snapshot.cycle;
+        Ok(())
+    }
 }
 
 impl State {
@@ -298,8 +306,12 @@ impl State {
             return Err(Report::msg("reload is not supported in transaction debug mode"));
         }
         if self.debug_mode == DebugMode::Remote {
-            // TODO: In remote mode, reload should be initiated by the DAP server/debuggee so it
-            // can provide the replacement artifact and resume state for edit-and-continue flows.
+            // TODO: Remote reload/edit-and-continue needs a server-owned restart contract.
+            // The client cannot safely swap artifacts on its own because the debuggee owns the
+            // live processor state, launch configuration, and breakpoint rebinding. The minimal
+            // viable shape is either a standard restart/relaunch flow or a custom request that
+            // replaces the artifact server-side and then emits a fresh stop + `__miden_ui_state`
+            // snapshot for the client to project.
             return Err(Report::msg("reload is not supported in remote debug mode"));
         }
 
@@ -587,18 +599,13 @@ impl State {
         })
     }
 
-    /// Refresh the executor state from the DAP server after a step command.
+    /// Refresh the executor state from the DAP server using a bundled UI-state snapshot.
     pub fn refresh_from_dap(&mut self) -> Result<(), Report> {
         let source_manager = self.source_manager.clone();
         let SessionState::Remote(remote) = &mut self.session else {
             return Err(Report::msg("no remote debug session"));
         };
-        let snapshot = remote.snapshot(&source_manager)?;
-        remote.executor.current_stack = snapshot.current_stack;
-        remote.executor.callstack = snapshot.callstack;
-        remote.executor.cycle = snapshot.cycle;
-
-        Ok(())
+        remote.refresh_executor(&source_manager)
     }
 
     pub fn step_remote(&mut self) -> Result<crate::exec::DapStopReason, Report> {
@@ -612,10 +619,7 @@ impl State {
 
         match result {
             crate::exec::DapStopReason::Stopped => {
-                let snapshot = remote.snapshot(&source_manager)?;
-                remote.executor.current_stack = snapshot.current_stack;
-                remote.executor.callstack = snapshot.callstack;
-                remote.executor.cycle = snapshot.cycle;
+                remote.refresh_executor(&source_manager)?;
                 self.stopped = true;
             }
             crate::exec::DapStopReason::Terminated => {
@@ -633,52 +637,39 @@ fn snapshot_remote_state(
     client: &mut crate::exec::DapClient,
     source_manager: &Arc<dyn SourceManager>,
 ) -> Result<RemoteSnapshot, Report> {
-    use crate::{
-        debug::{CallFrame, CallStack},
-        exec::SCOPE_STACK,
-    };
+    use crate::debug::{CallFrame, CallStack};
 
-    let stack_frames = client.stack_trace().map_err(Report::msg)?;
-    let stack_vars = client.variables(SCOPE_STACK).map_err(Report::msg)?;
+    let snapshot = client.ui_state().map_err(Report::msg)?;
 
-    let call_frames: Vec<CallFrame> = stack_frames
+    let call_frames: Vec<CallFrame> = snapshot
+        .callstack
         .iter()
         .map(|frame| {
-            let resolved = resolve_dap_frame(frame, source_manager);
+            let resolved = resolve_remote_frame(frame, source_manager);
             CallFrame::from_remote(Some(frame.name.clone()), resolved)
         })
         .collect();
 
-    let current_stack = stack_vars
-        .iter()
-        .map(|var| Felt::new(var.value.parse::<u64>().unwrap_or(0)))
-        .collect();
-
-    let mut cycle = 0usize;
-    if let Ok(state_json) = client.evaluate("__miden_state")
-        && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&state_json)
-    {
-        cycle = parsed.get("cycle").and_then(|value| value.as_u64()).unwrap_or(0) as usize;
-    }
+    let current_stack = snapshot.current_stack.iter().copied().map(Felt::new).collect();
 
     Ok(RemoteSnapshot {
         callstack: CallStack::from_remote_frames(call_frames),
         current_stack,
-        cycle,
+        cycle: snapshot.cycle,
     })
 }
 
-/// Resolve a DAP StackFrame to a [ResolvedLocation] by loading the source file from disk.
+/// Resolve a remote frame to a [ResolvedLocation] by loading the source file from disk.
 #[cfg(feature = "dap")]
-fn resolve_dap_frame(
-    frame: &dap::types::StackFrame,
+fn resolve_remote_frame(
+    frame: &crate::exec::DapUiFrame,
     source_manager: &Arc<dyn SourceManager>,
 ) -> Option<crate::debug::ResolvedLocation> {
     use std::path::Path;
 
     use miden_debug_types::{SourceManagerExt, SourceSpan};
 
-    let path_str = frame.source.as_ref()?.path.as_ref()?;
+    let path_str = frame.source_path.as_ref()?;
     let path = Path::new(path_str);
     let source_file = source_manager.load_file(path).ok()?;
     let line = frame.line.max(1) as u32;

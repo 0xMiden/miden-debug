@@ -1,17 +1,8 @@
-#![allow(unused)]
-mod config;
-mod debug;
-mod exec;
-mod felt;
-mod input;
-mod linker;
-mod logger;
-mod ui;
-
 use std::env;
 
 use clap::Parser;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report, WrapErr};
+use miden_debug::{DebuggerConfig, State, run, run_with_state};
 
 pub fn main() -> Result<(), Report> {
     setup_diagnostics();
@@ -37,7 +28,7 @@ pub fn main() -> Result<(), Report> {
     }
 
     let logger = Box::new(builder.build());
-    let mut config = Box::new(config::DebuggerConfig::parse());
+    let mut config = Box::new(DebuggerConfig::parse());
 
     if config.working_dir.is_none() {
         let cwd = env::current_dir()
@@ -49,11 +40,11 @@ pub fn main() -> Result<(), Report> {
 
     #[cfg(feature = "dap")]
     if let Some(addr) = config.dap_connect.as_ref() {
-        let state = ui::State::new_for_dap(addr)?;
-        return ui::run_with_state(state, logger);
+        let state = State::new_for_dap(addr)?;
+        return run_with_state(state, logger);
     }
 
-    ui::run(config, logger)
+    run(config, logger)
 }
 
 fn setup_diagnostics() {

@@ -91,6 +91,7 @@ jobs:
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: ${{ github.ref == 'refs/heads/next' }}
       - *install-cargo-make
+      - uses: taiki-e/install-action@nextest
       - name: Check
         # We run `cargo check` to verify that the workspace compiles correctly before attempting
         # to execute the tests. This produces easier to read output if a compilation error occurs

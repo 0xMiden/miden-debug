@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
-use miden_core::field::{PrimeCharacteristicRing, PrimeField64};
-use miden_core::serde::Deserializable;
+use miden_core::{
+    field::{PrimeCharacteristicRing, PrimeField64},
+    serde::Deserializable,
+};
 use miden_processor::{Felt, StackInputs};
 
 use crate::{
@@ -41,10 +43,11 @@ impl State {
         let source_manager = Arc::new(DefaultSourceManager::default());
         let mut inputs = config.inputs.clone().unwrap_or_default();
         if !config.args.is_empty() {
-            inputs.inputs = StackInputs::new(&config.args.iter().map(|n| n.0).collect::<Vec<_>>())
-                .into_diagnostic()?;
+            // CLI args model sequential pushes, but StackInputs expects the top element first.
+            let args = config.args.iter().rev().map(|felt| felt.0).collect::<Vec<_>>();
+            inputs.inputs = StackInputs::new(&args).into_diagnostic()?;
         }
-        let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
+        let args = inputs.inputs.iter().copied().collect::<Vec<_>>();
         let package = load_package(&config)?;
 
         // Load libraries from link_libraries and sysroot BEFORE resolving dependencies
@@ -108,12 +111,11 @@ impl State {
 
         let mut inputs = self.config.inputs.clone().unwrap_or_default();
         if !self.config.args.is_empty() {
-            inputs.inputs = StackInputs::new(
-                &self.config.args.iter().copied().map(|n| n.0).collect::<Vec<_>>(),
-            )
-            .into_diagnostic()?;
+            // CLI args model sequential pushes, but StackInputs expects the top element first.
+            let args = self.config.args.iter().rev().map(|felt| felt.0).collect::<Vec<_>>();
+            inputs.inputs = StackInputs::new(&args).into_diagnostic()?;
         }
-        let args = inputs.inputs.iter().copied().rev().collect::<Vec<_>>();
+        let args = inputs.inputs.iter().copied().collect::<Vec<_>>();
 
         // Load libraries from link_libraries and sysroot BEFORE resolving dependencies
         let mut libs = Vec::with_capacity(self.config.link_libraries.len());
@@ -274,25 +276,23 @@ impl State {
                 Type::I8 => write_with_format_type!(output, expr, bytes[0] as i8),
                 Type::U8 => write_with_format_type!(output, expr, bytes[0]),
                 Type::I16 => {
-                    write_with_format_type!(output, expr, i16::from_be_bytes([bytes[0], bytes[1]]))
+                    write_with_format_type!(output, expr, i16::from_le_bytes([bytes[0], bytes[1]]))
                 }
                 Type::U16 => {
-                    write_with_format_type!(output, expr, u16::from_be_bytes([bytes[0], bytes[1]]))
+                    write_with_format_type!(output, expr, u16::from_le_bytes([bytes[0], bytes[1]]))
                 }
                 Type::I32 => write_with_format_type!(
                     output,
                     expr,
-                    i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+                    i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
                 ),
                 Type::U32 => write_with_format_type!(
                     output,
                     expr,
-                    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+                    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
                 ),
                 ty @ (Type::I64 | Type::U64) => {
-                    let hi = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64;
-                    let lo = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as u64;
-                    let val = (hi * 2u64.pow(32)) + lo;
+                    let val = u64::from_le_bytes(bytes[..8].try_into().unwrap());
                     if matches!(ty, Type::I64) {
                         write_with_format_type!(output, expr, val as i64)
                     } else {

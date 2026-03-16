@@ -19,7 +19,7 @@ pub trait ToMidenRepr {
     /// bytes come first.
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
         let bytes = self.to_bytes();
-        let num_felts = bytes.len().next_multiple_of(4) / 4;
+        let num_felts = bytes.len().div_ceil(4);
         let mut felts = SmallVec::<[RawFelt; 4]>::with_capacity(num_felts);
         let (chunks, remainder) = bytes.as_chunks::<4>();
         for chunk in chunks {
@@ -42,7 +42,7 @@ pub trait ToMidenRepr {
     ///   with the most significant bytes on top of the stack (including padding)
     fn to_words(&self) -> SmallVec<[Word; 1]> {
         let felts = self.to_felts();
-        let num_words = felts.len().next_multiple_of(4) / 4;
+        let num_words = felts.len().div_ceil(4);
         let mut words = SmallVec::<[Word; 1]>::with_capacity(num_words);
         let (chunks, remainder) = felts.as_chunks::<4>();
         for mut word in chunks.iter().copied() {
@@ -591,7 +591,7 @@ impl<const N: usize> ToMidenRepr for [u8; N] {
 impl<const N: usize> FromMidenRepr for [u8; N] {
     #[inline(always)]
     fn size_in_felts() -> usize {
-        N.next_multiple_of(4) / 4
+        N.div_ceil(4)
     }
 
     fn from_bytes(bytes: &[u8]) -> Self {

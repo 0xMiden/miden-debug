@@ -24,13 +24,13 @@ clap = { version = "4.5", default-features = false, features = ["derive", "std",
 dap = { package = "miden-debug-dap", path = "../dap", optional = true, features = ["client"] }
 glob = { version = "0.3.1", optional = true }
 log = "0.4"
-miden-assembly = { version = "=0.21.1", default-features = false }
-miden-assembly-syntax = { version = "=0.21.1", default-features = false }
-miden-core = { version = "=0.21.1", default-features = false }
-miden-debug-types = { version = "=0.21.1", default-features = false }
-miden-mast-package = { version = "=0.21.1", default-features = false }
-miden-processor = { version = "=0.21.1", default-features = false }
-miden-tx = { path = "../../../protocol/crates/miden-tx", default-features = false }
+miden-assembly = { version = "=0.22.0-alpha.1", default-features = false }
+miden-assembly-syntax = { version = "=0.22.0-alpha.1", default-features = false }
+miden-core = { version = "=0.22.0-alpha.1", default-features = false }
+miden-debug-types = { version = "=0.22.0-alpha.1", default-features = false }
+miden-mast-package = { version = "=0.22.0-alpha.1", default-features = false }
+miden-processor = { version = "=0.22.0-alpha.1", default-features = false }
+miden-tx = { git = "https://github.com/0xMiden/protocol", rev = "163c54951daadb2b801e7e3b5c004821dc02e4b7", default-features = false }
 num-traits = "0.2"
 proptest = { version = "1.4", optional = true }
 rustc-demangle = { version = "0.1", features = ["std"] }

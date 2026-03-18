@@ -427,7 +427,7 @@ impl DapExecutor {
 
         // Extract initial asmop
         if let Some(ctx) = resume_ctx.as_ref() {
-            let (_op, node_id, op_idx) = extract_current_op(ctx);
+            let (_op, node_id, op_idx, _control) = extract_current_op(ctx);
             current_asmop =
                 node_id.and_then(|nid| ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
         }
@@ -862,7 +862,7 @@ fn step_one<H: Host>(
     match poll_immediately(processor.step(host, ctx)) {
         Ok(Some(new_ctx)) => {
             *cycle += 1;
-            let (_op, node_id, op_idx) = extract_current_op(&new_ctx);
+            let (_op, node_id, op_idx, _control) = extract_current_op(&new_ctx);
             *current_asmop = node_id
                 .and_then(|nid| new_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
             *resume_ctx = Some(new_ctx);
@@ -896,7 +896,7 @@ fn step_over<H: Host>(
         match poll_immediately(processor.step(host, ctx)) {
             Ok(Some(new_ctx)) => {
                 *cycle += 1;
-                let (_op, node_id, op_idx) = extract_current_op(&new_ctx);
+                let (_op, node_id, op_idx, _control) = extract_current_op(&new_ctx);
                 *current_asmop = node_id
                     .and_then(|nid| new_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
                 *resume_ctx = Some(new_ctx);
@@ -934,7 +934,7 @@ fn step_out<H: Host>(
         match poll_immediately(processor.step(host, ctx)) {
             Ok(Some(new_ctx)) => {
                 *cycle += 1;
-                let (_op, node_id, op_idx) = extract_current_op(&new_ctx);
+                let (_op, node_id, op_idx, _control) = extract_current_op(&new_ctx);
                 *current_asmop = node_id
                     .and_then(|nid| new_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
                 *resume_ctx = Some(new_ctx);
@@ -971,7 +971,7 @@ fn step_until_breakpoint<H: Host>(
         match poll_immediately(processor.step(host, ctx)) {
             Ok(Some(new_ctx)) => {
                 *cycle += 1;
-                let (_op, node_id, op_idx) = extract_current_op(&new_ctx);
+                let (_op, node_id, op_idx, _control) = extract_current_op(&new_ctx);
                 *current_asmop = node_id
                     .and_then(|nid| new_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
                 *resume_ctx = Some(new_ctx);

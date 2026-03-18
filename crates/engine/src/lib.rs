@@ -7,6 +7,9 @@ pub mod debug;
 pub mod exec;
 #[path = "../../../src/felt.rs"]
 pub mod felt;
+#[cfg(test)]
+#[path = "../../../src/test_utils.rs"]
+mod test_utils;
 
 pub use self::{
     debug::*,

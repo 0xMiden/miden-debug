@@ -17,8 +17,8 @@ use miden_mast_package::{
 use miden_processor::{
     ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt,
     advice::{AdviceInputs, AdviceMutation},
-    mast::MastForest,
     event::{EventHandler, EventName},
+    mast::MastForest,
     trace::RowIndex,
 };
 

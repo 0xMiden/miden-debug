@@ -3,8 +3,6 @@ pub use miden_debug_engine::{debug, exec, felt};
 mod config;
 mod input;
 mod linker;
-#[cfg(test)]
-mod test_utils;
 
 #[cfg(feature = "tui")]
 mod logger;

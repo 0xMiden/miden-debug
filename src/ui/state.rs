@@ -82,6 +82,7 @@ struct LocalState {
 struct RemoteState {
     client: crate::exec::DapClient,
     executor: DebugExecutor,
+    addr: String,
 }
 
 enum SessionState {
@@ -129,7 +130,11 @@ impl RemoteState {
             stopped: false,
         };
 
-        Ok(Self { client, executor })
+        Ok(Self {
+            client,
+            executor,
+            addr: addr.to_string(),
+        })
     }
 
     fn read_memory(&mut self, expr: &ReadMemoryExpr) -> Result<String, String> {
@@ -166,6 +171,20 @@ impl RemoteState {
         self.executor.current_stack = snapshot.current_stack;
         self.executor.callstack = snapshot.callstack;
         self.executor.cycle = snapshot.cycle;
+    }
+
+    fn reconnect(&mut self, source_manager: &Arc<dyn SourceManager>) -> Result<(), Report> {
+        let timeout = std::time::Duration::from_secs(30);
+        let mut new_client =
+            crate::exec::DapClient::connect_with_retry(&self.addr, timeout).map_err(Report::msg)?;
+        let ui_state = new_client.handshake().map_err(Report::msg)?;
+        let snapshot = convert_ui_state(&ui_state, source_manager);
+
+        self.client = new_client;
+        self.executor.current_stack = snapshot.current_stack;
+        self.executor.callstack = snapshot.callstack;
+        self.executor.cycle = snapshot.cycle;
+        Ok(())
     }
 }
 
@@ -307,13 +326,31 @@ impl State {
             return Err(Report::msg("reload is not supported in transaction debug mode"));
         }
         if self.debug_mode == DebugMode::Remote {
-            // TODO: Remote reload/edit-and-continue needs a server-owned restart contract.
-            // The client cannot safely swap artifacts on its own because the debuggee owns the
-            // live processor state, launch configuration, and breakpoint rebinding. The minimal
-            // viable shape is either a standard restart/relaunch flow or a custom request that
-            // replaces the artifact server-side and then emits a fresh `miden/uiState` snapshot
-            // plus stop event for the client to project.
-            return Err(Report::msg("reload is not supported in remote debug mode"));
+            #[cfg(feature = "dap")]
+            {
+                let source_manager = self.source_manager.clone();
+                let SessionState::Remote(remote) = &mut self.session else {
+                    return Err(Report::msg("no remote debug session"));
+                };
+                let result = remote.client.restart_phase2().map_err(Report::msg)?;
+                match result {
+                    crate::exec::DapStopReason::Restarting => {
+                        remote.reconnect(&source_manager)?;
+                    }
+                    crate::exec::DapStopReason::Stopped(snapshot) => {
+                        // Fallback: server treated it as Phase 1.
+                        remote.refresh_executor(&source_manager, &snapshot);
+                    }
+                    crate::exec::DapStopReason::Terminated => {
+                        return Err(Report::msg("server terminated without restart signal"));
+                    }
+                }
+                self.breakpoints_hit.clear();
+                self.stopped = true;
+                return Ok(());
+            }
+            #[cfg(not(feature = "dap"))]
+            return Err(Report::msg("remote debug mode requires the `dap` feature"));
         }
 
         log::debug!("reloading program");
@@ -621,6 +658,9 @@ impl State {
             crate::exec::DapStopReason::Terminated => {
                 remote.executor.stopped = true;
                 self.stopped = true;
+            }
+            crate::exec::DapStopReason::Restarting => {
+                return Err(Report::msg("unexpected Phase 2 restart signal during step"));
             }
         }
 

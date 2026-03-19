@@ -15,7 +15,7 @@ edition = "2024"
 [features]
 default = ["std"]
 tui = []
-dap = ["dep:dap"]
+dap = ["dep:dap", "dep:socket2"]
 std = ["dep:glob", "clap/std", "clap/env", "miden-assembly-syntax/std"]
 proptest = ["dep:proptest"]
 
@@ -40,6 +40,7 @@ serde = { version = "1.0", default-features = false, features = [
     "rc",
 ] }
 serde_json = "1"
+socket2 = { version = "0.5", optional = true }
 smallvec = { version = "1.14", default-features = false, features = [
     "union",
     "const_generics",

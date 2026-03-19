@@ -30,6 +30,8 @@ pub enum DapStopReason {
     Stopped(DapUiState),
     /// The debuggee terminated.
     Terminated,
+    /// Phase 2: server signaled terminate-and-reconnect.
+    Restarting,
 }
 
 /// A message received from the DAP server.
@@ -90,6 +92,7 @@ impl DapClient {
         match self.wait_for_stopped()? {
             DapStopReason::Stopped(snapshot) => Ok(snapshot),
             DapStopReason::Terminated => Err("server terminated before entry stop".into()),
+            DapStopReason::Restarting => Err("server requested restart during handshake".into()),
         }
     }
 
@@ -179,6 +182,61 @@ impl DapClient {
         )?;
         self.wait_for_response("setBreakpoints")?;
         Ok(())
+    }
+
+    /// Send a Restart command and wait for a Stopped event (program restarted at entry).
+    ///
+    /// The server resets the processor to the beginning of the program with the same
+    /// inputs and re-emits `miden/uiState` + `Stopped(entry)`.
+    pub fn restart(&mut self) -> Result<DapStopReason, String> {
+        self.send_request("restart", serde_json::json!({}))?;
+        self.wait_for_response("restart")?;
+        self.wait_for_stopped()
+    }
+
+    /// Send a Phase 2 restart command (with arguments) and wait for the server's response.
+    ///
+    /// The server will respond with `Terminated(restart=true)` and shut down so the caller
+    /// can recompile and reconnect.
+    pub fn restart_phase2(&mut self) -> Result<DapStopReason, String> {
+        self.send_request("restart", serde_json::json!({"arguments": {}}))?;
+        self.wait_for_response("restart")?;
+        self.wait_for_stopped()
+    }
+
+    /// Connect to a DAP server with exponential backoff, for Phase 2 reconnection.
+    ///
+    /// Polls with delays from 50ms up to 1s, timing out after `timeout`.
+    pub fn connect_with_retry(addr: &str, timeout: std::time::Duration) -> Result<Self, String> {
+        let start = std::time::Instant::now();
+        let mut delay = std::time::Duration::from_millis(50);
+        loop {
+            match TcpStream::connect(addr) {
+                Ok(stream) => {
+                    let reader = BufReader::new(
+                        stream
+                            .try_clone()
+                            .map_err(|e| format!("failed to clone TCP stream: {e}"))?,
+                    );
+                    let writer = BufWriter::new(stream);
+                    return Ok(Self {
+                        reader,
+                        writer,
+                        seq: 0,
+                    });
+                }
+                Err(_) if start.elapsed() < timeout => {
+                    std::thread::sleep(delay);
+                    delay = (delay * 2).min(std::time::Duration::from_secs(1));
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "failed to reconnect to {addr} after {:.1}s: {e}",
+                        timeout.as_secs_f64()
+                    ));
+                }
+            }
+        }
     }
 
     /// Disconnect from the DAP server.
@@ -298,7 +356,15 @@ impl DapClient {
                         .expect("server must emit miden/uiState before stopped; this is a bug");
                     return Ok(DapStopReason::Stopped(snapshot));
                 }
-                DapMessage::Event(Event::Terminated(_)) => {
+                DapMessage::Event(Event::Terminated(body)) => {
+                    let is_restart = body
+                        .as_ref()
+                        .and_then(|b| b.restart.as_ref())
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                    if is_restart {
+                        return Ok(DapStopReason::Restarting);
+                    }
                     return Ok(DapStopReason::Terminated);
                 }
                 DapMessage::Event(Event::MidenUiState(value)) => {

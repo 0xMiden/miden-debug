@@ -477,6 +477,12 @@ impl Home {
                 state.stopped = true;
                 actions.push(Some(Action::StatusLine("program terminated successfully".into())));
             }
+            Ok(DapStopReason::Restarting) => {
+                state.stopped = true;
+                actions.push(Some(Action::StatusLine(
+                    "server signaled Phase 2 restart during step".into(),
+                )));
+            }
             Err(e) => {
                 state.executor_mut().stopped = true;
                 state.stopped = true;

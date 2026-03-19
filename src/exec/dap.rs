@@ -1,7 +1,10 @@
 use std::{
     io::{BufReader, BufWriter},
     net::TcpListener,
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use dap::prelude::*;
@@ -33,22 +36,40 @@ static DAP_CONFIG: OnceLock<DapConfig> = OnceLock::new();
 pub struct DapConfig {
     /// The address to listen on, e.g. "127.0.0.1:4711".
     pub listen_addr: String,
-}
-
-impl Default for DapConfig {
-    fn default() -> Self {
-        Self {
-            listen_addr: "127.0.0.1:4711".into(),
-        }
-    }
+    /// Shared flag: set by the server when a Phase 2 restart (terminate-and-reconnect) is
+    /// requested, read by the caller to decide whether to recompile and re-enter.
+    restart_requested: Arc<AtomicBool>,
 }
 
 impl DapConfig {
+    pub fn new(listen_addr: impl Into<String>) -> Self {
+        Self {
+            listen_addr: listen_addr.into(),
+            restart_requested: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Returns `true` if the server has signalled a Phase 2 restart.
+    pub fn restart_requested(&self) -> bool {
+        self.restart_requested.load(Ordering::Acquire)
+    }
+
+    /// Clear the restart flag (called by the caller after acting on it).
+    pub fn reset_restart(&self) {
+        self.restart_requested.store(false, Ordering::Release);
+    }
+
     /// Set the global DAP configuration. Must be called before `execute_transaction()`.
     ///
     /// Only the first call takes effect; subsequent calls are ignored.
     pub fn set_global(config: DapConfig) {
         DAP_CONFIG.set(config).ok();
+    }
+}
+
+impl Default for DapConfig {
+    fn default() -> Self {
+        Self::new("127.0.0.1:4711")
     }
 }
 
@@ -385,28 +406,35 @@ impl DapExecutor {
         program: &Program,
         host: &mut H,
     ) -> Result<ExecutionOutput, ExecutionError> {
-        // 1. Create FastProcessor with debugging and tracing enabled
+        // Clone inputs so they can be reused across restarts.
+        let stack_inputs = self.stack_inputs;
+        let advice_inputs = self.advice_inputs;
         let options = self.options.with_debugging(true).with_tracing(true);
-        let mut processor = FastProcessor::new(self.stack_inputs)
-            .with_advice(self.advice_inputs)
-            .with_options(options);
 
-        // 2. Get initial resume context
-        let resume_ctx = processor.get_initial_resume_context(program)?;
-
-        // 3. Wrap host with DapHostWrapper for call depth tracking
-        let mut wrapper = DapHostWrapper::new(host);
-
-        // 4. Bind TCP listener
-        let listener = TcpListener::bind(&self.config.listen_addr).unwrap_or_else(|e| {
-            panic!("DAP server failed to bind to {}: {e}", self.config.listen_addr)
-        });
+        // Bind TCP listener with SO_REUSEADDR to allow rebinding during Phase 2 restarts.
+        let listener = {
+            use socket2::{Domain, Socket, Type};
+            let addr: std::net::SocketAddr = self.config.listen_addr.parse().unwrap_or_else(|e| {
+                panic!("invalid listen address '{}': {e}", self.config.listen_addr)
+            });
+            let socket = Socket::new(Domain::for_address(addr), Type::STREAM, None)
+                .unwrap_or_else(|e| panic!("failed to create socket: {e}"));
+            socket.set_reuse_address(true).ok();
+            socket
+                .bind(&addr.into())
+                .unwrap_or_else(|e| panic!("DAP server failed to bind to {addr}: {e}"));
+            socket
+                .listen(1)
+                .unwrap_or_else(|e| panic!("DAP server failed to listen on {addr}: {e}"));
+            let listener: TcpListener = socket.into();
+            listener
+        };
         eprintln!(
             "DAP server listening on {}. Waiting for client connection...",
             self.config.listen_addr
         );
 
-        // 5. Accept one client connection
+        // Accept one client connection (persists across restarts).
         let (stream, addr) =
             listener.accept().unwrap_or_else(|e| panic!("DAP server accept failed: {e}"));
         eprintln!("DAP client connected from {addr}");
@@ -416,465 +444,549 @@ impl DapExecutor {
         );
         let writer = BufWriter::new(stream);
 
-        // 6. Create DAP server
         let mut server = Server::new(reader, writer);
-
-        // 7. Enter DAP event loop
-        let mut resume_ctx = Some(resume_ctx);
         let mut breakpoints: Vec<StoredBreakpoint> = Vec::new();
-        let mut cycle: usize = 0;
-        let mut current_asmop: Option<AssemblyOp> = None;
+        let mut is_restart = false;
+        let restart_flag = self.config.restart_requested.clone();
 
-        // Extract initial asmop
-        if let Some(ctx) = resume_ctx.as_ref() {
-            let (_op, node_id, op_idx, _control) = extract_current_op(ctx);
-            current_asmop =
-                node_id.and_then(|nid| ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
-        }
-
+        // Outer restart loop — on restart, the DapHostWrapper borrow is dropped,
+        // a fresh FastProcessor is created, and the inner event loop re-enters.
+        //
+        // NOTE: The inner host `H` (e.g. from miden-client's transaction executor)
+        // retains mutations from prior execution. A restarted session may therefore
+        // diverge from a pristine fresh session. Phase 2 (terminate-and-reconnect)
+        // solves this by creating a completely fresh host.
         loop {
-            let req = match server.poll_request() {
-                Ok(Some(req)) => req,
-                Ok(None) => break,
-                Err(e) => {
-                    eprintln!("DAP protocol error: {e:#?}");
-                    break;
-                }
-            };
+            let mut processor = FastProcessor::new(stack_inputs)
+                .with_advice(advice_inputs.clone())
+                .with_options(options);
 
-            match req.command {
-                // --- Handshake ---
-                Command::Initialize(_) => {
-                    let caps = types::Capabilities {
-                        supports_configuration_done_request: Some(true),
-                        supports_stepping_granularity: Some(true),
-                        ..Default::default()
-                    };
-                    let resp = req.success(ResponseBody::Initialize(caps));
-                    server.respond(resp).ok();
-                    server.send_event(Event::Initialized).ok();
-                }
+            let resume_ctx = processor.get_initial_resume_context(program)?;
+            let mut wrapper = DapHostWrapper::new(host);
 
-                Command::Launch(_) => {
-                    server.respond(req.success(ResponseBody::Launch)).ok();
-                }
+            let mut resume_ctx = Some(resume_ctx);
+            let mut cycle: usize = 0;
+            let mut current_asmop: Option<AssemblyOp> = None;
 
-                Command::ConfigurationDone => {
-                    if let Ok(resp) = req.ack() {
-                        server.respond(resp).ok();
+            // Extract initial asmop.
+            if let Some(ctx) = resume_ctx.as_ref() {
+                let (_op, node_id, op_idx, _control) = extract_current_op(ctx);
+                current_asmop = node_id
+                    .and_then(|nid| ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
+            }
+
+            // On restart, emit initial state immediately (no handshake needed).
+            if is_restart {
+                send_ui_state_snapshot(
+                    &mut server,
+                    &mut processor,
+                    &wrapper,
+                    current_asmop.as_ref(),
+                    cycle,
+                );
+                server
+                    .send_event(Event::Stopped(events::StoppedEventBody {
+                        reason: types::StoppedEventReason::Entry,
+                        description: Some("Restarted at program entry".into()),
+                        thread_id: Some(1),
+                        preserve_focus_hint: None,
+                        text: None,
+                        all_threads_stopped: Some(true),
+                        hit_breakpoint_ids: None,
+                    }))
+                    .ok();
+            }
+
+            let mut restart_requested = false;
+            let mut phase2_requested = false;
+
+            loop {
+                let req = match server.poll_request() {
+                    Ok(Some(req)) => req,
+                    Ok(None) => break,
+                    Err(e) => {
+                        eprintln!("DAP protocol error: {e:#?}");
+                        break;
                     }
-                    // Push initial UI state snapshot, then pause at entry point.
-                    send_ui_state_snapshot(
-                        &mut server,
-                        &mut processor,
-                        &wrapper,
-                        current_asmop.as_ref(),
-                        cycle,
-                    );
-                    server
-                        .send_event(Event::Stopped(events::StoppedEventBody {
-                            reason: types::StoppedEventReason::Entry,
-                            description: Some("Paused at program entry".into()),
-                            thread_id: Some(1),
-                            preserve_focus_hint: None,
-                            text: None,
-                            all_threads_stopped: Some(true),
-                            hit_breakpoint_ids: None,
-                        }))
-                        .ok();
-                }
+                };
 
-                Command::Disconnect(_) => {
-                    if let Ok(resp) = req.ack() {
-                        server.respond(resp).ok();
-                    }
-                    break;
-                }
-
-                // --- Execution Control ---
-                Command::Continue(_) => {
-                    let resp = req.success(ResponseBody::Continue(responses::ContinueResponse {
-                        all_threads_continued: Some(true),
-                    }));
-                    server.respond(resp).ok();
-
-                    match step_until_breakpoint(
-                        &mut processor,
-                        &mut wrapper,
-                        &mut resume_ctx,
-                        &mut cycle,
-                        &mut current_asmop,
-                        &breakpoints,
-                    ) {
-                        StepResult::Stepped | StepResult::Breakpoint(_) => {
-                            send_ui_state_snapshot(
-                                &mut server,
-                                &mut processor,
-                                &wrapper,
-                                current_asmop.as_ref(),
-                                cycle,
-                            );
-                            server
-                                .send_event(Event::Stopped(events::StoppedEventBody {
-                                    reason: types::StoppedEventReason::Breakpoint,
-                                    description: Some("Hit breakpoint".into()),
-                                    thread_id: Some(1),
-                                    preserve_focus_hint: None,
-                                    text: None,
-                                    all_threads_stopped: Some(true),
-                                    hit_breakpoint_ids: None,
-                                }))
-                                .ok();
-                        }
-                        StepResult::Terminated => {
-                            server.send_event(Event::Terminated(None)).ok();
-                        }
-                        StepResult::Error(e) => {
-                            server.send_event(Event::Terminated(None)).ok();
-                            return Err(e);
-                        }
-                    }
-                }
-
-                Command::Next(_) => {
-                    let resp = req.success(ResponseBody::Next);
-                    server.respond(resp).ok();
-
-                    match step_over(
-                        &mut processor,
-                        &mut wrapper,
-                        &mut resume_ctx,
-                        &mut cycle,
-                        &mut current_asmop,
-                    ) {
-                        StepResult::Stepped | StepResult::Breakpoint(_) => {
-                            if resume_ctx.is_none() {
-                                server.send_event(Event::Terminated(None)).ok();
-                            } else {
-                                send_ui_state_snapshot(
-                                    &mut server,
-                                    &mut processor,
-                                    &wrapper,
-                                    current_asmop.as_ref(),
-                                    cycle,
-                                );
-                                send_stopped_step(&mut server);
-                            }
-                        }
-                        StepResult::Terminated => {
-                            server.send_event(Event::Terminated(None)).ok();
-                        }
-                        StepResult::Error(e) => {
-                            server.send_event(Event::Terminated(None)).ok();
-                            return Err(e);
-                        }
-                    }
-                }
-
-                Command::StepIn(_) => {
-                    let resp = req.success(ResponseBody::StepIn);
-                    server.respond(resp).ok();
-
-                    match step_one(
-                        &mut processor,
-                        &mut wrapper,
-                        &mut resume_ctx,
-                        &mut cycle,
-                        &mut current_asmop,
-                    ) {
-                        StepResult::Stepped | StepResult::Breakpoint(_) => {
-                            if resume_ctx.is_none() {
-                                server.send_event(Event::Terminated(None)).ok();
-                            } else {
-                                send_ui_state_snapshot(
-                                    &mut server,
-                                    &mut processor,
-                                    &wrapper,
-                                    current_asmop.as_ref(),
-                                    cycle,
-                                );
-                                send_stopped_step(&mut server);
-                            }
-                        }
-                        StepResult::Terminated => {
-                            server.send_event(Event::Terminated(None)).ok();
-                        }
-                        StepResult::Error(e) => {
-                            server.send_event(Event::Terminated(None)).ok();
-                            return Err(e);
-                        }
-                    }
-                }
-
-                Command::StepOut(_) => {
-                    let resp = req.success(ResponseBody::StepOut);
-                    server.respond(resp).ok();
-
-                    match step_out(
-                        &mut processor,
-                        &mut wrapper,
-                        &mut resume_ctx,
-                        &mut cycle,
-                        &mut current_asmop,
-                    ) {
-                        StepResult::Stepped | StepResult::Breakpoint(_) => {
-                            if resume_ctx.is_none() {
-                                server.send_event(Event::Terminated(None)).ok();
-                            } else {
-                                send_ui_state_snapshot(
-                                    &mut server,
-                                    &mut processor,
-                                    &wrapper,
-                                    current_asmop.as_ref(),
-                                    cycle,
-                                );
-                                send_stopped_step(&mut server);
-                            }
-                        }
-                        StepResult::Terminated => {
-                            server.send_event(Event::Terminated(None)).ok();
-                        }
-                        StepResult::Error(e) => {
-                            server.send_event(Event::Terminated(None)).ok();
-                            return Err(e);
-                        }
-                    }
-                }
-
-                // --- State Inspection ---
-                Command::Threads => {
-                    let resp = req.success(ResponseBody::Threads(responses::ThreadsResponse {
-                        threads: vec![types::Thread {
-                            id: 1,
-                            name: "main".into(),
-                        }],
-                    }));
-                    server.respond(resp).ok();
-                }
-
-                Command::StackTrace(ref _args) => {
-                    let mut frames = Vec::new();
-
-                    let (name, source, line) = if let Some(asmop) = current_asmop.as_ref() {
-                        let loc = resolve_asmop_location(asmop, &wrapper);
-                        let (path, line_num) = loc.unwrap_or_else(|| ("<unknown>".into(), 0));
-                        let source = types::Source {
-                            name: Some(path.rsplit('/').next().unwrap_or(&path).to_string()),
-                            path: Some(path),
+                match req.command {
+                    // --- Handshake ---
+                    Command::Initialize(_) => {
+                        let caps = types::Capabilities {
+                            supports_configuration_done_request: Some(true),
+                            supports_stepping_granularity: Some(true),
+                            supports_restart_request: Some(true),
                             ..Default::default()
                         };
-                        (asmop.context_name().to_string(), Some(source), line_num)
-                    } else {
-                        (format!("cycle {cycle}"), None, 0)
-                    };
+                        let resp = req.success(ResponseBody::Initialize(caps));
+                        server.respond(resp).ok();
+                        server.send_event(Event::Initialized).ok();
+                    }
 
-                    frames.push(types::StackFrame {
-                        id: 0,
-                        name,
-                        source,
-                        line,
-                        column: 0,
-                        ..Default::default()
-                    });
+                    Command::Launch(_) => {
+                        server.respond(req.success(ResponseBody::Launch)).ok();
+                    }
 
-                    let resp =
-                        req.success(ResponseBody::StackTrace(responses::StackTraceResponse {
-                            stack_frames: frames,
-                            total_frames: Some(1),
-                        }));
-                    server.respond(resp).ok();
-                }
-
-                Command::Scopes(ref _args) => {
-                    let resp = req.success(ResponseBody::Scopes(responses::ScopesResponse {
-                        scopes: vec![
-                            types::Scope {
-                                name: "Operand Stack".into(),
-                                variables_reference: SCOPE_STACK,
-                                expensive: false,
-                                ..Default::default()
-                            },
-                            types::Scope {
-                                name: "Memory".into(),
-                                variables_reference: SCOPE_MEMORY,
-                                expensive: false,
-                                ..Default::default()
-                            },
-                        ],
-                    }));
-                    server.respond(resp).ok();
-                }
-
-                Command::Variables(ref args) => {
-                    let variables = match args.variables_reference {
-                        SCOPE_STACK => {
-                            let state = processor.state();
-                            let stack = state.get_stack_state();
-                            stack
-                                .iter()
-                                .enumerate()
-                                .map(|(i, felt)| types::Variable {
-                                    name: format!("[{i}]"),
-                                    value: format!("{}", felt.as_canonical_u64()),
-                                    type_field: Some("Felt".into()),
-                                    variables_reference: 0,
-                                    ..Default::default()
-                                })
-                                .collect()
+                    Command::ConfigurationDone => {
+                        if let Ok(resp) = req.ack() {
+                            server.respond(resp).ok();
                         }
-                        SCOPE_MEMORY => {
-                            let state = processor.state();
-                            let ctx = state.ctx();
-                            let mem = state.get_mem_state(ctx);
-                            mem.iter()
-                                .map(|(addr, felt)| {
-                                    let addr_u32: u32 = (*addr).into();
-                                    types::Variable {
-                                        name: format!("0x{addr_u32:08x}"),
+                        // Push initial UI state snapshot, then pause at entry point.
+                        send_ui_state_snapshot(
+                            &mut server,
+                            &mut processor,
+                            &wrapper,
+                            current_asmop.as_ref(),
+                            cycle,
+                        );
+                        server
+                            .send_event(Event::Stopped(events::StoppedEventBody {
+                                reason: types::StoppedEventReason::Entry,
+                                description: Some("Paused at program entry".into()),
+                                thread_id: Some(1),
+                                preserve_focus_hint: None,
+                                text: None,
+                                all_threads_stopped: Some(true),
+                                hit_breakpoint_ids: None,
+                            }))
+                            .ok();
+                    }
+
+                    Command::Restart(ref args) => {
+                        let has_arguments = args.arguments.is_some();
+                        server.respond(req.success(ResponseBody::Restart)).ok();
+                        if has_arguments {
+                            // Phase 2: terminate-and-reconnect for recompilation.
+                            restart_flag.store(true, Ordering::Release);
+                            server
+                                .send_event(Event::Terminated(Some(events::TerminatedEventBody {
+                                    restart: Some(serde_json::Value::Bool(true)),
+                                })))
+                                .ok();
+                            phase2_requested = true;
+                            break;
+                        } else {
+                            // Phase 1: in-process reset (same program, same host).
+                            restart_requested = true;
+                            break;
+                        }
+                    }
+
+                    Command::Disconnect(_) => {
+                        if let Ok(resp) = req.ack() {
+                            server.respond(resp).ok();
+                        }
+                        break;
+                    }
+
+                    // --- Execution Control ---
+                    Command::Continue(_) => {
+                        let resp =
+                            req.success(ResponseBody::Continue(responses::ContinueResponse {
+                                all_threads_continued: Some(true),
+                            }));
+                        server.respond(resp).ok();
+
+                        match step_until_breakpoint(
+                            &mut processor,
+                            &mut wrapper,
+                            &mut resume_ctx,
+                            &mut cycle,
+                            &mut current_asmop,
+                            &breakpoints,
+                        ) {
+                            StepResult::Stepped | StepResult::Breakpoint(_) => {
+                                send_ui_state_snapshot(
+                                    &mut server,
+                                    &mut processor,
+                                    &wrapper,
+                                    current_asmop.as_ref(),
+                                    cycle,
+                                );
+                                server
+                                    .send_event(Event::Stopped(events::StoppedEventBody {
+                                        reason: types::StoppedEventReason::Breakpoint,
+                                        description: Some("Hit breakpoint".into()),
+                                        thread_id: Some(1),
+                                        preserve_focus_hint: None,
+                                        text: None,
+                                        all_threads_stopped: Some(true),
+                                        hit_breakpoint_ids: None,
+                                    }))
+                                    .ok();
+                            }
+                            StepResult::Terminated => {
+                                server.send_event(Event::Terminated(None)).ok();
+                            }
+                            StepResult::Error(e) => {
+                                server.send_event(Event::Terminated(None)).ok();
+                                return Err(e);
+                            }
+                        }
+                    }
+
+                    Command::Next(_) => {
+                        let resp = req.success(ResponseBody::Next);
+                        server.respond(resp).ok();
+
+                        match step_over(
+                            &mut processor,
+                            &mut wrapper,
+                            &mut resume_ctx,
+                            &mut cycle,
+                            &mut current_asmop,
+                        ) {
+                            StepResult::Stepped | StepResult::Breakpoint(_) => {
+                                if resume_ctx.is_none() {
+                                    server.send_event(Event::Terminated(None)).ok();
+                                } else {
+                                    send_ui_state_snapshot(
+                                        &mut server,
+                                        &mut processor,
+                                        &wrapper,
+                                        current_asmop.as_ref(),
+                                        cycle,
+                                    );
+                                    send_stopped_step(&mut server);
+                                }
+                            }
+                            StepResult::Terminated => {
+                                server.send_event(Event::Terminated(None)).ok();
+                            }
+                            StepResult::Error(e) => {
+                                server.send_event(Event::Terminated(None)).ok();
+                                return Err(e);
+                            }
+                        }
+                    }
+
+                    Command::StepIn(_) => {
+                        let resp = req.success(ResponseBody::StepIn);
+                        server.respond(resp).ok();
+
+                        match step_one(
+                            &mut processor,
+                            &mut wrapper,
+                            &mut resume_ctx,
+                            &mut cycle,
+                            &mut current_asmop,
+                        ) {
+                            StepResult::Stepped | StepResult::Breakpoint(_) => {
+                                if resume_ctx.is_none() {
+                                    server.send_event(Event::Terminated(None)).ok();
+                                } else {
+                                    send_ui_state_snapshot(
+                                        &mut server,
+                                        &mut processor,
+                                        &wrapper,
+                                        current_asmop.as_ref(),
+                                        cycle,
+                                    );
+                                    send_stopped_step(&mut server);
+                                }
+                            }
+                            StepResult::Terminated => {
+                                server.send_event(Event::Terminated(None)).ok();
+                            }
+                            StepResult::Error(e) => {
+                                server.send_event(Event::Terminated(None)).ok();
+                                return Err(e);
+                            }
+                        }
+                    }
+
+                    Command::StepOut(_) => {
+                        let resp = req.success(ResponseBody::StepOut);
+                        server.respond(resp).ok();
+
+                        match step_out(
+                            &mut processor,
+                            &mut wrapper,
+                            &mut resume_ctx,
+                            &mut cycle,
+                            &mut current_asmop,
+                        ) {
+                            StepResult::Stepped | StepResult::Breakpoint(_) => {
+                                if resume_ctx.is_none() {
+                                    server.send_event(Event::Terminated(None)).ok();
+                                } else {
+                                    send_ui_state_snapshot(
+                                        &mut server,
+                                        &mut processor,
+                                        &wrapper,
+                                        current_asmop.as_ref(),
+                                        cycle,
+                                    );
+                                    send_stopped_step(&mut server);
+                                }
+                            }
+                            StepResult::Terminated => {
+                                server.send_event(Event::Terminated(None)).ok();
+                            }
+                            StepResult::Error(e) => {
+                                server.send_event(Event::Terminated(None)).ok();
+                                return Err(e);
+                            }
+                        }
+                    }
+
+                    // --- State Inspection ---
+                    Command::Threads => {
+                        let resp = req.success(ResponseBody::Threads(responses::ThreadsResponse {
+                            threads: vec![types::Thread {
+                                id: 1,
+                                name: "main".into(),
+                            }],
+                        }));
+                        server.respond(resp).ok();
+                    }
+
+                    Command::StackTrace(ref _args) => {
+                        let mut frames = Vec::new();
+
+                        let (name, source, line) = if let Some(asmop) = current_asmop.as_ref() {
+                            let loc = resolve_asmop_location(asmop, &wrapper);
+                            let (path, line_num) = loc.unwrap_or_else(|| ("<unknown>".into(), 0));
+                            let source = types::Source {
+                                name: Some(path.rsplit('/').next().unwrap_or(&path).to_string()),
+                                path: Some(path),
+                                ..Default::default()
+                            };
+                            (asmop.context_name().to_string(), Some(source), line_num)
+                        } else {
+                            (format!("cycle {cycle}"), None, 0)
+                        };
+
+                        frames.push(types::StackFrame {
+                            id: 0,
+                            name,
+                            source,
+                            line,
+                            column: 0,
+                            ..Default::default()
+                        });
+
+                        let resp =
+                            req.success(ResponseBody::StackTrace(responses::StackTraceResponse {
+                                stack_frames: frames,
+                                total_frames: Some(1),
+                            }));
+                        server.respond(resp).ok();
+                    }
+
+                    Command::Scopes(ref _args) => {
+                        let resp = req.success(ResponseBody::Scopes(responses::ScopesResponse {
+                            scopes: vec![
+                                types::Scope {
+                                    name: "Operand Stack".into(),
+                                    variables_reference: SCOPE_STACK,
+                                    expensive: false,
+                                    ..Default::default()
+                                },
+                                types::Scope {
+                                    name: "Memory".into(),
+                                    variables_reference: SCOPE_MEMORY,
+                                    expensive: false,
+                                    ..Default::default()
+                                },
+                            ],
+                        }));
+                        server.respond(resp).ok();
+                    }
+
+                    Command::Variables(ref args) => {
+                        let variables = match args.variables_reference {
+                            SCOPE_STACK => {
+                                let state = processor.state();
+                                let stack = state.get_stack_state();
+                                stack
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, felt)| types::Variable {
+                                        name: format!("[{i}]"),
                                         value: format!("{}", felt.as_canonical_u64()),
                                         type_field: Some("Felt".into()),
                                         variables_reference: 0,
                                         ..Default::default()
-                                    }
-                                })
-                                .collect()
-                        }
-                        _ => Vec::new(),
-                    };
+                                    })
+                                    .collect()
+                            }
+                            SCOPE_MEMORY => {
+                                let state = processor.state();
+                                let ctx = state.ctx();
+                                let mem = state.get_mem_state(ctx);
+                                mem.iter()
+                                    .map(|(addr, felt)| {
+                                        let addr_u32: u32 = (*addr).into();
+                                        types::Variable {
+                                            name: format!("0x{addr_u32:08x}"),
+                                            value: format!("{}", felt.as_canonical_u64()),
+                                            type_field: Some("Felt".into()),
+                                            variables_reference: 0,
+                                            ..Default::default()
+                                        }
+                                    })
+                                    .collect()
+                            }
+                            _ => Vec::new(),
+                        };
 
-                    let resp = req.success(ResponseBody::Variables(responses::VariablesResponse {
-                        variables,
-                    }));
-                    server.respond(resp).ok();
-                }
+                        let resp =
+                            req.success(ResponseBody::Variables(responses::VariablesResponse {
+                                variables,
+                            }));
+                        server.respond(resp).ok();
+                    }
 
-                // --- Breakpoints ---
-                Command::SetBreakpoints(ref args) => {
-                    let source_path = args.source.path.clone().unwrap_or_default();
-                    breakpoints.retain(|bp| bp.path != source_path);
+                    // --- Breakpoints ---
+                    Command::SetBreakpoints(ref args) => {
+                        let source_path = args.source.path.clone().unwrap_or_default();
+                        breakpoints.retain(|bp| bp.path != source_path);
 
-                    let mut confirmed = Vec::new();
-                    if let Some(bps) = &args.breakpoints {
-                        for sbp in bps {
-                            breakpoints.push(StoredBreakpoint {
-                                path: source_path.clone(),
-                                line: sbp.line,
-                            });
-                            confirmed.push(types::Breakpoint {
-                                verified: true,
-                                line: Some(sbp.line),
-                                source: Some(types::Source {
-                                    path: Some(source_path.clone()),
+                        let mut confirmed = Vec::new();
+                        if let Some(bps) = &args.breakpoints {
+                            for sbp in bps {
+                                breakpoints.push(StoredBreakpoint {
+                                    path: source_path.clone(),
+                                    line: sbp.line,
+                                });
+                                confirmed.push(types::Breakpoint {
+                                    verified: true,
+                                    line: Some(sbp.line),
+                                    source: Some(types::Source {
+                                        path: Some(source_path.clone()),
+                                        ..Default::default()
+                                    }),
                                     ..Default::default()
-                                }),
-                                ..Default::default()
-                            });
+                                });
+                            }
                         }
+
+                        let resp = req.success(ResponseBody::SetBreakpoints(
+                            responses::SetBreakpointsResponse {
+                                breakpoints: confirmed,
+                            },
+                        ));
+                        server.respond(resp).ok();
                     }
 
-                    let resp = req.success(ResponseBody::SetBreakpoints(
-                        responses::SetBreakpointsResponse {
-                            breakpoints: confirmed,
-                        },
-                    ));
-                    server.respond(resp).ok();
-                }
+                    // --- Evaluate (custom state query) ---
+                    Command::Evaluate(ref args) if args.expression == "__miden_ui_state" => {
+                        let state_json = serde_json::to_string(&build_ui_state(
+                            &mut processor,
+                            &wrapper,
+                            current_asmop.as_ref(),
+                            cycle,
+                        ))
+                        .expect("bundled DAP UI state should serialize");
+                        let resp =
+                            req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
+                                result: state_json,
+                                type_field: Some("json".into()),
+                                presentation_hint: None,
+                                variables_reference: 0,
+                                named_variables: None,
+                                indexed_variables: None,
+                                memory_reference: None,
+                            }));
+                        server.respond(resp).ok();
+                    }
 
-                // --- Evaluate (custom state query) ---
-                Command::Evaluate(ref args) if args.expression == "__miden_ui_state" => {
-                    let state_json = serde_json::to_string(&build_ui_state(
-                        &mut processor,
-                        &wrapper,
-                        current_asmop.as_ref(),
-                        cycle,
-                    ))
-                    .expect("bundled DAP UI state should serialize");
-                    let resp = req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
-                        result: state_json,
-                        type_field: Some("json".into()),
-                        presentation_hint: None,
-                        variables_reference: 0,
-                        named_variables: None,
-                        indexed_variables: None,
-                        memory_reference: None,
-                    }));
-                    server.respond(resp).ok();
-                }
-
-                Command::Evaluate(ref args)
-                    if args.expression.starts_with("__miden_read_memory ") =>
-                {
-                    let expr = args
-                        .expression
-                        .strip_prefix("__miden_read_memory ")
-                        .expect("prefix checked above");
-
-                    match expr
-                        .parse::<ReadMemoryExpr>()
-                        .and_then(|expr| read_memory_at_current_state(&mut processor, cycle, &expr))
+                    Command::Evaluate(ref args)
+                        if args.expression.starts_with("__miden_read_memory ") =>
                     {
-                        Ok(result) => {
-                            let resp =
-                                req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
-                                    result,
-                                    type_field: Some("string".into()),
-                                    presentation_hint: None,
-                                    variables_reference: 0,
-                                    named_variables: None,
-                                    indexed_variables: None,
-                                    memory_reference: None,
-                                }));
-                            server.respond(resp).ok();
-                        }
-                        Err(err) => {
-                            server.respond(req.error(&err)).ok();
+                        let expr = args
+                            .expression
+                            .strip_prefix("__miden_read_memory ")
+                            .expect("prefix checked above");
+
+                        match expr.parse::<ReadMemoryExpr>().and_then(|expr| {
+                            read_memory_at_current_state(&mut processor, cycle, &expr)
+                        }) {
+                            Ok(result) => {
+                                let resp = req.success(ResponseBody::Evaluate(
+                                    responses::EvaluateResponse {
+                                        result,
+                                        type_field: Some("string".into()),
+                                        presentation_hint: None,
+                                        variables_reference: 0,
+                                        named_variables: None,
+                                        indexed_variables: None,
+                                        memory_reference: None,
+                                    },
+                                ));
+                                server.respond(resp).ok();
+                            }
+                            Err(err) => {
+                                server.respond(req.error(&err)).ok();
+                            }
                         }
                     }
-                }
 
-                Command::Evaluate(ref _args) => {
-                    server.respond(req.error("Unsupported expression")).ok();
-                }
-
-                // --- Unhandled ---
-                _ => {
-                    server.respond(req.error("Unsupported command")).ok();
-                }
-            }
-        }
-
-        eprintln!("DAP session ended. Building execution output...");
-
-        // Run the program to completion if it hasn't finished
-        if let Some(ctx) = resume_ctx {
-            let mut ctx = Some(ctx);
-            while let Some(resume) = ctx.take() {
-                match poll_immediately(processor.step(&mut wrapper, resume)) {
-                    Ok(Some(new_ctx)) => {
-                        ctx = Some(new_ctx);
+                    Command::Evaluate(ref _args) => {
+                        server.respond(req.error("Unsupported expression")).ok();
                     }
-                    Ok(None) => break,
-                    Err(e) => return Err(e),
+
+                    // --- Unhandled ---
+                    _ => {
+                        server.respond(req.error("Unsupported command")).ok();
+                    }
                 }
             }
-        }
 
-        // Build ExecutionOutput from the processor's final state.
-        //
-        // NOTE: The advice provider and precompile transcript are not accessible from the
-        // processor's public API after stepping, so we use defaults. This is acceptable because
-        // the DAP executor is a debugging tool — the returned ExecutionOutput is used to satisfy
-        // the transaction executor trait, not for proof generation.
-        let stack_top: Vec<_> = processor.stack_top().iter().rev().copied().collect();
-        let stack = StackOutputs::new(&stack_top)
-            .unwrap_or_else(|_| StackOutputs::new(&[]).expect("empty stack outputs"));
+            if phase2_requested {
+                eprintln!("DAP Phase 2 restart: returning from execute() for recompilation...");
+                return Ok(ExecutionOutput {
+                    stack: StackOutputs::new(&[]).expect("empty stack outputs"),
+                    advice: Default::default(),
+                    memory: Default::default(),
+                    final_pc_transcript: PrecompileTranscript::default(),
+                });
+            }
 
-        Ok(ExecutionOutput {
-            stack,
-            advice: Default::default(),
-            memory: Default::default(),
-            final_pc_transcript: PrecompileTranscript::default(),
-        })
+            if restart_requested {
+                is_restart = true;
+                eprintln!("DAP restart requested. Resetting processor...");
+                // wrapper is dropped here, releasing the &mut H borrow.
+                // The outer loop creates a fresh processor and wrapper.
+                continue;
+            }
+
+            // Normal exit (disconnect or connection closed).
+            eprintln!("DAP session ended. Building execution output...");
+
+            // Run the program to completion if it hasn't finished.
+            if let Some(ctx) = resume_ctx {
+                let mut ctx = Some(ctx);
+                while let Some(resume) = ctx.take() {
+                    match poll_immediately(processor.step(&mut wrapper, resume)) {
+                        Ok(Some(new_ctx)) => {
+                            ctx = Some(new_ctx);
+                        }
+                        Ok(None) => break,
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+
+            // Build ExecutionOutput from the processor's final state.
+            //
+            // NOTE: The advice provider and precompile transcript are not accessible from the
+            // processor's public API after stepping, so we use defaults. This is acceptable because
+            // the DAP executor is a debugging tool — the returned ExecutionOutput is used to satisfy
+            // the transaction executor trait, not for proof generation.
+            let stack_top: Vec<_> = processor.stack_top().iter().rev().copied().collect();
+            let stack = StackOutputs::new(&stack_top)
+                .unwrap_or_else(|_| StackOutputs::new(&[]).expect("empty stack outputs"));
+
+            return Ok(ExecutionOutput {
+                stack,
+                advice: Default::default(),
+                memory: Default::default(),
+                final_pc_transcript: PrecompileTranscript::default(),
+            });
+        } // end outer restart loop
     }
 }
 

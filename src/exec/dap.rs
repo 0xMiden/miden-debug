@@ -413,10 +413,23 @@ impl DapExecutor {
 
         // Bind TCP listener with SO_REUSEADDR to allow rebinding during Phase 2 restarts.
         let listener = {
+            use std::net::ToSocketAddrs;
+
             use socket2::{Domain, Socket, Type};
-            let addr: std::net::SocketAddr = self.config.listen_addr.parse().unwrap_or_else(|e| {
-                panic!("invalid listen address '{}': {e}", self.config.listen_addr)
-            });
+            let addr: std::net::SocketAddr = self
+                .config
+                .listen_addr
+                .to_socket_addrs()
+                .unwrap_or_else(|e| {
+                    panic!("invalid listen address '{}': {e}", self.config.listen_addr)
+                })
+                .next()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "listen address '{}' did not resolve to any address",
+                        self.config.listen_addr
+                    )
+                });
             let socket = Socket::new(Domain::for_address(addr), Type::STREAM, None)
                 .unwrap_or_else(|e| panic!("failed to create socket: {e}"));
             socket.set_reuse_address(true).ok();

@@ -442,8 +442,12 @@ impl State {
     }
 
     pub fn set_execution_failed(&mut self, error: miden_processor::ExecutionError) {
-        if let SessionState::Local(local) = &mut self.session {
-            local.execution_failed = Some(error);
+        match &mut self.session {
+            SessionState::Local(local) => local.execution_failed = Some(error),
+            #[cfg(feature = "dap")]
+            SessionState::Remote(_) => {
+                panic!("cannot record local execution failure while in remote mode")
+            }
         }
     }
 

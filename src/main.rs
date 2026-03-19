@@ -2,7 +2,9 @@ use std::env;
 
 use clap::Parser;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report, WrapErr};
-use miden_debug::{DebuggerConfig, State, run, run_with_state};
+use miden_debug::{DebuggerConfig, run};
+#[cfg(feature = "dap")]
+use miden_debug::{State, run_with_state};
 
 pub fn main() -> Result<(), Report> {
     setup_diagnostics();

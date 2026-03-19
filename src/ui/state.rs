@@ -107,8 +107,8 @@ impl RemoteState {
         use crate::exec::DebuggerHost;
 
         let mut client = crate::exec::DapClient::connect(addr).map_err(Report::msg)?;
-        client.handshake().map_err(Report::msg)?;
-        let snapshot = snapshot_remote_state(&mut client, source_manager)?;
+        let ui_state = client.handshake().map_err(Report::msg)?;
+        let snapshot = convert_ui_state(&ui_state, source_manager);
 
         let processor = FastProcessor::new(StackInputs::default());
         let host = DebuggerHost::new(source_manager.clone());
@@ -152,19 +152,20 @@ impl RemoteState {
         }
     }
 
-    fn snapshot(
+    fn refresh_executor(
         &mut self,
         source_manager: &Arc<dyn SourceManager>,
-    ) -> Result<RemoteSnapshot, Report> {
-        snapshot_remote_state(&mut self.client, source_manager)
-    }
-
-    fn refresh_executor(&mut self, source_manager: &Arc<dyn SourceManager>) -> Result<(), Report> {
-        let snapshot = self.snapshot(source_manager)?;
+        pushed: &crate::exec::DapUiState,
+    ) {
+        // Standard DAP `stopped` events tell us execution paused, but do not
+        // carry the refreshed VM state (stack, callstack, cycle). The server
+        // pushes a custom `miden/uiState` event with the bundled snapshot
+        // immediately before each `stopped` event, so we consume that here
+        // instead of issuing an extra evaluate round-trip.
+        let snapshot = convert_ui_state(pushed, source_manager);
         self.executor.current_stack = snapshot.current_stack;
         self.executor.callstack = snapshot.callstack;
         self.executor.cycle = snapshot.cycle;
-        Ok(())
     }
 }
 
@@ -310,8 +311,8 @@ impl State {
             // The client cannot safely swap artifacts on its own because the debuggee owns the
             // live processor state, launch configuration, and breakpoint rebinding. The minimal
             // viable shape is either a standard restart/relaunch flow or a custom request that
-            // replaces the artifact server-side and then emits a fresh stop + `__miden_ui_state`
-            // snapshot for the client to project.
+            // replaces the artifact server-side and then emits a fresh `miden/uiState` snapshot
+            // plus stop event for the client to project.
             return Err(Report::msg("reload is not supported in remote debug mode"));
         }
 
@@ -603,15 +604,6 @@ impl State {
         })
     }
 
-    /// Refresh the executor state from the DAP server using a bundled UI-state snapshot.
-    pub fn refresh_from_dap(&mut self) -> Result<(), Report> {
-        let source_manager = self.source_manager.clone();
-        let SessionState::Remote(remote) = &mut self.session else {
-            return Err(Report::msg("no remote debug session"));
-        };
-        remote.refresh_executor(&source_manager)
-    }
-
     pub fn step_remote(&mut self) -> Result<crate::exec::DapStopReason, Report> {
         let source_manager = self.source_manager.clone();
         let SessionState::Remote(remote) = &mut self.session else {
@@ -621,9 +613,9 @@ impl State {
 
         self.breakpoints.retain(|bp| !bp.is_one_shot());
 
-        match result {
-            crate::exec::DapStopReason::Stopped => {
-                remote.refresh_executor(&source_manager)?;
+        match &result {
+            crate::exec::DapStopReason::Stopped(snapshot) => {
+                remote.refresh_executor(&source_manager, snapshot);
                 self.stopped = true;
             }
             crate::exec::DapStopReason::Terminated => {
@@ -636,14 +628,14 @@ impl State {
     }
 }
 
+/// Convert a server-pushed [`DapUiState`](crate::exec::DapUiState) snapshot into a
+/// [`RemoteSnapshot`] that the TUI executor can consume.
 #[cfg(feature = "dap")]
-fn snapshot_remote_state(
-    client: &mut crate::exec::DapClient,
+fn convert_ui_state(
+    snapshot: &crate::exec::DapUiState,
     source_manager: &Arc<dyn SourceManager>,
-) -> Result<RemoteSnapshot, Report> {
+) -> RemoteSnapshot {
     use crate::debug::{CallFrame, CallStack};
-
-    let snapshot = client.ui_state().map_err(Report::msg)?;
 
     let call_frames: Vec<CallFrame> = snapshot
         .callstack
@@ -656,11 +648,11 @@ fn snapshot_remote_state(
 
     let current_stack = snapshot.current_stack.iter().copied().map(Felt::new).collect();
 
-    Ok(RemoteSnapshot {
+    RemoteSnapshot {
         callstack: CallStack::from_remote_frames(call_frames),
         current_stack,
         cycle: snapshot.cycle,
-    })
+    }
 }
 
 /// Resolve a remote frame to a [ResolvedLocation] by loading the source file from disk.

@@ -463,7 +463,14 @@ impl DapExecutor {
                     if let Ok(resp) = req.ack() {
                         server.respond(resp).ok();
                     }
-                    // Pause at entry point
+                    // Push initial UI state snapshot, then pause at entry point.
+                    send_ui_state_snapshot(
+                        &mut server,
+                        &mut processor,
+                        &wrapper,
+                        current_asmop.as_ref(),
+                        cycle,
+                    );
                     server
                         .send_event(Event::Stopped(events::StoppedEventBody {
                             reason: types::StoppedEventReason::Entry,
@@ -500,6 +507,13 @@ impl DapExecutor {
                         &breakpoints,
                     ) {
                         StepResult::Stepped | StepResult::Breakpoint(_) => {
+                            send_ui_state_snapshot(
+                                &mut server,
+                                &mut processor,
+                                &wrapper,
+                                current_asmop.as_ref(),
+                                cycle,
+                            );
                             server
                                 .send_event(Event::Stopped(events::StoppedEventBody {
                                     reason: types::StoppedEventReason::Breakpoint,
@@ -537,6 +551,13 @@ impl DapExecutor {
                             if resume_ctx.is_none() {
                                 server.send_event(Event::Terminated(None)).ok();
                             } else {
+                                send_ui_state_snapshot(
+                                    &mut server,
+                                    &mut processor,
+                                    &wrapper,
+                                    current_asmop.as_ref(),
+                                    cycle,
+                                );
                                 send_stopped_step(&mut server);
                             }
                         }
@@ -565,6 +586,13 @@ impl DapExecutor {
                             if resume_ctx.is_none() {
                                 server.send_event(Event::Terminated(None)).ok();
                             } else {
+                                send_ui_state_snapshot(
+                                    &mut server,
+                                    &mut processor,
+                                    &wrapper,
+                                    current_asmop.as_ref(),
+                                    cycle,
+                                );
                                 send_stopped_step(&mut server);
                             }
                         }
@@ -593,6 +621,13 @@ impl DapExecutor {
                             if resume_ctx.is_none() {
                                 server.send_event(Event::Terminated(None)).ok();
                             } else {
+                                send_ui_state_snapshot(
+                                    &mut server,
+                                    &mut processor,
+                                    &wrapper,
+                                    current_asmop.as_ref(),
+                                    cycle,
+                                );
                                 send_stopped_step(&mut server);
                             }
                         }
@@ -996,6 +1031,25 @@ fn step_until_breakpoint<H: Host>(
             }
             Err(e) => return StepResult::Error(e),
         }
+    }
+}
+
+/// Push a `miden/uiState` snapshot event to the DAP client.
+///
+/// This custom event carries the bundled UI state (cycle, stack, callstack) so
+/// the client can refresh without an extra evaluate round-trip. It is emitted
+/// immediately before the standard `stopped` event because the DAP `stopped`
+/// event itself does not carry VM state — it only signals that execution paused.
+fn send_ui_state_snapshot<R: std::io::Read, W: std::io::Write, H: Host>(
+    server: &mut Server<R, W>,
+    processor: &mut FastProcessor,
+    host: &DapHostWrapper<'_, H>,
+    current_asmop: Option<&AssemblyOp>,
+    cycle: usize,
+) {
+    let ui_state = build_ui_state(processor, host, current_asmop, cycle);
+    if let Ok(json) = serde_json::to_value(&ui_state) {
+        server.send_event(Event::MidenUiState(json)).ok();
     }
 }
 

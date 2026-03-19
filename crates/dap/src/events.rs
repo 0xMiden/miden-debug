@@ -425,4 +425,10 @@ pub enum Event {
     ///
     /// Specification: [Thread event](https://microsoft.github.io/debug-adapter-protocol/specification#Events_Thread)
     Thread(ThreadEventBody),
+    /// Custom Miden event: server-pushed bundled UI state snapshot.
+    ///
+    /// Emitted immediately before a `Stopped` event so the DAP client can
+    /// update its UI from the snapshot without an extra evaluate round-trip.
+    #[serde(rename = "miden/uiState")]
+    MidenUiState(Value),
 }

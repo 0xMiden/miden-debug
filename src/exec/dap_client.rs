@@ -25,8 +25,9 @@ pub const SCOPE_MEMORY: i64 = 2;
 /// The reason the debuggee stopped after a step/continue command.
 #[derive(Debug)]
 pub enum DapStopReason {
-    /// The debuggee stopped (step, breakpoint, entry, etc.).
-    Stopped,
+    /// The debuggee stopped (step, breakpoint, entry, etc.) and the server
+    /// pushed a bundled UI state snapshot via the custom `miden/uiState` event.
+    Stopped(DapUiState),
     /// The debuggee terminated.
     Terminated,
 }
@@ -62,8 +63,9 @@ impl DapClient {
     }
 
     /// Perform the DAP handshake: Initialize + Launch + ConfigurationDone.
-    /// Waits for the initial Stopped(entry) event.
-    pub fn handshake(&mut self) -> Result<(), String> {
+    /// Waits for the initial Stopped(entry) event and returns the server-pushed
+    /// UI state snapshot.
+    pub fn handshake(&mut self) -> Result<DapUiState, String> {
         // Initialize
         self.send_request(
             "initialize",
@@ -84,9 +86,11 @@ impl DapClient {
         self.send_request("configurationDone", serde_json::json!({}))?;
         self.wait_for_response("configurationDone")?;
 
-        // Wait for Stopped(entry) event
-        self.wait_for_stopped()?;
-        Ok(())
+        // Wait for Stopped(entry) event plus the pushed UI state snapshot.
+        match self.wait_for_stopped()? {
+            DapStopReason::Stopped(snapshot) => Ok(snapshot),
+            DapStopReason::Terminated => Err("server terminated before entry stop".into()),
+        }
     }
 
     /// Send a StepIn command and wait for a Stopped/Terminated event.
@@ -155,13 +159,6 @@ impl DapClient {
             Some(ResponseBody::Evaluate(e)) => Ok(e.result),
             _ => Err("unexpected response to evaluate".into()),
         }
-    }
-
-    /// Fetch a bundled snapshot of the remote UI state in one roundtrip.
-    pub fn ui_state(&mut self) -> Result<DapUiState, String> {
-        let payload = self.evaluate("__miden_ui_state")?;
-        serde_json::from_str(&payload)
-            .map_err(|err| format!("invalid remote UI state payload: {err}"))
     }
 
     /// Read memory from the remote debuggee via the DAP server.
@@ -287,20 +284,30 @@ impl DapClient {
         }
     }
 
-    /// Wait for a Stopped or Terminated event, discarding other messages.
+    /// Wait for a Stopped or Terminated event, capturing the server-pushed
+    /// `miden/uiState` snapshot that arrives before the stop signal.
+    ///
+    /// The server emits the custom `MidenUiState` event immediately before
+    /// the standard `Stopped` event, so this loop naturally captures it.
     fn wait_for_stopped(&mut self) -> Result<DapStopReason, String> {
+        let mut snapshot: Option<DapUiState> = None;
         loop {
             match self.read_message()? {
                 DapMessage::Event(Event::Stopped(_)) => {
-                    return Ok(DapStopReason::Stopped);
+                    let snapshot = snapshot
+                        .expect("server must emit miden/uiState before stopped; this is a bug");
+                    return Ok(DapStopReason::Stopped(snapshot));
                 }
                 DapMessage::Event(Event::Terminated(_)) => {
                     return Ok(DapStopReason::Terminated);
                 }
-                _ => {
-                    // Discard other messages
-                    continue;
+                DapMessage::Event(Event::MidenUiState(value)) => {
+                    snapshot = Some(
+                        serde_json::from_value::<DapUiState>(value)
+                            .map_err(|e| format!("invalid miden/uiState payload: {e}"))?,
+                    );
                 }
+                _ => continue,
             }
         }
     }

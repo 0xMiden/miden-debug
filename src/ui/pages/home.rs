@@ -471,7 +471,7 @@ impl Home {
         let result = state.step_remote();
 
         match result {
-            Ok(DapStopReason::Stopped) => state.stopped = true,
+            Ok(DapStopReason::Stopped(_)) => state.stopped = true,
             Ok(DapStopReason::Terminated) => {
                 state.executor_mut().stopped = true;
                 state.stopped = true;

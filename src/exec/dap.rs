@@ -76,11 +76,21 @@ impl Default for DapConfig {
 // DAP HOST WRAPPER
 // ================================================================================================
 
-/// A host wrapper that intercepts trace events to track call depth for DAP stack traces,
+/// A single frame in the DAP call stack.
+#[derive(Debug, Clone)]
+struct DapCallFrame {
+    name: String,
+    source_path: Option<String>,
+    line: i64,
+    column: i64,
+}
+
+/// A host wrapper that intercepts trace events to track the call stack for DAP stack traces,
 /// while delegating all other operations to the inner host.
 struct DapHostWrapper<'a, H: Host> {
     inner: &'a mut H,
     call_depth: usize,
+    frames: Vec<DapCallFrame>,
 }
 
 impl<'a, H: Host> DapHostWrapper<'a, H> {
@@ -88,6 +98,7 @@ impl<'a, H: Host> DapHostWrapper<'a, H> {
         Self {
             inner,
             call_depth: 0,
+            frames: Vec::new(),
         }
     }
 }
@@ -122,8 +133,19 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
     fn on_trace(&mut self, process: &ProcessorState<'_>, trace_id: u32) -> Result<(), TraceError> {
         let event = TraceEvent::from(trace_id);
         match event {
-            TraceEvent::FrameStart => self.call_depth += 1,
-            TraceEvent::FrameEnd => self.call_depth = self.call_depth.saturating_sub(1),
+            TraceEvent::FrameStart => {
+                self.call_depth += 1;
+                self.frames.push(DapCallFrame {
+                    name: String::new(),
+                    source_path: None,
+                    line: 0,
+                    column: 0,
+                });
+            }
+            TraceEvent::FrameEnd => {
+                self.call_depth = self.call_depth.saturating_sub(1);
+                self.frames.pop();
+            }
             _ => {}
         }
         self.inner.on_trace(process, trace_id)
@@ -243,7 +265,7 @@ fn read_memory_at_current_state(
     let mut bytes = Vec::with_capacity(expr.ty.size_in_bytes());
     let mut needed = expr.ty.size_in_bytes();
     for elem in elems {
-        let elem_bytes = ((elem.as_canonical_u64() & U32_MASK) as u32).to_be_bytes();
+        let elem_bytes = ((elem.as_canonical_u64() & U32_MASK) as u32).to_le_bytes();
         let take = core::cmp::min(needed, 4);
         bytes.extend(&elem_bytes[..take]);
         needed -= take;
@@ -258,25 +280,23 @@ fn read_memory_at_current_state(
         Type::I8 => write_with_format_type!(output, expr, bytes[0] as i8),
         Type::U8 => write_with_format_type!(output, expr, bytes[0]),
         Type::I16 => {
-            write_with_format_type!(output, expr, i16::from_be_bytes([bytes[0], bytes[1]]))
+            write_with_format_type!(output, expr, i16::from_le_bytes([bytes[0], bytes[1]]))
         }
         Type::U16 => {
-            write_with_format_type!(output, expr, u16::from_be_bytes([bytes[0], bytes[1]]))
+            write_with_format_type!(output, expr, u16::from_le_bytes([bytes[0], bytes[1]]))
         }
         Type::I32 => write_with_format_type!(
             output,
             expr,
-            i32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+            i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
         ),
         Type::U32 => write_with_format_type!(
             output,
             expr,
-            u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
         ),
         ty @ (Type::I64 | Type::U64) => {
-            let hi = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as u64;
-            let lo = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as u64;
-            let val = (hi << 32) | lo;
+            let val = u64::from_le_bytes(bytes[..8].try_into().unwrap());
             if matches!(ty, Type::I64) {
                 write_with_format_type!(output, expr, val as i64);
             } else {
@@ -295,25 +315,35 @@ fn build_ui_state<H: Host>(
     current_asmop: Option<&AssemblyOp>,
     cycle: usize,
 ) -> crate::exec::DapUiState {
-    let callstack = match current_asmop {
-        Some(asmop) => {
-            let loc = resolve_asmop_location(asmop, host);
-            let (source_path, line) = loc.map_or((None, 0), |(path, line)| (Some(path), line));
-            vec![crate::exec::DapUiFrame {
-                name: asmop.context_name().to_string(),
-                source_path,
-                line,
-                column: 0,
-            }]
-        }
-        None => {
-            vec![crate::exec::DapUiFrame {
-                name: format!("cycle {cycle}"),
-                source_path: None,
-                line: 0,
-                column: 0,
-            }]
-        }
+    // Build callstack from the host's frame stack (bottom-to-top order, reversed so the
+    // top-of-stack / most-recent frame comes first — matching DAP convention).
+    let callstack: Vec<crate::exec::DapUiFrame> = if host.frames.is_empty() {
+        // Fallback when no frames have been recorded yet.
+        let (name, source_path, line) = match current_asmop {
+            Some(asmop) => {
+                let loc = resolve_asmop_location(asmop, host);
+                let (source_path, line) = loc.map_or((None, 0), |(path, line)| (Some(path), line));
+                (asmop.context_name().to_string(), source_path, line)
+            }
+            None => (format!("cycle {cycle}"), None, 0),
+        };
+        vec![crate::exec::DapUiFrame {
+            name,
+            source_path,
+            line,
+            column: 0,
+        }]
+    } else {
+        host.frames
+            .iter()
+            .rev()
+            .map(|frame| crate::exec::DapUiFrame {
+                name: frame.name.clone(),
+                source_path: frame.source_path.clone(),
+                line: frame.line,
+                column: frame.column,
+            })
+            .collect()
     };
 
     let current_stack = processor
@@ -354,6 +384,34 @@ fn resolve_asmop_location<H: Host>(asmop: &AssemblyOp, host: &H) -> Option<(Stri
     let path = file_line_col.uri.as_ref().to_string();
     let line = file_line_col.line.to_u32() as i64;
     Some((path, line))
+}
+
+/// Update the top frame on the host's frame stack with the current asmop's name and location.
+///
+/// If the frame stack is empty (e.g. before the first FrameStart trace event), a root frame
+/// is pushed so there is always at least one frame visible in the stack trace.
+fn update_top_frame<H: Host>(host: &mut DapHostWrapper<'_, H>, current_asmop: Option<&AssemblyOp>) {
+    let (name, source_path, line) = match current_asmop {
+        Some(asmop) => {
+            let loc = resolve_asmop_location(asmop, &*host);
+            let (source_path, line) = loc.map_or((None, 0), |(p, l)| (Some(p), l));
+            (asmop.context_name().to_string(), source_path, line)
+        }
+        None => (String::new(), None, 0),
+    };
+
+    if host.frames.is_empty() {
+        host.frames.push(DapCallFrame {
+            name,
+            source_path,
+            line,
+            column: 0,
+        });
+    } else if let Some(top) = host.frames.last_mut() {
+        top.name = name;
+        top.source_path = source_path;
+        top.line = line;
+    }
 }
 
 // DAP EXECUTOR
@@ -481,12 +539,13 @@ impl DapExecutor {
             let mut cycle: usize = 0;
             let mut current_asmop: Option<AssemblyOp> = None;
 
-            // Extract initial asmop.
+            // Extract initial asmop and populate the root frame.
             if let Some(ctx) = resume_ctx.as_ref() {
                 let (_op, node_id, op_idx, _control) = extract_current_op(ctx);
                 current_asmop = node_id
                     .and_then(|nid| ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
             }
+            update_top_frame(&mut wrapper, current_asmop.as_ref());
 
             // On restart, emit initial state immediately (no handshake needed).
             if is_restart {
@@ -756,34 +815,65 @@ impl DapExecutor {
                     }
 
                     Command::StackTrace(ref _args) => {
-                        let mut frames = Vec::new();
-
-                        let (name, source, line) = if let Some(asmop) = current_asmop.as_ref() {
-                            let loc = resolve_asmop_location(asmop, &wrapper);
-                            let (path, line_num) = loc.unwrap_or_else(|| ("<unknown>".into(), 0));
-                            let source = types::Source {
-                                name: Some(path.rsplit('/').next().unwrap_or(&path).to_string()),
-                                path: Some(path),
-                                ..Default::default()
+                        // Build stack frames from the host's frame stack (reversed: top-of-stack
+                        // first, matching DAP convention).
+                        let frames: Vec<types::StackFrame> = if wrapper.frames.is_empty() {
+                            // Fallback when no frames have been recorded.
+                            let (name, source, line) = if let Some(asmop) = current_asmop.as_ref() {
+                                let loc = resolve_asmop_location(asmop, &wrapper);
+                                let (path, line_num) =
+                                    loc.unwrap_or_else(|| ("<unknown>".into(), 0));
+                                let source = types::Source {
+                                    name: Some(
+                                        path.rsplit('/').next().unwrap_or(&path).to_string(),
+                                    ),
+                                    path: Some(path),
+                                    ..Default::default()
+                                };
+                                (asmop.context_name().to_string(), Some(source), line_num)
+                            } else {
+                                (format!("cycle {cycle}"), None, 0)
                             };
-                            (asmop.context_name().to_string(), Some(source), line_num)
+                            vec![types::StackFrame {
+                                id: 0,
+                                name,
+                                source,
+                                line,
+                                column: 0,
+                                ..Default::default()
+                            }]
                         } else {
-                            (format!("cycle {cycle}"), None, 0)
+                            wrapper
+                                .frames
+                                .iter()
+                                .rev()
+                                .enumerate()
+                                .map(|(id, frame)| {
+                                    let source =
+                                        frame.source_path.as_ref().map(|path| types::Source {
+                                            name: Some(
+                                                path.rsplit('/').next().unwrap_or(path).to_string(),
+                                            ),
+                                            path: Some(path.clone()),
+                                            ..Default::default()
+                                        });
+                                    types::StackFrame {
+                                        id: id as i64,
+                                        name: frame.name.clone(),
+                                        source,
+                                        line: frame.line,
+                                        column: frame.column,
+                                        ..Default::default()
+                                    }
+                                })
+                                .collect()
                         };
 
-                        frames.push(types::StackFrame {
-                            id: 0,
-                            name,
-                            source,
-                            line,
-                            column: 0,
-                            ..Default::default()
-                        });
-
+                        let total = frames.len() as i64;
                         let resp =
                             req.success(ResponseBody::StackTrace(responses::StackTraceResponse {
                                 stack_frames: frames,
-                                total_frames: Some(1),
+                                total_frames: Some(total),
                             }));
                         server.respond(resp).ok();
                     }
@@ -985,10 +1075,18 @@ impl DapExecutor {
 
             // Build ExecutionOutput from the processor's final state.
             //
-            // NOTE: The advice provider and precompile transcript are not accessible from the
-            // processor's public API after stepping, so we use defaults. This is acceptable because
-            // the DAP executor is a debugging tool — the returned ExecutionOutput is used to satisfy
-            // the transaction executor trait, not for proof generation.
+            // NOTE: `FastProcessor` does not expose public API to extract the advice provider,
+            // memory state, or precompile transcript after stepping. These fields are returned as
+            // defaults. This means callers that rely on `output.advice.into_parts()` to
+            // reconstruct transaction outputs (e.g. miden-client) will get empty data.
+            //
+            // TODO(upstream): Once `FastProcessor` exposes `into_advice()`, `into_memory()`, and
+            // `into_precompile_transcript()` (or an equivalent `into_parts()` method), populate
+            // these fields from the processor's final state.
+            eprintln!(
+                "WARNING: DAP executor returns default advice/memory/transcript. Transaction \
+                 outputs derived from this execution may be incomplete."
+            );
             let stack_top: Vec<_> = processor.stack_top().iter().rev().copied().collect();
             let stack = StackOutputs::new(&stack_top)
                 .unwrap_or_else(|_| StackOutputs::new(&[]).expect("empty stack outputs"));
@@ -1026,6 +1124,7 @@ fn step_one<H: Host>(
             *current_asmop = node_id
                 .and_then(|nid| new_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
             *resume_ctx = Some(new_ctx);
+            update_top_frame(host, current_asmop.as_ref());
             StepResult::Stepped
         }
         Ok(None) => {
@@ -1062,6 +1161,7 @@ fn step_over<H: Host>(
                 *resume_ctx = Some(new_ctx);
 
                 if *current_asmop != original_asmop {
+                    update_top_frame(host, current_asmop.as_ref());
                     return StepResult::Stepped;
                 }
             }
@@ -1100,6 +1200,7 @@ fn step_out<H: Host>(
                 *resume_ctx = Some(new_ctx);
 
                 if host.call_depth <= target_depth {
+                    update_top_frame(host, current_asmop.as_ref());
                     return StepResult::Stepped;
                 }
             }
@@ -1144,6 +1245,7 @@ fn step_until_breakpoint<H: Host>(
                     for bp in breakpoints {
                         if bp.line == line && (path.ends_with(&bp.path) || bp.path.ends_with(&path))
                         {
+                            update_top_frame(host, current_asmop.as_ref());
                             return StepResult::Breakpoint(line);
                         }
                     }

@@ -83,6 +83,9 @@ struct RemoteState {
     client: crate::exec::DapClient,
     executor: DebugExecutor,
     addr: String,
+    /// Tracks which source files have had breakpoints synced to the DAP server,
+    /// so we can send empty breakpoint lists when all breakpoints for a file are removed.
+    synced_bp_files: std::collections::BTreeSet<String>,
 }
 
 enum SessionState {
@@ -134,6 +137,7 @@ impl RemoteState {
             client,
             executor,
             addr: addr.to_string(),
+            synced_bp_files: std::collections::BTreeSet::new(),
         })
     }
 
@@ -141,7 +145,42 @@ impl RemoteState {
         self.client.read_memory(expr)
     }
 
+    fn sync_breakpoints(&mut self, breakpoints: &[Breakpoint]) {
+        use std::collections::BTreeMap;
+
+        // Group Line breakpoints by their file pattern string.
+        let mut by_file: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+        for bp in breakpoints {
+            if let BreakpointType::Line { pattern, line } = &bp.ty {
+                by_file.entry(pattern.as_str().to_string()).or_default().push(*line as i64);
+            }
+        }
+
+        // Send empty breakpoint lists for files that were previously synced but no longer have
+        // breakpoints.
+        let stale_files: Vec<String> = self
+            .synced_bp_files
+            .iter()
+            .filter(|f| !by_file.contains_key(f.as_str()))
+            .cloned()
+            .collect();
+        for file in &stale_files {
+            let _ = self.client.set_breakpoints(file, &[]);
+        }
+
+        // Send breakpoints for each file.
+        for (file, lines) in &by_file {
+            let _ = self.client.set_breakpoints(file, lines);
+        }
+
+        // Update tracked set.
+        self.synced_bp_files = by_file.into_keys().collect();
+    }
+
     fn resume(&mut self, breakpoints: &[Breakpoint]) -> Result<crate::exec::DapStopReason, String> {
+        // Sync user-defined breakpoints to the DAP server before choosing a step command.
+        self.sync_breakpoints(breakpoints);
+
         let has_step = breakpoints.iter().any(|bp| matches!(bp.ty, BreakpointType::Step));
         let has_next = breakpoints.iter().any(|bp| matches!(bp.ty, BreakpointType::Next));
         let has_finish = breakpoints.iter().any(|bp| matches!(bp.ty, BreakpointType::Finish));

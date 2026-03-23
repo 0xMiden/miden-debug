@@ -150,9 +150,18 @@ impl RemoteState {
 
         // Group Line breakpoints by their file pattern string.
         let mut by_file: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+        // Collect Called and File patterns as function breakpoints.
+        let mut func_names: Vec<String> = Vec::new();
+
         for bp in breakpoints {
-            if let BreakpointType::Line { pattern, line } = &bp.ty {
-                by_file.entry(pattern.as_str().to_string()).or_default().push(*line as i64);
+            match &bp.ty {
+                BreakpointType::Line { pattern, line } => {
+                    by_file.entry(pattern.as_str().to_string()).or_default().push(*line as i64);
+                }
+                BreakpointType::Called(pattern) | BreakpointType::File(pattern) => {
+                    func_names.push(pattern.as_str().to_string());
+                }
+                _ => {}
             }
         }
 
@@ -172,6 +181,9 @@ impl RemoteState {
         for (file, lines) in &by_file {
             let _ = self.client.set_breakpoints(file, lines);
         }
+
+        // Send function/pattern breakpoints (replaces the full set each time).
+        let _ = self.client.set_function_breakpoints(&func_names);
 
         // Update tracked set.
         self.synced_bp_files = by_file.into_keys().collect();

@@ -372,6 +372,20 @@ struct StoredBreakpoint {
     line: i64,
 }
 
+/// A function/pattern breakpoint stored from a SetFunctionBreakpoints request.
+///
+/// Matching is done in two ways:
+/// 1. Glob pattern match against the full context name and source path
+/// 2. Suffix match — the raw name is checked as a suffix of the context name
+///    (e.g. `prologue::foo` matches `::$kernel::prologue::foo`)
+#[derive(Debug, Clone)]
+struct StoredFunctionBreakpoint {
+    /// The raw name string for suffix matching.
+    name: String,
+    /// Compiled glob pattern for matching.
+    pattern: glob::Pattern,
+}
+
 // RESOLVE ASMOP LOCATION
 // ================================================================================================
 
@@ -517,6 +531,7 @@ impl DapExecutor {
 
         let mut server = Server::new(reader, writer);
         let mut breakpoints: Vec<StoredBreakpoint> = Vec::new();
+        let mut function_breakpoints: Vec<StoredFunctionBreakpoint> = Vec::new();
         let mut is_restart = false;
         let restart_flag = self.config.restart_requested.clone();
 
@@ -589,6 +604,7 @@ impl DapExecutor {
                             supports_configuration_done_request: Some(true),
                             supports_stepping_granularity: Some(true),
                             supports_restart_request: Some(true),
+                            supports_function_breakpoints: Some(true),
                             ..Default::default()
                         };
                         let resp = req.success(ResponseBody::Initialize(caps));
@@ -667,6 +683,7 @@ impl DapExecutor {
                             &mut cycle,
                             &mut current_asmop,
                             &breakpoints,
+                            &function_breakpoints,
                         ) {
                             StepResult::Stepped | StepResult::Breakpoint(_) => {
                                 send_ui_state_snapshot(
@@ -974,6 +991,34 @@ impl DapExecutor {
                         server.respond(resp).ok();
                     }
 
+                    Command::SetFunctionBreakpoints(ref args) => {
+                        function_breakpoints.clear();
+                        let mut confirmed = Vec::new();
+                        for fbp in &args.breakpoints {
+                            let verified = match glob::Pattern::new(&fbp.name) {
+                                Ok(pattern) => {
+                                    function_breakpoints.push(StoredFunctionBreakpoint {
+                                        name: fbp.name.clone(),
+                                        pattern,
+                                    });
+                                    true
+                                }
+                                Err(_) => false,
+                            };
+                            confirmed.push(types::Breakpoint {
+                                verified,
+                                ..Default::default()
+                            });
+                        }
+
+                        let resp = req.success(ResponseBody::SetFunctionBreakpoints(
+                            responses::SetFunctionBreakpointsResponse {
+                                breakpoints: confirmed,
+                            },
+                        ));
+                        server.respond(resp).ok();
+                    }
+
                     // --- Evaluate (custom state query) ---
                     Command::Evaluate(ref args) if args.expression == "__miden_ui_state" => {
                         let state_json = serde_json::to_string(&build_ui_state(
@@ -1222,6 +1267,7 @@ fn step_until_breakpoint<H: Host>(
     cycle: &mut usize,
     current_asmop: &mut Option<AssemblyOp>,
     breakpoints: &[StoredBreakpoint],
+    function_breakpoints: &[StoredFunctionBreakpoint],
 ) -> StepResult {
     loop {
         let ctx = match resume_ctx.take() {
@@ -1237,16 +1283,45 @@ fn step_until_breakpoint<H: Host>(
                     .and_then(|nid| new_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
                 *resume_ctx = Some(new_ctx);
 
-                // Check breakpoints
-                if !breakpoints.is_empty()
-                    && let Some(asmop) = current_asmop.as_ref()
-                    && let Some((path, line)) = resolve_asmop_location(asmop, host)
-                {
-                    for bp in breakpoints {
-                        if bp.line == line && (path.ends_with(&bp.path) || bp.path.ends_with(&path))
-                        {
-                            update_top_frame(host, current_asmop.as_ref());
-                            return StepResult::Breakpoint(line);
+                if let Some(asmop) = current_asmop.as_ref() {
+                    let resolved = resolve_asmop_location(asmop, host);
+
+                    // Check line breakpoints
+                    if let Some((ref path, line)) = resolved {
+                        for bp in breakpoints {
+                            if bp.line == line
+                                && (path.ends_with(&bp.path) || bp.path.ends_with(path))
+                            {
+                                update_top_frame(host, current_asmop.as_ref());
+                                return StepResult::Breakpoint(line);
+                            }
+                        }
+                    }
+
+                    // Check function/pattern breakpoints — match against context name and
+                    // source file path. Context names may have a leading `::` (absolute
+                    // paths like `::prologue::foo`), so we also try matching without it.
+                    if !function_breakpoints.is_empty() {
+                        let context_name = asmop.context_name();
+                        let stripped_name = context_name.strip_prefix("::").unwrap_or(context_name);
+                        for fbp in function_breakpoints {
+                            // Match via glob pattern or suffix (e.g. "prologue::foo"
+                            // matches "::$kernel::prologue::foo").
+                            if fbp.pattern.matches(context_name)
+                                || fbp.pattern.matches(stripped_name)
+                                || context_name.ends_with(&fbp.name)
+                                || stripped_name.ends_with(&fbp.name)
+                            {
+                                update_top_frame(host, current_asmop.as_ref());
+                                let line = resolved.as_ref().map_or(0, |(_, l)| *l);
+                                return StepResult::Breakpoint(line);
+                            }
+                            if let Some((ref path, line)) = resolved
+                                && fbp.pattern.matches(path)
+                            {
+                                update_top_frame(host, current_asmop.as_ref());
+                                return StepResult::Breakpoint(line);
+                            }
                         }
                     }
                 }

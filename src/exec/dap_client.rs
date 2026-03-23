@@ -184,6 +184,20 @@ impl DapClient {
         Ok(())
     }
 
+    /// Set function breakpoints (matched as glob patterns against context names and file paths).
+    pub fn set_function_breakpoints(&mut self, names: &[String]) -> Result<(), String> {
+        let breakpoints: Vec<serde_json::Value> =
+            names.iter().map(|name| serde_json::json!({"name": name})).collect();
+        self.send_request(
+            "setFunctionBreakpoints",
+            serde_json::json!({
+                "breakpoints": breakpoints,
+            }),
+        )?;
+        self.wait_for_response("setFunctionBreakpoints")?;
+        Ok(())
+    }
+
     /// Send a Restart command and wait for a Stopped event (program restarted at entry).
     ///
     /// The server resets the processor to the beginning of the program with the same

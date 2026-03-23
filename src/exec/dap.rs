@@ -1119,28 +1119,16 @@ impl DapExecutor {
             }
 
             // Build ExecutionOutput from the processor's final state.
-            //
-            // NOTE: `FastProcessor` does not expose public API to extract the advice provider,
-            // memory state, or precompile transcript after stepping. These fields are returned as
-            // defaults. This means callers that rely on `output.advice.into_parts()` to
-            // reconstruct transaction outputs (e.g. miden-client) will get empty data.
-            //
-            // TODO(upstream): Once `FastProcessor` exposes `into_advice()`, `into_memory()`, and
-            // `into_precompile_transcript()` (or an equivalent `into_parts()` method), populate
-            // these fields from the processor's final state.
-            eprintln!(
-                "WARNING: DAP executor returns default advice/memory/transcript. Transaction \
-                 outputs derived from this execution may be incomplete."
-            );
             let stack_top: Vec<_> = processor.stack_top().iter().rev().copied().collect();
             let stack = StackOutputs::new(&stack_top)
                 .unwrap_or_else(|_| StackOutputs::new(&[]).expect("empty stack outputs"));
 
+            let (advice, memory, final_pc_transcript) = processor.into_parts();
             return Ok(ExecutionOutput {
                 stack,
-                advice: Default::default(),
-                memory: Default::default(),
-                final_pc_transcript: PrecompileTranscript::default(),
+                advice,
+                memory,
+                final_pc_transcript,
             });
         } // end outer restart loop
     }

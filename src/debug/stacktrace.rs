@@ -77,37 +77,7 @@ impl CallStack {
             let popped_frame = self.handle_trace_event(event, procedure.as_ref());
             let is_frame_end = popped_frame.is_some();
 
-            // These ops we do not record in call frame details
-            let ignore = matches!(
-                op,
-                Operation::Join
-                    | Operation::Split
-                    | Operation::Span
-                    | Operation::Respan
-                    | Operation::End
-            );
-
-            // Manage block stack
-            match op {
-                Operation::Span => {
-                    if let Some(asmop) = info.asmop {
-                        log::debug!("{asmop:#?}");
-                        self.block_stack.push(Some(SpanContext {
-                            frame_index: self.frames.len().saturating_sub(1),
-                            location: asmop.location().cloned(),
-                        }));
-                    } else {
-                        self.block_stack.push(None);
-                    }
-                }
-                Operation::End => {
-                    self.block_stack.pop();
-                }
-                Operation::Join | Operation::Split => {
-                    self.block_stack.push(None);
-                }
-                _ => (),
-            }
+            let ignore = false;
 
             if ignore || is_frame_end {
                 return popped_frame;

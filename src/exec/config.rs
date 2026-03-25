@@ -199,7 +199,7 @@ mod tests {
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), ExecutionOptions::MAX_CYCLES);
-        assert_eq!(file.options.expected_cycles(), 2048);
+        assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
 
     #[test]
@@ -218,7 +218,7 @@ mod tests {
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), 100000);
-        assert_eq!(file.options.expected_cycles(), 2048);
+        assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
 
     #[test]
@@ -240,7 +240,7 @@ mod tests {
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), 100000);
-        assert_eq!(file.options.expected_cycles(), 2048);
+        assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
 
     #[test]
@@ -279,6 +279,6 @@ mod tests {
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), 100000);
-        assert_eq!(file.options.expected_cycles(), 2048);
+        assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
 }

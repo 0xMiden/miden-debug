@@ -46,7 +46,7 @@ impl ExecutionConfig {
         let inputs =
             StackInputs::new(&felts).map_err(|err| format!("invalid value for 'stack': {err}"))?;
         let advice_inputs = AdviceInputs::default()
-            .with_stack(file.inputs.advice.stack.into_iter().rev().map(|felt| felt.0))
+            .with_stack(file.inputs.advice.stack.into_iter().map(|felt| felt.0))
             .with_map(file.inputs.advice.map.into_iter().map(|entry| {
                 (entry.digest.0, entry.values.into_iter().map(|felt| felt.0).collect::<Vec<_>>())
             }));
@@ -182,7 +182,7 @@ mod tests {
     use miden_processor::Felt as RawFelt;
     use toml::toml;
 
-    use super::*;
+    use super::{ExecutionConfig, *};
 
     #[test]
     fn execution_config_empty() {
@@ -199,7 +199,7 @@ mod tests {
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), ExecutionOptions::MAX_CYCLES);
-        assert_eq!(file.options.expected_cycles(), 2048);
+        assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
 
     #[test]
@@ -218,7 +218,7 @@ mod tests {
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), 100000);
-        assert_eq!(file.options.expected_cycles(), 2048);
+        assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
 
     #[test]
@@ -240,7 +240,7 @@ mod tests {
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), 100000);
-        assert_eq!(file.options.expected_cycles(), 2048);
+        assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
 
     #[test]
@@ -270,7 +270,7 @@ mod tests {
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert_eq!(
             file.advice_inputs.stack,
-            &[RawFelt::new(4), RawFelt::new(3), RawFelt::new(2), RawFelt::new(1)]
+            &[RawFelt::new(1), RawFelt::new(2), RawFelt::new(3), RawFelt::new(4)]
         );
         assert_eq!(
             file.advice_inputs.map.get(&digest).map(|value| value.as_ref()),
@@ -279,6 +279,6 @@ mod tests {
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), 100000);
-        assert_eq!(file.options.expected_cycles(), 2048);
+        assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
 }

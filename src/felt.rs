@@ -1,5 +1,4 @@
-use miden_core::Word;
-use miden_core::field::PrimeField64;
+use miden_core::{Word, field::PrimeField64};
 use miden_processor::Felt as RawFelt;
 #[cfg(feature = "proptest")]
 use proptest::{
@@ -20,7 +19,7 @@ pub trait ToMidenRepr {
     /// bytes come first.
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
         let bytes = self.to_bytes();
-        let num_felts = bytes.len().next_multiple_of(4) / 4;
+        let num_felts = bytes.len().div_ceil(4);
         let mut felts = SmallVec::<[RawFelt; 4]>::with_capacity(num_felts);
         let (chunks, remainder) = bytes.as_chunks::<4>();
         for chunk in chunks {
@@ -43,7 +42,7 @@ pub trait ToMidenRepr {
     ///   with the most significant bytes on top of the stack (including padding)
     fn to_words(&self) -> SmallVec<[Word; 1]> {
         let felts = self.to_felts();
-        let num_words = felts.len().next_multiple_of(4) / 4;
+        let num_words = felts.len().div_ceil(4);
         let mut words = SmallVec::<[Word; 1]>::with_capacity(num_words);
         let (chunks, remainder) = felts.as_chunks::<4>();
         for mut word in chunks.iter().copied() {
@@ -66,10 +65,7 @@ pub trait ToMidenRepr {
     /// If pushing arguments for functions compiled from Wasm, consider using
     /// [`push_wasm_ty_to_operand_stack`] instead.
     fn push_to_operand_stack(&self, stack: &mut Vec<RawFelt>) {
-        let felts = self.to_felts();
-        for felt in felts.into_iter().rev() {
-            stack.push(felt);
-        }
+        stack.extend(self.to_felts());
     }
 
     /// Push this value in its [Self::to_words] representation, on the given stack.
@@ -595,7 +591,7 @@ impl<const N: usize> ToMidenRepr for [u8; N] {
 impl<const N: usize> FromMidenRepr for [u8; N] {
     #[inline(always)]
     fn size_in_felts() -> usize {
-        N.next_multiple_of(4) / 4
+        N.div_ceil(4)
     }
 
     fn from_bytes(bytes: &[u8]) -> Self {
@@ -921,6 +917,9 @@ mod tests {
 
         let mut stack = Vec::default();
         true.push_to_operand_stack(&mut stack);
+        assert_eq!(stack.as_slice(), true.to_felts().as_slice());
+
+        stack.reverse();
         let popped = <bool as FromMidenRepr>::pop_from_stack(&mut stack);
         assert!(popped);
     }
@@ -941,6 +940,9 @@ mod tests {
 
         let mut stack = Vec::default();
         u8::MAX.push_to_operand_stack(&mut stack);
+        assert_eq!(stack.as_slice(), u8::MAX.to_felts().as_slice());
+
+        stack.reverse();
         let popped = <u8 as FromMidenRepr>::pop_from_stack(&mut stack);
         assert_eq!(popped, u8::MAX);
     }
@@ -961,6 +963,9 @@ mod tests {
 
         let mut stack = Vec::default();
         u16::MAX.push_to_operand_stack(&mut stack);
+        assert_eq!(stack.as_slice(), u16::MAX.to_felts().as_slice());
+
+        stack.reverse();
         let popped = <u16 as FromMidenRepr>::pop_from_stack(&mut stack);
         assert_eq!(popped, u16::MAX);
     }
@@ -981,6 +986,9 @@ mod tests {
 
         let mut stack = Vec::default();
         u32::MAX.push_to_operand_stack(&mut stack);
+        assert_eq!(stack.as_slice(), u32::MAX.to_felts().as_slice());
+
+        stack.reverse();
         let popped = <u32 as FromMidenRepr>::pop_from_stack(&mut stack);
         assert_eq!(popped, u32::MAX);
     }
@@ -1001,6 +1009,9 @@ mod tests {
 
         let mut stack = Vec::default();
         u64::MAX.push_to_operand_stack(&mut stack);
+        assert_eq!(stack.as_slice(), u64::MAX.to_felts().as_slice());
+
+        stack.reverse();
         let popped = <u64 as FromMidenRepr>::pop_from_stack(&mut stack);
         assert_eq!(popped, u64::MAX);
     }
@@ -1021,6 +1032,9 @@ mod tests {
 
         let mut stack = Vec::default();
         u128::MAX.push_to_operand_stack(&mut stack);
+        assert_eq!(stack.as_slice(), u128::MAX.to_felts().as_slice());
+
+        stack.reverse();
         let popped = <u128 as FromMidenRepr>::pop_from_stack(&mut stack);
         assert_eq!(popped, u128::MAX);
     }
@@ -1039,6 +1053,9 @@ mod tests {
 
         let mut stack = Vec::default();
         bytes.push_to_operand_stack(&mut stack);
+        assert_eq!(stack.as_slice(), bytes.to_felts().as_slice());
+
+        stack.reverse();
         let popped = <[u8; 8] as FromMidenRepr>::pop_from_stack(&mut stack);
         assert_eq!(popped, bytes);
     }

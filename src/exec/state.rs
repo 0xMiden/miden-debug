@@ -96,9 +96,7 @@ fn extract_current_op(
             Continuation::StartNode(node_id) => {
                 return (None, Some(*node_id), None);
             }
-            Continuation::FinishBasicBlock(_) => {
-                return (Some(Operation::End), None, None);
-            }
+            Continuation::FinishBasicBlock(_) => return (None, None, None),
             other if other.increments_clk() => {
                 return (None, None, None);
             }

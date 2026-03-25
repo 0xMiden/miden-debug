@@ -6,6 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/0xMiden/miden-debug/compare/v0.5.0...v0.6.0) - 2026-03-25
+
+### Fixed
+
+- more LE order fixes, add tests
+- register event handlers with VM
+- LE order in the `read_from_rust_memory_in_context` and
+
+### Other
+
+- Migrate miden-debug to VM 0.22
+- install nextest using dedicated action
+- fix lint warnings on 1.94 toolchain
+- bump toolchain to 1.94
+- remove `miden-crypto` dependency
+
 ## [0.5.0](https://github.com/0xMiden/miden-debug/compare/v0.4.7...v0.5.0) - 2026-03-06
 
 ### Added

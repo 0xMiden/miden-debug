@@ -1,0 +1,51 @@
+[package]
+name = "miden-debug-engine"
+description = "Core debugger engine for miden-debug"
+version = "0.1.0"
+rust-version = "1.90"
+authors = ["Miden contributors"]
+repository = "https://github.com/0xMiden/miden-debug"
+homepage = "https://github.com/0xMiden/miden-debug"
+documentation = "https://github.com/0xMiden/miden-debug"
+categories = ["development-tools"]
+keywords = ["miden", "debugger"]
+license = "MIT"
+edition = "2024"
+
+[features]
+default = ["std"]
+tui = []
+dap = ["dep:dap", "dep:socket2"]
+std = ["dep:glob", "clap/std", "clap/env", "miden-assembly-syntax/std"]
+proptest = ["dep:proptest"]
+
+[dependencies]
+clap = { version = "4.5", default-features = false, features = ["derive", "std", "env", "help", "suggestions", "error-context"] }
+dap = { package = "miden-debug-dap", path = "../dap", optional = true, features = ["client"] }
+glob = { version = "0.3.1", optional = true }
+log = "0.4"
+miden-assembly = { version = "0.22", default-features = false }
+miden-assembly-syntax = { version = "0.22", default-features = false }
+miden-core = { version = "0.22", default-features = false }
+miden-debug-types = { version = "0.22", default-features = false }
+miden-mast-package = { version = "0.22", default-features = false }
+miden-processor = { version = "0.22", default-features = false }
+miden-tx = { git = "https://github.com/0xMiden/protocol", rev = "ae4b45778c7e2c73be87b67906b7fa1ae8e2a285", default-features = false }
+num-traits = "0.2"
+proptest = { version = "1.4", optional = true }
+rustc-demangle = { version = "0.1", features = ["std"] }
+serde = { version = "1.0", default-features = false, features = [
+    "serde_derive",
+    "alloc",
+    "rc",
+] }
+serde_json = "1"
+socket2 = { version = "0.5", optional = true }
+smallvec = { version = "1.14", default-features = false, features = [
+    "union",
+    "const_generics",
+    "const_new",
+    "drain_filter",
+] }
+thiserror = { package = "miden-thiserror", version = "1.0" }
+toml = { version = "0.8", features = ["preserve_order"] }

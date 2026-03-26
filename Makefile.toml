@@ -294,6 +294,7 @@ command = "cargo"
 args = [
     "nextest",
     "run",
+    "--no-tests=pass",
     "@@remove-empty(CARGO_MAKE_CARGO_VERBOSE_FLAGS)",
     "@@split(CARGO_MAKE_CARGO_BUILD_TEST_FLAGS, )",
     "${@}",

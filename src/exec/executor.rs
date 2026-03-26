@@ -16,8 +16,9 @@ use miden_mast_package::{
 };
 use miden_processor::{
     ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt,
-    advice::AdviceInputs,
+    advice::{AdviceInputs, AdviceMutation},
     event::{EventHandler, EventName},
+    mast::MastForest,
     trace::RowIndex,
 };
 
@@ -163,6 +164,76 @@ impl Executor {
             host.register_event_handler(event, handler)
                 .expect("failed to register debug executor event handler");
         }
+
+        let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
+        let frame_start_events = Rc::clone(&trace_events);
+        host.register_trace_handler(TraceEvent::FrameStart, move |clk, event| {
+            frame_start_events.borrow_mut().insert(clk, event);
+        });
+        let frame_end_events = Rc::clone(&trace_events);
+        host.register_trace_handler(TraceEvent::FrameEnd, move |clk, event| {
+            frame_end_events.borrow_mut().insert(clk, event);
+        });
+        let assertion_events = Rc::clone(&trace_events);
+        host.register_assert_failed_tracer(move |clk, event| {
+            assertion_events.borrow_mut().insert(clk, event);
+        });
+
+        let mut processor = FastProcessor::new(self.stack)
+            .with_advice(self.advice)
+            .with_options(self.options)
+            .with_debugging(true)
+            .with_tracing(true);
+
+        let root_context = ContextId::root();
+        let resume_ctx = processor
+            .get_initial_resume_context(program)
+            .expect("failed to get initial resume context");
+
+        let callstack = CallStack::new(trace_events);
+        DebugExecutor {
+            processor,
+            host,
+            resume_ctx: Some(resume_ctx),
+            current_stack: vec![],
+            current_op: None,
+            current_asmop: None,
+            stack_outputs: Default::default(),
+            contexts: Default::default(),
+            root_context,
+            current_context: root_context,
+            callstack,
+            recent: VecDeque::with_capacity(5),
+            cycle: 0,
+            stopped: false,
+        }
+    }
+
+    /// Convert this [Executor] into a [DebugExecutor] with event replay support.
+    ///
+    /// Like [`into_debug`](Self::into_debug), but additionally:
+    /// - Loads `extra_forests` into the host's MAST forest store
+    /// - Sets the event replay queue so that `on_event()` returns pre-recorded mutations
+    ///
+    /// This is used for transaction debugging where events were recorded during a prior
+    /// execution with the real transaction host.
+    pub fn into_debug_with_replay(
+        mut self,
+        program: &Program,
+        source_manager: Arc<dyn SourceManager>,
+        extra_forests: Vec<Arc<MastForest>>,
+        event_replay: VecDeque<Vec<AdviceMutation>>,
+    ) -> DebugExecutor {
+        log::debug!("creating debug executor with event replay");
+
+        let mut host = DebuggerHost::new(source_manager.clone());
+        for lib in core::mem::take(&mut self.libraries) {
+            host.load_mast_forest(lib.mast_forest().clone());
+        }
+        for forest in extra_forests {
+            host.load_mast_forest(forest);
+        }
+        host.set_event_replay(event_replay);
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
         let frame_start_events = Rc::clone(&trace_events);

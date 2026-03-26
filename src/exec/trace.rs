@@ -1,5 +1,5 @@
 use miden_core::Word;
-use miden_processor::{ContextId, FastProcessor, Felt, StackOutputs, trace::RowIndex};
+use miden_processor::{ContextId, FastProcessor, Felt, StackInputs, StackOutputs, trace::RowIndex};
 use smallvec::SmallVec;
 
 use super::TraceEvent;
@@ -30,6 +30,18 @@ pub struct ExecutionTrace {
 }
 
 impl ExecutionTrace {
+    /// Create an empty [ExecutionTrace] with no memory and no outputs.
+    ///
+    /// Used in DAP client mode where no local execution trace is available.
+    pub fn empty() -> Self {
+        Self {
+            root_context: ContextId::root(),
+            last_cycle: RowIndex::from(0u32),
+            processor: FastProcessor::new(StackInputs::default()),
+            outputs: StackOutputs::default(),
+        }
+    }
+
     /// Parse the program outputs on the operand stack as a value of type `T`
     pub fn parse_result<T>(&self) -> Option<T>
     where

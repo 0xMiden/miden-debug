@@ -16,8 +16,8 @@ pub struct DebuggerConfig {
     /// Miden Assembly programs are emitted by the compiler with a `.masp` extension.
     ///
     /// You may use `-` as a file name to read a file from stdin.
-    #[cfg_attr(feature = "tui", arg(required(true), value_name = "FILE"))]
-    pub input: InputFile,
+    #[cfg_attr(feature = "tui", arg(value_name = "FILE"))]
+    pub input: Option<InputFile>,
     /// Specify the path to a file containing program inputs.
     ///
     /// Program inputs are stack and advice provider values which the program can
@@ -71,6 +71,16 @@ pub struct DebuggerConfig {
     /// in the format `<module_name>::<function>`
     #[cfg_attr(feature = "tui", arg(long, help_heading = "Execution"))]
     pub entrypoint: Option<String>,
+    /// Connect to a remote DAP debug server instead of running a local program.
+    ///
+    /// Specify the address of the DAP server (e.g. "127.0.0.1:4711").
+    /// When this flag is set, the debugger connects to an existing remote session.
+    #[cfg(feature = "dap")]
+    #[cfg_attr(
+        feature = "tui",
+        arg(long, value_name = "ADDR", help_heading = "Execution")
+    )]
+    pub dap_connect: Option<String>,
     /// Specify one or more search paths for link libraries requested via `-l`
     #[cfg_attr(
         feature = "tui",
@@ -164,7 +174,7 @@ impl ColorChoice {
         }
     }
 
-    #[cfg(all(feature = "tui", not(windows)))]
+    #[cfg(not(windows))]
     pub fn env_allows_color(&self) -> bool {
         match std::env::var_os("TERM") {
             // If TERM isn't set, then we are in a weird environment that
@@ -184,7 +194,7 @@ impl ColorChoice {
         true
     }
 
-    #[cfg(all(feature = "tui", windows))]
+    #[cfg(windows)]
     pub fn env_allows_color(&self) -> bool {
         // On Windows, if TERM isn't set, then we shouldn't automatically
         // assume that colors aren't allowed. This is unlike Unix environments

@@ -672,18 +672,23 @@ impl State {
     pub fn format_variables(&self) -> String {
         use core::fmt::Write;
 
-        let debug_vars = &self.executor.debug_vars;
+        let executor = self.executor();
+        let debug_vars = &executor.debug_vars;
 
         if !debug_vars.has_variables() {
             return "No debug variables tracked".to_string();
         }
 
         let mut output = String::new();
-        let stack: Vec<Felt> =
-            self.executor.last.as_ref().map(|state| state.stack.clone()).unwrap_or_default();
+        let stack = executor.current_stack.clone();
+        let context = executor.current_context;
+        let cycle = miden_processor::trace::RowIndex::from(executor.cycle as u32);
 
-        let context = self.executor.current_context;
-        let cycle = miden_processor::RowIndex::from(self.executor.cycle);
+        let execution_trace = match &self.session {
+            SessionState::Local(local) => Some(&local.execution_trace),
+            #[cfg(feature = "dap")]
+            SessionState::Remote(_) => None,
+        };
 
         for var_snapshot in debug_vars.current_variables() {
             if !output.is_empty() {
@@ -697,7 +702,10 @@ impl State {
             let value = resolve_variable_value(
                 location,
                 &stack,
-                |addr| self.execution_trace.read_memory_element_in_context(addr, context, cycle),
+                |addr| {
+                    execution_trace
+                        .and_then(|t| t.read_memory_element_in_context(addr, context, cycle))
+                },
                 |_idx| {
                     // Local resolution would need FMP calculation
                     // For now, return None
@@ -707,7 +715,7 @@ impl State {
 
             match value {
                 Some(felt) => {
-                    write!(&mut output, "{name}={}", felt.as_int()).unwrap();
+                    write!(&mut output, "{name}={}", felt.as_canonical_u64()).unwrap();
                 }
                 None => {
                     write!(&mut output, "{name}={location}").unwrap();

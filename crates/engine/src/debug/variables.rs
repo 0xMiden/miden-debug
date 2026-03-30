@@ -1,7 +1,7 @@
 use std::{cell::RefCell, collections::BTreeMap, fmt, rc::Rc};
 
 use miden_core::Felt;
-use miden_processor::RowIndex;
+use miden_processor::trace::RowIndex;
 
 /// Location of a debug variable's value.
 ///
@@ -25,7 +25,7 @@ impl fmt::Display for DebugVarLocation {
         match self {
             Self::Stack(pos) => write!(f, "stack[{pos}]"),
             Self::Memory(addr) => write!(f, "mem[{addr}]"),
-            Self::Const(felt) => write!(f, "const({})", felt.as_int()),
+            Self::Const(felt) => write!(f, "const({})", felt.as_canonical_u64()),
             Self::Local(idx) => write!(f, "local[{idx}]"),
             Self::Expression(_) => write!(f, "expr(...)"),
         }

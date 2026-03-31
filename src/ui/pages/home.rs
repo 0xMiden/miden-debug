@@ -135,6 +135,11 @@ impl Page for Home {
                             },
                             Err(err) => actions.push(Some(Action::TimedStatusLine(err, 5))),
                         },
+                        "vars" | "variables" | "locals" => {
+                            let show_all = rest.trim() == "all";
+                            let result = state.format_variables(show_all);
+                            actions.push(Some(Action::StatusLine(result)));
+                        }
                         _ => {
                             log::debug!("unknown command with arguments: '{cmd} {args}'");
                             actions.push(Some(Action::TimedStatusLine("unknown command".into(), 1)))
@@ -149,7 +154,7 @@ impl Page for Home {
                             actions.push(Some(Action::ShowDebug));
                         }
                         "vars" | "variables" | "locals" => {
-                            let result = state.format_variables();
+                            let result = state.format_variables(false);
                             actions.push(Some(Action::StatusLine(result)));
                         }
                         invalid => {

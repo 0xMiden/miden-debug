@@ -24,9 +24,10 @@ use miden_processor::{
 
 use super::{DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent};
 use crate::{
-    debug::{CallStack, DebugVarInfo, DebugVarTracker},
+    debug::{CallStack, DebugVarTracker},
     felt::FromMidenRepr,
 };
+use miden_core::operations::DebugVarInfo;
 
 /// The [Executor] is responsible for executing a program with the Miden VM.
 ///

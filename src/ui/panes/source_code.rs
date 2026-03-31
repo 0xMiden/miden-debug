@@ -138,38 +138,20 @@ impl Default for Theme {
         Self {
             focused_border_style: Style::default(),
             current_line: Style::default()
-                .bg(Color::Black)
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
             current_span: Style::default()
-                .fg(Color::White)
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
             line_number: Style::default(),
             gutter_border: Style::default(),
         }
     }
 }
 impl Theme {
-    pub fn patch_from_syntect(&mut self, theme: &syntect::highlighting::Theme) {
-        use crate::ui::syntax_highlighting::convert_color;
-        if let Some(bg) = theme.settings.line_highlight.map(convert_color) {
-            self.current_line.bg = Some(bg);
-        }
-        if let Some(bg) = theme.settings.selection.map(convert_color) {
-            self.current_span.bg = Some(bg);
-        }
-        if let Some(fg) = theme.settings.selection_foreground.map(convert_color) {
-            self.current_span.fg = Some(fg);
-        }
-        if let Some(bg) = theme.settings.gutter.map(convert_color) {
-            self.line_number.bg = Some(bg);
-            self.gutter_border.bg = Some(bg);
-        }
-        if let Some(fg) = theme.settings.gutter_foreground.map(convert_color) {
-            self.line_number.fg = Some(fg);
-            self.gutter_border.fg = Some(fg);
-        }
+    pub fn patch_from_syntect(&mut self, _theme: &syntect::highlighting::Theme) {
+        // Intentionally do NOT apply the syntect theme's line_highlight, selection,
+        // or gutter colors here. The defaults use REVERSED which works on both
+        // light and dark terminals. The syntect dark theme colors would make text
+        // invisible on light terminals.
     }
 }
 
@@ -303,7 +285,7 @@ impl Pane for SourceCodePane {
                 if let Some(loc) = self.current_location(state) {
                     let source_id = loc.source_file.id();
                     if source_id != self.current_source_id {
-                        self.highlight_file(&loc);
+                        self.current_file = Some(self.highlight_file(&loc));
                         self.current_source_id = source_id;
                         self.num_lines = loc.source_file.line_count() as u32;
                         self.selected_line = loc.line;
@@ -387,14 +369,18 @@ impl Pane for SourceCodePane {
             .unwrap();
         let selection_start = core::cmp::max(span.start(), line_span.start);
         let selection_end = core::cmp::min(span.end(), line_span.end);
-        let selected_span = SourceSpan::new(span.source_id(), selection_start..selection_end);
-        let selected = selected_span.into_slice_index();
-        let selected = if selected_span.is_empty() {
-            // Select the closest character to the span
-            let start = selected.start - line_span.start.to_usize();
-            start..start
+        // Guard: if the span doesn't overlap this line, select nothing
+        let selected = if selection_start >= selection_end {
+            0..0
         } else {
-            (selected.start - line_span.start.to_usize())..(selected.end - line_span.end.to_usize())
+            let selected_span = SourceSpan::new(span.source_id(), selection_start..selection_end);
+            let selected = selected_span.into_slice_index();
+            if selected_span.is_empty() {
+                let start = selected.start - line_span.start.to_usize();
+                start..start
+            } else {
+                (selected.start - line_span.start.to_usize())..(selected.end - line_span.start.to_usize())
+            }
         };
         let mut parts = syntect::util::modify_range(
             selected_line_deconstructed.as_slice(),

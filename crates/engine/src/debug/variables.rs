@@ -1,65 +1,7 @@
-use std::{cell::RefCell, collections::BTreeMap, fmt, rc::Rc};
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
-use miden_core::Felt;
+use miden_core::{Felt, operations::DebugVarInfo, operations::DebugVarLocation};
 use miden_processor::trace::RowIndex;
-
-/// Location of a debug variable's value.
-///
-/// This is a stub type until miden-core provides DebugVarLocation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DebugVarLocation {
-    /// Variable is on the stack at the given position
-    Stack(u16),
-    /// Variable is in memory at the given address
-    Memory(u32),
-    /// Variable is a constant
-    Const(Felt),
-    /// Variable is a local at the given frame offset
-    Local(u16),
-    /// Variable location is computed via an expression
-    Expression(Vec<u8>),
-}
-
-impl fmt::Display for DebugVarLocation {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Stack(pos) => write!(f, "stack[{pos}]"),
-            Self::Memory(addr) => write!(f, "mem[{addr}]"),
-            Self::Const(felt) => write!(f, "const({})", felt.as_canonical_u64()),
-            Self::Local(idx) => write!(f, "local[{idx}]"),
-            Self::Expression(_) => write!(f, "expr(...)"),
-        }
-    }
-}
-
-/// Debug variable information.
-///
-/// This is a stub type until miden-core provides DebugVarInfo.
-#[derive(Debug, Clone)]
-pub struct DebugVarInfo {
-    name: String,
-    location: DebugVarLocation,
-}
-
-impl DebugVarInfo {
-    /// Create a new debug variable info
-    pub fn new(name: impl Into<String>, location: DebugVarLocation) -> Self {
-        Self {
-            name: name.into(),
-            location,
-        }
-    }
-
-    /// Get the variable name
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Get the variable's value location
-    pub fn value_location(&self) -> &DebugVarLocation {
-        &self.location
-    }
-}
 
 /// A snapshot of a debug variable at a specific clock cycle.
 #[derive(Debug, Clone)]
@@ -91,6 +33,13 @@ impl DebugVarTracker {
             events,
             current_vars: BTreeMap::new(),
             processed_up_to: RowIndex::from(0),
+        }
+    }
+
+    /// Record debug variable events at the given clock cycle.
+    pub fn record_events(&self, clk: RowIndex, infos: Vec<DebugVarInfo>) {
+        if !infos.is_empty() {
+            self.events.borrow_mut().entry(clk).or_default().extend(infos);
         }
     }
 
@@ -143,18 +92,30 @@ impl DebugVarTracker {
 }
 
 /// Resolve a debug variable's value given its location and the current VM state.
-///
-/// NOTE: This currently always returns None as it requires miden-core
-/// for full debug variable support.
 pub fn resolve_variable_value(
-    _location: &DebugVarLocation,
-    _stack: &[Felt],
-    _get_memory: impl Fn(u32) -> Option<Felt>,
-    _get_local: impl Fn(u16) -> Option<Felt>,
+    location: &DebugVarLocation,
+    stack: &[Felt],
+    get_memory: impl Fn(u32) -> Option<Felt>,
+    _get_local: impl Fn(i16) -> Option<Felt>,
 ) -> Option<Felt> {
-    // Variable value resolution requires miden-core
-    // For now, always return None
-    None
+    match location {
+        DebugVarLocation::Stack(pos) => stack.get(*pos as usize).copied(),
+        DebugVarLocation::Memory(addr) => get_memory(*addr),
+        DebugVarLocation::Const(felt) => Some(*felt),
+        DebugVarLocation::Local(offset) => _get_local(*offset),
+        DebugVarLocation::FrameBase { global_index, byte_offset } => {
+            // global_index was resolved to a Miden byte address during compilation.
+            // Convert to element address (÷4) to read the stack pointer value.
+            let sp_elem_addr = *global_index / 4;
+            let base = get_memory(sp_elem_addr)?;
+            // The stack pointer value is also a byte address; apply byte_offset,
+            // then convert to element address to read the variable's value.
+            let byte_addr = base.as_canonical_u64() as i64 + byte_offset;
+            let elem_addr = (byte_addr / 4) as u32;
+            get_memory(elem_addr)
+        }
+        DebugVarLocation::Expression(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -196,7 +157,7 @@ mod tests {
         assert!(tracker.get_variable("x").is_some());
         assert!(tracker.get_variable("y").is_some());
 
-        // Verify resolve_variable_value returns None
+        // Verify resolve_variable_value resolves stack values
         let x_snapshot = tracker.get_variable("x").unwrap();
         let value = resolve_variable_value(
             x_snapshot.info.value_location(),
@@ -204,6 +165,6 @@ mod tests {
             |_| None,
             |_| None,
         );
-        assert!(value.is_none(), "resolve_variable_value should return None for now");
+        assert_eq!(value, Some(Felt::new(42)));
     }
 }

@@ -78,7 +78,7 @@ impl Pane for StackTracePane {
             } else {
                 Span::styled(
                     name,
-                    Style::default().fg(Color::Cyan).bg(Color::Black).add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
                 )
             };
             parts.push(name);

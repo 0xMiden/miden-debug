@@ -667,9 +667,9 @@ impl State {
 
     /// Format the current debug variables as a string for display.
     ///
-    /// Returns a string describing all tracked variables and their current values,
-    /// or a message indicating no variables are being tracked.
-    pub fn format_variables(&self) -> String {
+    /// When `show_all` is false, compiler-generated locals (named `local0`, `local1`, etc.)
+    /// are hidden. Use `show_all` = true (`:vars all`) to include them.
+    pub fn format_variables(&self, show_all: bool) -> String {
         use core::fmt::Write;
 
         let executor = self.executor();
@@ -682,34 +682,41 @@ impl State {
         let mut output = String::new();
         let stack = executor.current_stack.clone();
         let context = executor.current_context;
-        let cycle = miden_processor::trace::RowIndex::from(executor.cycle as u32);
 
-        let execution_trace = match &self.session {
-            SessionState::Local(local) => Some(&local.execution_trace),
-            #[cfg(feature = "dap")]
-            SessionState::Remote(_) => None,
+        // Read memory from the live processor state (not the pre-recorded execution trace)
+        // so we get values at the current debugging cycle, not the final state.
+        let read_mem = |addr: u32| -> Option<Felt> {
+            executor.processor.memory()
+                .read_element(context, Felt::new(addr as u64))
+                .ok()
         };
 
         for var_snapshot in debug_vars.current_variables() {
+            let name = var_snapshot.info.name();
+
+            // Skip compiler-generated locals (e.g. "local2") unless show_all is set.
+            // Source-level variables have DWARF-derived names (e.g. "a", "sum").
+            if !show_all && is_compiler_generated_name(name) {
+                continue;
+            }
+
             if !output.is_empty() {
                 output.push_str(", ");
             }
 
-            let name = var_snapshot.info.name();
             let location = var_snapshot.info.value_location();
 
             // Try to resolve the variable value
             let value = resolve_variable_value(
                 location,
                 &stack,
-                |addr| {
-                    execution_trace
-                        .and_then(|t| t.read_memory_element_in_context(addr, context, cycle))
-                },
-                |_idx| {
-                    // Local resolution would need FMP calculation
-                    // For now, return None
-                    None
+                |addr| read_mem(addr),
+                |offset| {
+                    // Read FMP from live memory, then compute address as FMP + offset
+                    let fmp_addr = miden_core::FMP_ADDR.as_canonical_u64() as u32;
+                    let fmp = read_mem(fmp_addr)?;
+                    let addr = (fmp.as_canonical_u64() as i64 + offset as i64) as u32;
+                    read_mem(addr)
                 },
             );
 
@@ -723,8 +730,19 @@ impl State {
             }
         }
 
-        output
+        if output.is_empty() {
+            "No source-level variables (use ':vars all' to show compiler locals)".to_string()
+        } else {
+            output
+        }
     }
+}
+
+/// Returns true if the variable name looks compiler-generated (e.g. "local0", "local12").
+/// Source-level variables have DWARF-derived names like "a", "sum", "_info".
+fn is_compiler_generated_name(name: &str) -> bool {
+    name.strip_prefix("local")
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()))
 }
 
 // DAP CLIENT MODE

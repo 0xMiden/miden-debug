@@ -160,6 +160,18 @@ impl DebugExecutor {
         let asmop = node_id
             .and_then(|nid| resume_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
 
+        // Look up debug vars from MAST forest for the current operation
+        let debug_var_infos: Vec<_> = if let (Some(nid), Some(idx)) = (node_id, op_idx) {
+            let forest = resume_ctx.current_forest();
+            forest
+                .debug_vars_for_operation(nid, idx)
+                .iter()
+                .filter_map(|vid| forest.debug_var(*vid).cloned())
+                .collect()
+        } else {
+            vec![]
+        };
+
         // Execute one step
         match poll_immediately(self.processor.step(&mut self.host, resume_ctx)) {
             Ok(Some(new_ctx)) => {
@@ -197,7 +209,9 @@ impl DebugExecutor {
                 };
                 let exited = self.callstack.next(&step_info);
 
-                // Update debug variable tracker to current clock cycle
+                // Record and process debug variable events
+                self.debug_vars
+                    .record_events(RowIndex::from(self.cycle as u32), debug_var_infos);
                 self.debug_vars.update_to_cycle(RowIndex::from(self.cycle as u32));
 
                 Ok(exited)

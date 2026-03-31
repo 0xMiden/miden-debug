@@ -12,5 +12,5 @@ pub use self::{
         CallFrame, CallStack, ControlFlowOp, CurrentFrame, OpDetail, ResolvedLocation, StackTrace,
         StepInfo,
     },
-    variables::{DebugVarInfo, DebugVarSnapshot, DebugVarTracker, resolve_variable_value},
+    variables::{DebugVarSnapshot, DebugVarTracker, resolve_variable_value},
 };

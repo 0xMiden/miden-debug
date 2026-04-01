@@ -230,8 +230,7 @@ impl ReplSession {
             }
 
             // Get current execution state for breakpoint checking
-            let is_op_boundary =
-                self.state.executor().current_asmop.as_ref().map(|_info| true).unwrap_or(false);
+            let is_op_boundary = self.state.executor().current_asmop.is_some();
             let (proc, loc) = match self.state.executor().callstack.current_frame() {
                 Some(frame) => {
                     let loc = frame

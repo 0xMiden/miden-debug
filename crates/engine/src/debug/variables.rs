@@ -12,11 +12,7 @@ pub struct DebugVarSnapshot {
     pub info: DebugVarInfo,
 }
 
-/// Tracks debug variable information throughout program execution.
-///
-/// This structure maintains a mapping from variable names to their most recent
-/// location information at each clock cycle. It's designed to work with the
-/// debugger to provide source-level variable inspection.
+/// Tracks debug variable snapshots, mapping variable names to their most recent location info.
 pub struct DebugVarTracker {
     /// All debug variable events recorded during execution, keyed by clock cycle.
     events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>>,
@@ -43,10 +39,7 @@ impl DebugVarTracker {
         }
     }
 
-    /// Update the tracker state to reflect variables at the given clock cycle.
-    ///
-    /// This processes all events up to and including `clk`, updating the
-    /// current variable state accordingly.
+    /// Process all events up to and including `clk`, updating current variable state.
     pub fn update_to_cycle(&mut self, clk: RowIndex) {
         let events = self.events.borrow();
 
@@ -96,13 +89,13 @@ pub fn resolve_variable_value(
     location: &DebugVarLocation,
     stack: &[Felt],
     get_memory: impl Fn(u32) -> Option<Felt>,
-    _get_local: impl Fn(i16) -> Option<Felt>,
+    get_local: impl Fn(i16) -> Option<Felt>,
 ) -> Option<Felt> {
     match location {
         DebugVarLocation::Stack(pos) => stack.get(*pos as usize).copied(),
         DebugVarLocation::Memory(addr) => get_memory(*addr),
         DebugVarLocation::Const(felt) => Some(*felt),
-        DebugVarLocation::Local(offset) => _get_local(*offset),
+        DebugVarLocation::Local(offset) => get_local(*offset),
         DebugVarLocation::FrameBase { global_index, byte_offset } => {
             // global_index was resolved to a Miden byte address during compilation.
             // Convert to element address (÷4) to read the stack pointer value.

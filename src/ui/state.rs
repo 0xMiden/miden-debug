@@ -683,8 +683,7 @@ impl State {
         let stack = executor.current_stack.clone();
         let context = executor.current_context;
 
-        // Read memory from the live processor state (not the pre-recorded execution trace)
-        // so we get values at the current debugging cycle, not the final state.
+        // Use live processor state, not the pre-recorded trace, for current-cycle values.
         let read_mem = |addr: u32| -> Option<Felt> {
             executor.processor.memory()
                 .read_element(context, Felt::new(addr as u64))
@@ -694,8 +693,6 @@ impl State {
         for var_snapshot in debug_vars.current_variables() {
             let name = var_snapshot.info.name();
 
-            // Skip compiler-generated locals (e.g. "local2") unless show_all is set.
-            // Source-level variables have DWARF-derived names (e.g. "a", "sum").
             if !show_all && is_compiler_generated_name(name) {
                 continue;
             }
@@ -706,7 +703,6 @@ impl State {
 
             let location = var_snapshot.info.value_location();
 
-            // Try to resolve the variable value
             let value = resolve_variable_value(
                 location,
                 &stack,

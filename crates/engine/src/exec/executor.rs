@@ -10,6 +10,7 @@ use std::{
 use miden_assembly_syntax::{Library, diagnostics::Report};
 use miden_core::{
     Word,
+    operations::DebugVarInfo,
     program::{Program, StackInputs},
 };
 use miden_debug_types::{SourceManager, SourceManagerExt};
@@ -27,7 +28,6 @@ use crate::{
     debug::{CallStack, DebugVarTracker},
     felt::FromMidenRepr,
 };
-use miden_core::operations::DebugVarInfo;
 
 /// The [Executor] is responsible for executing a program with the Miden VM.
 ///

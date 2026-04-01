@@ -1,6 +1,9 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
-use miden_core::{Felt, operations::DebugVarInfo, operations::DebugVarLocation};
+use miden_core::{
+    Felt,
+    operations::{DebugVarInfo, DebugVarLocation},
+};
 use miden_processor::trace::RowIndex;
 
 /// A snapshot of a debug variable at a specific clock cycle.
@@ -96,7 +99,10 @@ pub fn resolve_variable_value(
         DebugVarLocation::Memory(addr) => get_memory(*addr),
         DebugVarLocation::Const(felt) => Some(*felt),
         DebugVarLocation::Local(offset) => get_local(*offset),
-        DebugVarLocation::FrameBase { global_index, byte_offset } => {
+        DebugVarLocation::FrameBase {
+            global_index,
+            byte_offset,
+        } => {
             // global_index was resolved to a Miden byte address during compilation.
             // Convert to element address (÷4) to read the stack pointer value.
             let sp_elem_addr = *global_index / 4;

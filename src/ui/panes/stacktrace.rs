@@ -76,10 +76,7 @@ impl Pane for StackTracePane {
             let name = if is_top {
                 Span::styled(name, Color::Gray)
             } else {
-                Span::styled(
-                    name,
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                )
+                Span::styled(name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
             };
             parts.push(name);
             if let Some(resolved) = frame.last_resolved(&state.source_manager) {

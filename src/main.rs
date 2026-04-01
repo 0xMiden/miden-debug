@@ -59,7 +59,9 @@ pub fn main() -> Result<(), Report> {
     return run(config, logger);
 
     #[cfg(not(feature = "tui"))]
-    Err(Report::msg("no UI feature enabled: build with --features tui or --features repl"))
+    Err(Report::msg(
+        "no UI feature enabled: build with --features tui or --features repl",
+    ))
 }
 
 fn setup_diagnostics() {

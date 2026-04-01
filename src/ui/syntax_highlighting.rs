@@ -259,7 +259,11 @@ pub fn convert_style(syntect_style: syntax::Style, use_bg_color: bool) -> Style 
     let mut style = Style::new();
     // Skip transparent colors (alpha=0) to use the terminal's native colors
     if fg.a > 0 {
-        let fg_color = if use_bg_color { blend_fg_color(syntect_style) } else { convert_color(fg) };
+        let fg_color = if use_bg_color {
+            blend_fg_color(syntect_style)
+        } else {
+            convert_color(fg)
+        };
         style = style.fg(fg_color);
     }
     if use_bg_color && bg.a > 0 {
@@ -276,7 +280,12 @@ pub fn convert_to_syntect_style(style: Style, _use_bg_color: bool) -> syntax::St
     // Use transparent (alpha=0) fallbacks so that convert_style will skip
     // setting explicit colors, letting the terminal's native colors show through.
     // This avoids hardcoded White/Black that break on light/dark terminals.
-    let transparent = syntax::Color { r: 0, g: 0, b: 0, a: 0 };
+    let transparent = syntax::Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+    };
     syntax::Style {
         foreground: fg.unwrap_or(transparent),
         background: bg.unwrap_or(transparent),

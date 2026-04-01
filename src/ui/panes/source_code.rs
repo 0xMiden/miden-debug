@@ -131,16 +131,15 @@ struct Theme {
     current_line: Style,
     current_span: Style,
     line_number: Style,
+    #[allow(dead_code)]
     gutter_border: Style,
 }
 impl Default for Theme {
     fn default() -> Self {
         Self {
             focused_border_style: Style::default(),
-            current_line: Style::default()
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
-            current_span: Style::default()
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            current_line: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            current_span: Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
             line_number: Style::default(),
             gutter_border: Style::default(),
         }
@@ -379,7 +378,8 @@ impl Pane for SourceCodePane {
                 let start = selected.start - line_span.start.to_usize();
                 start..start
             } else {
-                (selected.start - line_span.start.to_usize())..(selected.end - line_span.start.to_usize())
+                (selected.start - line_span.start.to_usize())
+                    ..(selected.end - line_span.start.to_usize())
             }
         };
         let mut parts = syntect::util::modify_range(

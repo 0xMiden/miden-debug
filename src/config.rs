@@ -34,7 +34,10 @@ pub struct DebuggerConfig {
     /// These arguments must be valid field element values expressed in decimal format.
     ///
     /// NOTE: These arguments will override any stack values provided via --inputs
-    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(last(true), value_name = "ARGV"))]
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl"),
+        arg(last(true), value_name = "ARGV")
+    )]
     pub args: Vec<Felt>,
     /// The working directory for the debugger
     ///
@@ -69,7 +72,10 @@ pub struct DebuggerConfig {
     pub color: ColorChoice,
     /// Specify the function to call as the entrypoint for the program
     /// in the format `<module_name>::<function>`
-    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(long, help_heading = "Execution"))]
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl"),
+        arg(long, help_heading = "Execution")
+    )]
     pub entrypoint: Option<String>,
     /// Connect to a remote DAP debug server instead of running a local program.
     ///
@@ -115,7 +121,10 @@ pub struct DebuggerConfig {
     )]
     pub link_libraries: Vec<LinkLibrary>,
     /// Use the REPL (text-mode) debugger instead of the TUI
-    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(long, help_heading = "Output"))]
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl"),
+        arg(long, help_heading = "Output")
+    )]
     pub repl: bool,
 }
 

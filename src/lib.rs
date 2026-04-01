@@ -12,11 +12,10 @@ pub(crate) mod ui;
 #[cfg(feature = "repl")]
 mod repl;
 
-#[cfg(feature = "tui")]
-pub use self::ui::{DebugMode, State, run, run_with_state};
-
 #[cfg(feature = "repl")]
 pub use self::repl::run as run_repl;
+#[cfg(feature = "tui")]
+pub use self::ui::{DebugMode, State, run, run_with_state};
 pub use self::{
     config::{ColorChoice, DebuggerConfig},
     debug::*,

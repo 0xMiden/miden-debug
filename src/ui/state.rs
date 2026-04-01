@@ -104,8 +104,9 @@ struct RemoteSnapshot {
 #[cfg(feature = "dap")]
 impl RemoteState {
     fn connect(addr: &str, source_manager: &Arc<dyn SourceManager>) -> Result<Self, Report> {
-        use std::collections::BTreeSet;
+        use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
+        use miden_debug_engine::debug::DebugVarTracker;
         use miden_processor::{ContextId, FastProcessor};
 
         use crate::exec::DebuggerHost;
@@ -116,6 +117,7 @@ impl RemoteState {
 
         let processor = FastProcessor::new(StackInputs::default());
         let host = DebuggerHost::new(source_manager.clone());
+        let debug_vars = DebugVarTracker::new(Rc::new(RefCell::new(Default::default())));
         let executor = DebugExecutor {
             processor,
             host,
@@ -128,6 +130,7 @@ impl RemoteState {
             root_context: ContextId::root(),
             current_context: ContextId::root(),
             callstack: snapshot.callstack,
+            debug_vars,
             recent: VecDeque::new(),
             cycle: snapshot.cycle,
             stopped: false,
@@ -685,9 +688,7 @@ impl State {
 
         // Use live processor state, not the pre-recorded trace, for current-cycle values.
         let read_mem = |addr: u32| -> Option<Felt> {
-            executor.processor.memory()
-                .read_element(context, Felt::new(addr as u64))
-                .ok()
+            executor.processor.memory().read_element(context, Felt::new(addr as u64)).ok()
         };
 
         for var_snapshot in debug_vars.current_variables() {
@@ -703,18 +704,13 @@ impl State {
 
             let location = var_snapshot.info.value_location();
 
-            let value = resolve_variable_value(
-                location,
-                &stack,
-                |addr| read_mem(addr),
-                |offset| {
-                    // Read FMP from live memory, then compute address as FMP + offset
-                    let fmp_addr = miden_core::FMP_ADDR.as_canonical_u64() as u32;
-                    let fmp = read_mem(fmp_addr)?;
-                    let addr = (fmp.as_canonical_u64() as i64 + offset as i64) as u32;
-                    read_mem(addr)
-                },
-            );
+            let value = resolve_variable_value(location, &stack, read_mem, |offset| {
+                // Read FMP from live memory, then compute address as FMP + offset
+                let fmp_addr = miden_core::FMP_ADDR.as_canonical_u64() as u32;
+                let fmp = read_mem(fmp_addr)?;
+                let addr = (fmp.as_canonical_u64() as i64 + offset as i64) as u32;
+                read_mem(addr)
+            });
 
             match value {
                 Some(felt) => {

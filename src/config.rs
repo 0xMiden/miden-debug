@@ -8,22 +8,22 @@ use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile, linker::LinkLib
 
 /// Run a compiled Miden program with the Miden VM
 #[derive(Default, Debug)]
-#[cfg_attr(feature = "tui", derive(clap::Parser))]
-#[cfg_attr(feature = "tui", command(author, version, about = "The interactive Miden debugger", long_about = None))]
+#[cfg_attr(any(feature = "tui", feature = "repl"), derive(clap::Parser))]
+#[cfg_attr(any(feature = "tui", feature = "repl"), command(author, version, about = "The interactive Miden debugger", long_about = None))]
 pub struct DebuggerConfig {
     /// Specify the path to a Miden program file to execute.
     ///
     /// Miden Assembly programs are emitted by the compiler with a `.masp` extension.
     ///
     /// You may use `-` as a file name to read a file from stdin.
-    #[cfg_attr(feature = "tui", arg(value_name = "FILE"))]
+    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(value_name = "FILE"))]
     pub input: Option<InputFile>,
     /// Specify the path to a file containing program inputs.
     ///
     /// Program inputs are stack and advice provider values which the program can
     /// access during execution. The inputs file is a TOML file which describes
     /// what the inputs are, or where to source them from.
-    #[cfg_attr(feature = "tui", arg(long, value_name = "FILE"))]
+    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(long, value_name = "FILE"))]
     pub inputs: Option<ExecutionConfig>,
     /// Arguments to place on the operand stack before calling the program entrypoint.
     ///
@@ -34,7 +34,7 @@ pub struct DebuggerConfig {
     /// These arguments must be valid field element values expressed in decimal format.
     ///
     /// NOTE: These arguments will override any stack values provided via --inputs
-    #[cfg_attr(feature = "tui", arg(last(true), value_name = "ARGV"))]
+    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(last(true), value_name = "ARGV"))]
     pub args: Vec<Felt>,
     /// The working directory for the debugger
     ///
@@ -58,7 +58,7 @@ pub struct DebuggerConfig {
     )]
     pub sysroot: Option<PathBuf>,
     /// Whether, and how, to color terminal output
-    #[cfg_attr(feature = "tui", arg(
+    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(
         long,
         value_enum,
         default_value_t = ColorChoice::Auto,
@@ -69,7 +69,7 @@ pub struct DebuggerConfig {
     pub color: ColorChoice,
     /// Specify the function to call as the entrypoint for the program
     /// in the format `<module_name>::<function>`
-    #[cfg_attr(feature = "tui", arg(long, help_heading = "Execution"))]
+    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(long, help_heading = "Execution"))]
     pub entrypoint: Option<String>,
     /// Connect to a remote DAP debug server instead of running a local program.
     ///
@@ -114,6 +114,9 @@ pub struct DebuggerConfig {
         )
     )]
     pub link_libraries: Vec<LinkLibrary>,
+    /// Use the REPL (text-mode) debugger instead of the TUI
+    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(long, help_heading = "Output"))]
+    pub repl: bool,
 }
 
 /// ColorChoice represents the color preferences of an end user.
@@ -125,7 +128,7 @@ pub struct DebuggerConfig {
 /// string of the variant name to the corresponding variant. Any other string
 /// results in an error.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "tui", derive(clap::ValueEnum))]
+#[cfg_attr(any(feature = "tui", feature = "repl"), derive(clap::ValueEnum))]
 pub enum ColorChoice {
     /// Try very hard to emit colors. This includes emitting ANSI colors
     /// on Windows if the console API is unavailable.

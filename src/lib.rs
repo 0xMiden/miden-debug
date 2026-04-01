@@ -4,13 +4,19 @@ mod config;
 mod input;
 mod linker;
 
-#[cfg(feature = "tui")]
-pub mod logger;
-#[cfg(feature = "tui")]
-mod ui;
+#[cfg(any(feature = "tui", feature = "repl"))]
+mod logger;
+#[cfg(any(feature = "tui", feature = "repl"))]
+pub(crate) mod ui;
+
+#[cfg(feature = "repl")]
+mod repl;
 
 #[cfg(feature = "tui")]
 pub use self::ui::{DebugMode, State, run, run_with_state};
+
+#[cfg(feature = "repl")]
+pub use self::repl::run as run_repl;
 pub use self::{
     config::{ColorChoice, DebuggerConfig},
     debug::*,

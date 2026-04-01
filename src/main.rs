@@ -2,7 +2,11 @@ use std::env;
 
 use clap::Parser;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report, WrapErr};
-use miden_debug::{DebuggerConfig, run};
+use miden_debug::DebuggerConfig;
+#[cfg(feature = "tui")]
+use miden_debug::run;
+#[cfg(feature = "repl")]
+use miden_debug::run_repl;
 #[cfg(feature = "dap")]
 use miden_debug::{State, run_with_state};
 
@@ -46,7 +50,16 @@ pub fn main() -> Result<(), Report> {
         return run_with_state(state, logger);
     }
 
-    run(config, logger)
+    #[cfg(feature = "repl")]
+    if config.repl {
+        return run_repl(config, logger);
+    }
+
+    #[cfg(feature = "tui")]
+    return run(config, logger);
+
+    #[cfg(not(feature = "tui"))]
+    Err(Report::msg("no UI feature enabled: build with --features tui or --features repl"))
 }
 
 fn setup_diagnostics() {

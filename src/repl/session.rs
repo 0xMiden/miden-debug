@@ -322,7 +322,7 @@ impl ReplSession {
     fn cmd_break(&mut self, bp_type: BreakpointType) -> Result<(), String> {
         self.state.create_breakpoint(bp_type.clone());
         let id = self.state.breakpoints.last().map(|bp| bp.id).unwrap_or(0);
-        println!("Breakpoint {} created: {:?}", id, bp_type);
+        println!("Breakpoint {} set: {}", id, format_bp_type(&bp_type));
         Ok(())
     }
 
@@ -335,7 +335,7 @@ impl ReplSession {
         println!("Breakpoints:");
         for bp in &self.state.breakpoints {
             if !bp.is_internal() {
-                println!("  [{}] {:?}", bp.id, bp.ty);
+                println!("  [{}] {}", bp.id, format_bp_type(&bp.ty));
             }
         }
         Ok(())
@@ -466,5 +466,19 @@ impl ReplSession {
     fn cmd_help(&mut self) -> Result<(), String> {
         println!("{}", ReplCommand::help_text());
         Ok(())
+    }
+}
+
+fn format_bp_type(ty: &BreakpointType) -> String {
+    match ty {
+        BreakpointType::Step => "next cycle".into(),
+        BreakpointType::StepN(n) => format!("after {} cycles", n),
+        BreakpointType::StepTo(c) => format!("at cycle {}", c),
+        BreakpointType::Next => "next instruction".into(),
+        BreakpointType::Finish => "function return".into(),
+        BreakpointType::File(pat) => format!("{}", pat.as_str()),
+        BreakpointType::Line { pattern, line } => format!("{}:{}", pattern.as_str(), line),
+        BreakpointType::Opcode(op) => format!("opcode {:?}", op),
+        BreakpointType::Called(pat) => format!("call {}", pat.as_str()),
     }
 }

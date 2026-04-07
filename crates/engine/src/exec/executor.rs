@@ -157,16 +157,16 @@ impl Executor {
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
         let frame_start_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameStart, move |clk, event| {
-            frame_start_events.borrow_mut().insert(clk, event);
+        host.register_trace_handler(TraceEvent::FrameStart, move |process, event| {
+            frame_start_events.borrow_mut().insert(process.clock(), event);
         });
         let frame_end_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameEnd, move |clk, event| {
-            frame_end_events.borrow_mut().insert(clk, event);
+        host.register_trace_handler(TraceEvent::FrameEnd, move |process, event| {
+            frame_end_events.borrow_mut().insert(process.clock(), event);
         });
         let assertion_events = Rc::clone(&trace_events);
-        host.register_assert_failed_tracer(move |clk, event| {
-            assertion_events.borrow_mut().insert(clk, event);
+        host.register_assert_failed_tracer(move |process, event| {
+            assertion_events.borrow_mut().insert(process.clock(), event);
         });
 
         // Set up debug variable tracking
@@ -240,16 +240,16 @@ impl Executor {
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
         let frame_start_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameStart, move |clk, event| {
-            frame_start_events.borrow_mut().insert(clk, event);
+        host.register_trace_handler(TraceEvent::FrameStart, move |process, event| {
+            frame_start_events.borrow_mut().insert(process.clock(), event);
         });
         let frame_end_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameEnd, move |clk, event| {
-            frame_end_events.borrow_mut().insert(clk, event);
+        host.register_trace_handler(TraceEvent::FrameEnd, move |process, event| {
+            frame_end_events.borrow_mut().insert(process.clock(), event);
         });
         let assertion_events = Rc::clone(&trace_events);
-        host.register_assert_failed_tracer(move |clk, event| {
-            assertion_events.borrow_mut().insert(clk, event);
+        host.register_assert_failed_tracer(move |process, event| {
+            assertion_events.borrow_mut().insert(process.clock(), event);
         });
 
         let mut processor = FastProcessor::new(self.stack)

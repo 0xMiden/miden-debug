@@ -1,12 +1,14 @@
 use miden_core::Word;
-use miden_processor::{ContextId, FastProcessor, Felt, StackInputs, StackOutputs, trace::RowIndex};
+use miden_processor::{
+    ContextId, FastProcessor, Felt, ProcessorState, StackInputs, StackOutputs, trace::RowIndex,
+};
 use smallvec::SmallVec;
 
 use super::TraceEvent;
 use crate::{debug::NativePtr, felt::FromMidenRepr};
 
-/// A callback to be executed when a [TraceEvent] occurs at a given clock cycle
-pub type TraceHandler = dyn FnMut(RowIndex, TraceEvent);
+/// A callback to be executed when a [TraceEvent] occurs
+pub type TraceHandler = dyn FnMut(&ProcessorState<'_>, TraceEvent);
 
 /// Occurs when an attempt to read memory of the VM fails
 #[derive(Debug, thiserror::Error)]

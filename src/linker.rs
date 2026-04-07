@@ -101,9 +101,7 @@ impl LinkLibrary {
                     false,
                 )?;
 
-                miden_assembly::Assembler::new(source_manager)
-                    .assemble_library(modules)
-                    .map(Arc::new)
+                miden_assembly::Assembler::new(source_manager).assemble_library(modules)
             }
             LibraryKind::Masp => {
                 use miden_core::serde::Deserializable;
@@ -115,16 +113,7 @@ impl LinkLibrary {
                             path.display()
                         ))
                     })?;
-                let lib = match package.mast {
-                    miden_mast_package::MastArtifact::Executable(_) => {
-                        return Err(Report::msg(format!(
-                            "Expected Miden package to contain a Library, got Program: '{}'",
-                            path.display()
-                        )));
-                    }
-                    miden_mast_package::MastArtifact::Library(lib) => lib.clone(),
-                };
-                Ok(lib)
+                Ok(package.mast.clone())
             }
         }
     }

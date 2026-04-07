@@ -810,14 +810,7 @@ fn load_sysroot_libs(
             let package = miden_mast_package::Package::read_from_bytes(&bytes).map_err(|e| {
                 Report::msg(format!("failed to load package '{}': {e}", path.display()))
             })?;
-            match package.mast {
-                miden_mast_package::MastArtifact::Library(lib) => {
-                    libs.push(lib.clone());
-                }
-                miden_mast_package::MastArtifact::Executable(_) => {
-                    log::debug!(target: "state", "skipping executable package: {}", path.display());
-                }
-            }
+            libs.push(package.mast.clone());
         } else if ext == "masl" {
             log::debug!(target: "state", "loading library from sysroot: {}", path.display());
             let bytes = std::fs::read(&path).into_diagnostic()?;

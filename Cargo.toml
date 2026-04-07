@@ -32,7 +32,7 @@ name = "compile-masm"
 required-features = ["std"]
 
 [features]
-default = ["tui"]
+default = ["tui", "dap"]
 tui = ["std", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect", "miden-debug-engine/tui"]
 dap = ["dep:dap", "dep:socket2", "miden-debug-engine/dap"]
 std = ["dep:glob", "clap/std", "clap/env", "miden-assembly-syntax/std", "miden-debug-engine/std"]
@@ -47,11 +47,11 @@ serde_json = "1"
 env_logger = { version = "0.11", optional = true }
 log = "0.4"
 glob = { version = "0.3.1", optional = true }
-miden-assembly = { version = "=0.22.0", default-features = false }
-miden-assembly-syntax = { version = "=0.22.0", default-features = false }
+miden-assembly = { version = "0.22", default-features = false }
+miden-assembly-syntax = { version = "0.22", default-features = false }
 miden-core = { version = "0.22", default-features = false }
 miden-debug-types = { version = "0.22", default-features = false }
-miden-mast-package = { version = "=0.22.0", default-features = false }
+miden-mast-package = { version = "0.22", default-features = false }
 miden-processor = { version = "0.22", default-features = false }
 miden-protocol = { version = "0.14", default-features = false }
 miden-tx = { version = "0.14", default-features = false }
@@ -87,6 +87,5 @@ tokio-util = "0.7.11"
 futures = "0.3.30"
 proptest = { version = "1.4", optional = true }
 
-miden-core-lib = { version = "=0.22.0", default-features = false }
 miden-crypto = { version = "=0.23.0", default-features = false }
 

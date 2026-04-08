@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, rc::Rc, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    rc::Rc,
+    sync::Arc,
+};
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
@@ -114,12 +118,10 @@ impl RemoteState {
         let ui_state = client.handshake().map_err(Report::msg)?;
         let snapshot = convert_ui_state(&ui_state, source_manager);
 
-        let processor = FastProcessor::new(StackInputs::default());
-        let host = DebuggerHost::new(source_manager.clone());
         let debug_vars = DebugVarTracker::new(Rc::new(RefCell::new(Default::default())));
         let executor = DebugExecutor {
-            processor,
-            host,
+            processor: FastProcessor::new(StackInputs::default()),
+            host: DebuggerHost::new(source_manager.clone()),
             resume_ctx: None,
             current_stack: snapshot.current_stack,
             current_op: None,
@@ -135,6 +137,7 @@ impl RemoteState {
             recent: VecDeque::new(),
             cycle: snapshot.cycle,
             stopped: false,
+            printed_lines: Rc::new(RefCell::new(BTreeMap::new())),
         };
 
         Ok(Self {

@@ -16,16 +16,19 @@ use miden_core::{
 use miden_debug_types::{SourceManager, SourceManagerExt};
 use miden_mast_package::Dependency;
 use miden_processor::{
-    ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt,
+    ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt, ProcessorState,
     advice::{AdviceInputs, AdviceMutation},
     event::{EventHandler, EventName},
     mast::MastForest,
     trace::RowIndex,
 };
 
-use super::{DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent};
+use super::{
+    DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent,
+    trace::read_memory_bytes, trace_event::TRACE_PRINT_LN,
+};
 use crate::{
-    debug::{CallStack, DebugVarTracker},
+    debug::{CallStack, DebugVarTracker, NativePtr},
     felt::FromMidenRepr,
 };
 
@@ -156,18 +159,12 @@ impl Executor {
         }
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
-        let frame_start_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameStart, move |process, event| {
-            frame_start_events.borrow_mut().insert(process.clock(), event);
-        });
-        let frame_end_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameEnd, move |process, event| {
-            frame_end_events.borrow_mut().insert(process.clock(), event);
-        });
-        let assertion_events = Rc::clone(&trace_events);
-        host.register_assert_failed_tracer(move |process, event| {
-            assertion_events.borrow_mut().insert(process.clock(), event);
-        });
+        let printed_lines: Rc<RefCell<BTreeMap<RowIndex, String>>> = Rc::new(Default::default());
+        register_builtin_trace_handlers(
+            &mut host,
+            Rc::clone(&trace_events),
+            Rc::clone(&printed_lines),
+        );
 
         // Set up debug variable tracking
         // Note: Currently no debug var events are emitted (requires new miden-core),
@@ -206,6 +203,7 @@ impl Executor {
             recent: VecDeque::with_capacity(5),
             cycle: 0,
             stopped: false,
+            printed_lines,
         }
     }
 
@@ -239,18 +237,12 @@ impl Executor {
             Rc::new(Default::default());
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
-        let frame_start_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameStart, move |process, event| {
-            frame_start_events.borrow_mut().insert(process.clock(), event);
-        });
-        let frame_end_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameEnd, move |process, event| {
-            frame_end_events.borrow_mut().insert(process.clock(), event);
-        });
-        let assertion_events = Rc::clone(&trace_events);
-        host.register_assert_failed_tracer(move |process, event| {
-            assertion_events.borrow_mut().insert(process.clock(), event);
-        });
+        let printed_lines: Rc<RefCell<BTreeMap<RowIndex, String>>> = Rc::new(Default::default());
+        register_builtin_trace_handlers(
+            &mut host,
+            Rc::clone(&trace_events),
+            Rc::clone(&printed_lines),
+        );
 
         let mut processor = FastProcessor::new(self.stack)
             .with_advice(self.advice)
@@ -283,6 +275,7 @@ impl Executor {
             recent: VecDeque::with_capacity(5),
             cycle: 0,
             stopped: false,
+            printed_lines,
         }
     }
 
@@ -366,6 +359,58 @@ impl Executor {
         let digest = *lib.digest();
         self.dependency_resolver.insert(digest, lib);
     }
+}
+
+fn register_builtin_trace_handlers(
+    host: &mut DebuggerHost<dyn SourceManager>,
+    trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>>,
+    printed_lines: Rc<RefCell<BTreeMap<RowIndex, String>>>,
+) {
+    let frame_start_events = Rc::clone(&trace_events);
+    host.register_trace_handler(TraceEvent::FrameStart, move |process, event| {
+        frame_start_events.borrow_mut().insert(process.clock(), event);
+    });
+    let frame_end_events = Rc::clone(&trace_events);
+    host.register_trace_handler(TraceEvent::FrameEnd, move |process, event| {
+        frame_end_events.borrow_mut().insert(process.clock(), event);
+    });
+
+    host.register_trace_handler(TraceEvent::PrintLn, move |process, _event| {
+        let line = decode_println(process);
+        printed_lines.borrow_mut().insert(process.clock(), line);
+    });
+
+    let assertion_events = Rc::clone(&trace_events);
+    host.register_assert_failed_tracer(move |process, event| {
+        assertion_events.borrow_mut().insert(process.clock(), event);
+    });
+}
+
+/// Decode a `TRACE_PRINT_LN` event into a UTF-8 string.
+///
+/// Expects `[address, length]` on the operand stack. Reads `length` bytes from
+/// `address` in the current context's memory and returns them as a string.
+///
+/// # Panics
+///
+/// Panics if inputs are invalid or if reading from memory fails.
+fn decode_println(process: &ProcessorState<'_>) -> String {
+    let addr = u32::try_from(process.get_stack_item(0).as_canonical_u64())
+        .unwrap_or_else(|_| panic!("trace.{TRACE_PRINT_LN:#x} address should fit in u32"));
+    let len = usize::try_from(process.get_stack_item(1).as_canonical_u64())
+        .unwrap_or_else(|_| panic!("trace.{TRACE_PRINT_LN:#x} string length should fit in usize"));
+    let ptr = NativePtr::from_ptr(addr);
+    let ctx = process.ctx();
+
+    let bytes = read_memory_bytes(ptr, len, |addr| {
+        process.get_mem_value(ctx, addr).unwrap_or_else(|| {
+            panic!("trace.{TRACE_PRINT_LN:#x} tried to read unwritten memory at element {addr}")
+        })
+    })
+    .unwrap_or_else(|err| panic!("trace.{TRACE_PRINT_LN:#x} failed to read memory: {err}"));
+
+    String::from_utf8(bytes)
+        .unwrap_or_else(|_| panic!("trace.{TRACE_PRINT_LN:#x} should produce valid UTF-8"))
 }
 
 #[track_caller]

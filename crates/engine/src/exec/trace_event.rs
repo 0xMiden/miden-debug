@@ -11,9 +11,13 @@ pub const TRACE_FRAME_START: u32 = 0xf0;
 /// The mnemonic here is F = frame, C = close
 pub const TRACE_FRAME_END: u32 = 0xfc;
 
-/// TODO add docs
-/// TODO find mnemonic
-pub const TRACE_PRINT_LN: u32 = 42;
+/// This event is emitted via `trace`, and indicates that a line should be printed.
+///
+/// The bytes representing the string are expected in memory. The executor reads the start address
+/// and length from the operand stack.  
+///
+/// The mnemonic here is ASCII `PLN`.
+pub const TRACE_PRINT_LN: u32 = 0x50_4c_4e;
 
 /// A typed wrapper around the raw trace events known to the compiler
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -67,5 +71,17 @@ impl From<TraceEvent> for u32 {
             TraceEvent::AssertionFailed(Some(code)) => code.get(),
             TraceEvent::Unknown(code) => code,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TRACE_PRINT_LN, TraceEvent};
+
+    #[test]
+    fn trace_print_ln_roundtrips_through_trace_event() {
+        assert_eq!(TraceEvent::from(TRACE_PRINT_LN), TraceEvent::PrintLn);
+        assert_eq!(TraceEvent::PrintLn.as_u32(), TRACE_PRINT_LN);
+        assert_eq!(u32::from(TraceEvent::PrintLn), TRACE_PRINT_LN);
     }
 }

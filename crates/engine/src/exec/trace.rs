@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use miden_core::Word;
 use miden_processor::{
     ContextId, FastProcessor, Felt, ProcessorState, StackInputs, StackOutputs, trace::RowIndex,
@@ -29,6 +31,7 @@ pub struct ExecutionTrace {
     pub(super) last_cycle: RowIndex,
     pub(super) processor: FastProcessor,
     pub(super) outputs: StackOutputs,
+    pub(super) printed_lines: BTreeMap<RowIndex, String>,
 }
 
 impl ExecutionTrace {
@@ -41,6 +44,7 @@ impl ExecutionTrace {
             last_cycle: RowIndex::from(0u32),
             processor: FastProcessor::new(StackInputs::default()),
             outputs: StackOutputs::default(),
+            printed_lines: BTreeMap::new(),
         }
     }
 
@@ -69,6 +73,13 @@ impl ExecutionTrace {
     #[inline]
     pub fn outputs(&self) -> &StackOutputs {
         &self.outputs
+    }
+
+    /// Return the lines printed via the `TRACE_PRINT_LN` event, keyed by the clock cycle they were
+    /// emitted on.
+    #[inline]
+    pub fn printed_lines(&self) -> &BTreeMap<RowIndex, String> {
+        &self.printed_lines
     }
 
     /// Read the word at the given Miden memory address
@@ -120,31 +131,15 @@ impl ExecutionTrace {
         ctx: ContextId,
         clk: RowIndex,
     ) -> Result<Vec<u8>, MemoryReadError> {
-        const U32_MASK: u64 = u32::MAX as u64;
         let size = ty.size_in_bytes();
-        let mut buf = Vec::with_capacity(size);
-
-        let size_in_felts = ty.size_in_felts();
-        let mut elems = Vec::with_capacity(size_in_felts);
 
         if addr.is_element_aligned() {
-            for i in 0..size_in_felts {
-                let addr = addr.addr.checked_add(i as u32).ok_or(MemoryReadError::OutOfBounds)?;
-                elems.push(self.read_memory_element_in_context(addr, ctx, clk).unwrap_or_default());
-            }
+            read_memory_bytes(addr, size, |addr| {
+                self.read_memory_element_in_context(addr, ctx, clk).unwrap_or_default()
+            })
         } else {
-            return Err(MemoryReadError::UnalignedRead);
+            Err(MemoryReadError::UnalignedRead)
         }
-
-        let mut needed = size - buf.len();
-        for elem in elems {
-            let bytes = ((elem.as_canonical_u64() & U32_MASK) as u32).to_le_bytes();
-            let take = core::cmp::min(needed, 4);
-            buf.extend(&bytes[0..take]);
-            needed -= take;
-        }
-
-        Ok(buf)
     }
 
     /// Read a value of the given type, given an address in Rust's address space
@@ -179,6 +174,36 @@ impl ExecutionTrace {
     }
 }
 
+pub(crate) fn felt_to_le_bytes(elem: Felt) -> [u8; 4] {
+    ((elem.as_canonical_u64() & u32::MAX as u64) as u32).to_le_bytes()
+}
+
+/// Reads `size` bytes from memory, starting at `ptr`. Handles `ptr`'s offset.
+///
+/// The `read_elem` callback is used to fetch an element from an element address.
+pub(crate) fn read_memory_bytes(
+    ptr: NativePtr,
+    size: usize,
+    mut read_elem: impl FnMut(u32) -> Felt,
+) -> Result<Vec<u8>, MemoryReadError> {
+    if size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let start = usize::from(ptr.offset);
+    let end = start.checked_add(size).ok_or(MemoryReadError::OutOfBounds)?;
+    let num_elements = end.div_ceil(4);
+
+    let mut bytes = Vec::with_capacity(num_elements.saturating_mul(4));
+    for index in 0..num_elements {
+        let index = u32::try_from(index).map_err(|_| MemoryReadError::OutOfBounds)?;
+        let elem_addr = ptr.addr.checked_add(index).ok_or(MemoryReadError::OutOfBounds)?;
+        bytes.extend(felt_to_le_bytes(read_elem(elem_addr)));
+    }
+
+    Ok(bytes[start..end].to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -188,7 +213,7 @@ mod tests {
     use miden_processor::{ContextId, trace::RowIndex};
 
     use super::ExecutionTrace;
-    use crate::{Executor, debug::NativePtr, felt::ToMidenRepr};
+    use crate::{Executor, debug::NativePtr, exec::trace_event::TRACE_PRINT_LN, felt::ToMidenRepr};
 
     fn empty_trace() -> ExecutionTrace {
         ExecutionTrace {
@@ -196,6 +221,7 @@ mod tests {
             last_cycle: RowIndex::from(0_u32),
             processor: miden_processor::FastProcessor::new(miden_processor::StackInputs::default()),
             outputs: miden_processor::StackOutputs::default(),
+            printed_lines: Default::default(),
         }
     }
 
@@ -219,6 +245,186 @@ mod tests {
         let result = trace.parse_result::<u64>().unwrap();
 
         assert_eq!(result, 0x0807_0605_0403_0201_u64);
+    }
+
+    #[test]
+    fn trace_println_captures_byte_addressed_strings() {
+        for offset in 0..4 {
+            let base_elem = 278528 + offset;
+            let second_elem = base_elem + 1;
+            let byte_addr = base_elem * 4;
+
+            let source = format!(
+                r#"
+begin
+    # Store 'h' 'e' 'l' 'l' as little-endian bytes packed into felt at element address {base_elem}
+    # (after memory reserved for the Rust stack).
+    push.1819043176
+    push.{base_elem}
+    mem_store
+
+    # Store the trailing 'o' byte in the next felt.
+    push.111
+    push.{second_elem}
+    mem_store
+
+    # TRACE_PRINT_LN expects [address, string_length] on the stack, so push the byte length first
+    # and the byte address last.
+    push.5
+    push.{byte_addr}
+    trace.{TRACE_PRINT_LN}
+
+    # Drop the address and string length passed to the TRACE_PRINT_LN event.
+    drop
+    drop
+end
+"#,
+            );
+            let trace = execute_trace(&source);
+
+            assert_eq!(trace.printed_lines().len(), 1);
+            assert_eq!(trace.printed_lines().values().next().unwrap(), "hello");
+        }
+    }
+
+    #[test]
+    fn trace_println_captures_empty_strings() {
+        for offset in 0..4 {
+            let base_elem = 278528 + offset;
+            let byte_addr = base_elem * 4;
+
+            let source = format!(
+                r#"
+begin
+    # No need to write string bytes to memory for an empty string, just put [address, string_length]
+    # on the stack
+    push.0
+    push.{byte_addr}
+    trace.{TRACE_PRINT_LN}
+
+    # Drop the address and string length passed to the TRACE_PRINT_LN event.
+    drop
+    drop
+end
+"#,
+            );
+            let trace = execute_trace(&source);
+
+            assert_eq!(trace.printed_lines().len(), 1);
+            assert_eq!(trace.printed_lines().values().next().unwrap(), "");
+        }
+    }
+
+    #[test]
+    fn stepped_trace_println_preserves_lines_across_non_printing_steps() {
+        let source = format!(
+            r#"
+begin
+    # Store "hi" at element 278528
+    push.26984
+    push.278528
+    mem_store
+
+    # Print "hi"
+    push.2
+    push.1114112
+    trace.{TRACE_PRINT_LN}
+    drop
+    drop
+
+    # Normal instructions (no printing)
+    push.1
+    push.2
+    add
+    drop
+
+    # Store "bye" at element 278529
+    push.6650210
+    push.278529
+    mem_store
+
+    # Print "bye"
+    push.3
+    push.1114116
+    trace.{TRACE_PRINT_LN}
+    drop
+    drop
+
+    # More normal instructions
+    push.10
+    push.20
+    mul
+    drop
+
+    # Store "ok" at element 278530
+    push.27503
+    push.278530
+    mem_store
+
+    # Print "ok"
+    push.2
+    push.1114120
+    trace.{TRACE_PRINT_LN}
+    drop
+    drop
+end
+"#
+        );
+
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let program = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program(&source)
+            .unwrap();
+
+        let mut executor = Executor::new(vec![]).into_debug(&program, source_manager);
+
+        let mut step_count = 0;
+        let max_steps = 200;
+
+        while !executor.stopped && step_count < max_steps {
+            let before = executor.printed_lines.borrow().clone();
+
+            executor.step().expect("step should not fail");
+
+            let after = executor.printed_lines.borrow();
+
+            for (key, value) in &before {
+                assert!(
+                    after.contains_key(key),
+                    "step {step_count}: printed line at cycle {key:?} was lost after step",
+                );
+                assert_eq!(
+                    after.get(key).unwrap(),
+                    value,
+                    "step {step_count}: printed line at cycle {key:?} changed value",
+                );
+            }
+
+            if after.len() > before.len() {
+                let new_keys: Vec<_> = after.keys().filter(|k| !before.contains_key(k)).collect();
+                assert_eq!(
+                    new_keys.len(),
+                    1,
+                    "step {step_count}: expected exactly one new printed line key, got {new_keys:?}",
+                );
+            }
+
+            step_count += 1;
+        }
+
+        let final_lines = executor.printed_lines.borrow();
+        assert_eq!(
+            final_lines.len(),
+            3,
+            "expected 3 printed lines, got {}: {:?}",
+            final_lines.len(),
+            final_lines
+        );
+
+        let values: Vec<&String> = final_lines.values().collect();
+        assert_eq!(values[0].as_str(), "hi");
+        assert_eq!(values[1].as_str(), "bye");
+        assert_eq!(values[2].as_str(), "ok");
     }
 
     #[test]

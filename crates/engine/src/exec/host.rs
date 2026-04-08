@@ -62,7 +62,6 @@ where
         F: FnMut(&ProcessorState<'_>, TraceEvent) + 'static,
     {
         let key = match event {
-            // TODO this missmatches TraceEvent::as_u32
             TraceEvent::AssertionFailed(None) => u32::MAX,
             ev => ev.into(),
         };

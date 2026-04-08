@@ -10,7 +10,7 @@ use std::{env, path::PathBuf, sync::Arc};
 
 use miden_assembly::{Assembler, DefaultSourceManager, SourceManager};
 use miden_core::serde::Serializable;
-use miden_mast_package::{MastArtifact, Package, PackageKind, PackageManifest};
+use miden_mast_package::{Package, PackageManifest, TargetType, Version};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -22,19 +22,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_path = PathBuf::from(&args[1]);
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
 
-    // Read and assemble the MASM source
+    // Read and assemble the MASM source as a library
     let source = std::fs::read_to_string(&input_path)?;
     let assembler = Assembler::new(source_manager.clone());
-    let program = assembler.assemble_program(&source)?;
+    let library = assembler.assemble_library([source.as_str()])?;
 
-    // Build a package from the program
+    // Build a package from the library
     let package = Package {
-        name: input_path.file_stem().and_then(|s| s.to_str()).unwrap_or("program").to_string(),
-        version: None,
+        name: input_path.file_stem().and_then(|s| s.to_str()).unwrap_or("program").into(),
+        version: Version::new(0, 0, 0),
         description: None,
-        kind: PackageKind::Executable,
-        mast: MastArtifact::Executable(Arc::new(program)),
-        manifest: PackageManifest::new(vec![]),
+        kind: TargetType::Executable,
+        mast: library,
+        manifest: PackageManifest::new(core::iter::empty())?,
         sections: vec![],
     };
 

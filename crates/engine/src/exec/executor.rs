@@ -8,12 +8,10 @@ use std::{
 };
 
 use miden_assembly_syntax::{Library, diagnostics::Report};
+use miden_core::Word;
 use miden_core::program::{Program, StackInputs};
 use miden_debug_types::{SourceManager, SourceManagerExt};
-use miden_mast_package::{
-    Dependency, DependencyResolver, LocalResolvedDependency, MastArtifact,
-    MemDependencyResolverByDigest, ResolvedDependency,
-};
+use miden_mast_package::Dependency;
 use miden_processor::{
     ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt,
     advice::{AdviceInputs, AdviceMutation},
@@ -37,7 +35,7 @@ pub struct Executor {
     options: ExecutionOptions,
     libraries: Vec<Arc<Library>>,
     event_handlers: Vec<(EventName, Arc<dyn EventHandler>)>,
-    dependency_resolver: MemDependencyResolverByDigest,
+    dependency_resolver: BTreeMap<Word, Arc<Library>>,
 }
 impl Executor {
     /// Construct an executor with the given arguments on the operand stack
@@ -60,7 +58,7 @@ impl Executor {
             options,
         } = config;
         let options = options.with_tracing(true).with_debugging(true);
-        let dependency_resolver = MemDependencyResolverByDigest::default();
+        let dependency_resolver = BTreeMap::new();
 
         Self {
             stack: inputs,
@@ -96,25 +94,11 @@ impl Executor {
         dependencies: impl Iterator<Item = &'a Dependency>,
     ) -> Result<&mut Self, Report> {
         for dep in dependencies {
-            match self.dependency_resolver.resolve(dep) {
-                Some(resolution) => {
-                    log::debug!("dependency {dep:?} resolved to {resolution:?}");
-                    log::debug!("loading library from package dependency: {dep:?}");
-                    match resolution {
-                        ResolvedDependency::Local(LocalResolvedDependency::Library(lib)) => {
-                            self.with_library(lib);
-                        }
-                        ResolvedDependency::Local(LocalResolvedDependency::Package(pkg)) => {
-                            if let MastArtifact::Library(lib) = &pkg.mast {
-                                self.with_library(lib.clone());
-                            } else {
-                                Err(Report::msg(format!(
-                                    "expected package {} to contain library",
-                                    pkg.name
-                                )))?;
-                            }
-                        }
-                    }
+            let digest = dep.digest;
+            match self.dependency_resolver.get(&digest) {
+                Some(lib) => {
+                    log::debug!("dependency {dep:?} resolved");
+                    self.with_library(lib.clone());
                 }
                 None => panic!("{dep:?} not found in resolver"),
             }
@@ -350,15 +334,14 @@ impl Executor {
         out.parse_result().expect("invalid result")
     }
 
-    pub fn dependency_resolver_mut(&mut self) -> &mut MemDependencyResolverByDigest {
+    pub fn dependency_resolver_mut(&mut self) -> &mut BTreeMap<Word, Arc<Library>> {
         &mut self.dependency_resolver
     }
 
     /// Register a library with the dependency resolver so it can be found when resolving package dependencies
     pub fn register_library_dependency(&mut self, lib: Arc<Library>) {
         let digest = *lib.digest();
-        self.dependency_resolver
-            .add(digest, ResolvedDependency::Local(LocalResolvedDependency::Library(lib)));
+        self.dependency_resolver.insert(digest, lib);
     }
 }
 

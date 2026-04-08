@@ -2,9 +2,7 @@
 members = [".", "crates/dap", "crates/engine"]
 resolver = "2"
 
-[package]
-name = "miden-debug"
-description = "An interactive debugger for Miden VM programs"
+[workspace.package]
 version = "0.6.1"
 rust-version = "1.92"
 authors = ["Miden contributors"]
@@ -16,6 +14,24 @@ keywords = ["miden", "debugger"]
 license = "MIT"
 readme = "README.md"
 edition = "2024"
+
+[workspace.dependencies]
+dap = { package = "miden-debug-dap", version = "0.6.1", path = "crates/dap", features = ["client"] }
+miden-debug-engine = { version = "0.6.1", path = "crates/engine", default-features = false }
+
+[package]
+name = "miden-debug"
+description = "An interactive debugger for Miden VM programs"
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+edition.workspace = true
 
 [lib]
 path = "src/lib.rs"
@@ -41,8 +57,8 @@ proptest = ["dep:proptest", "miden-debug-engine/proptest"]
 [dependencies]
 clap = { version = "4.5", default-features = false, features = ["derive", "std", "env", "help", "suggestions", "error-context"]}
 crossterm = { version = "0.28.1", optional = true, features = ["event-stream"] }
-dap = { package = "miden-debug-dap", path = "crates/dap", optional = true, features = ["client"] }
-miden-debug-engine = { path = "crates/engine", default-features = false }
+dap = { workspace = true, optional = true }
+miden-debug-engine.workspace = true
 serde_json = "1"
 env_logger = { version = "0.11", optional = true }
 log = "0.4"
@@ -88,4 +104,3 @@ futures = "0.3.30"
 proptest = { version = "1.4", optional = true }
 
 miden-crypto = { version = "=0.23.0", default-features = false }
-

@@ -5,7 +5,7 @@ resolver = "2"
 [package]
 name = "miden-debug"
 description = "An interactive debugger for Miden VM programs"
-version = "0.6.0"
+version = "0.6.1"
 rust-version = "1.92"
 authors = ["Miden contributors"]
 repository = "https://github.com/0xMiden/miden-debug"

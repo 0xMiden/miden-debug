@@ -6,6 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.6.0...miden-debug-v0.6.1) - 2026-04-08
+
+### Added
+
+- add transaction DAP debugging support
+
+### Fixed
+
+- VM v0.22.1 compatibility
+- make nextest pickup tests
+- align deps with miden-client beta base
+- support function/pattern breakpoints in DAP server
+- resolve PR review comments
+- resolve hostname in DAP listen address
+- handle edit-and-continue and terminate-and-reconnect
+- event-driven remote UI refresh via custom miden/uiState DAP event
+- add --no-tests=pass
+- fix clippy
+- pin protocol rev and align debugger DAP support
+- resolve remote refresh, crate split, reload, and review follow-up
+- address comments
+- adopt to latest changes in protocol
+
+### Other
+
+- Merge pull request #49 from 0xMiden/next
+- switch to crates.io deps for protocol and VM
+- Use advice, memory and final_pc_transcript from processor
+- Use direct transaction program executors
+
 ## [0.6.0](https://github.com/0xMiden/miden-debug/compare/v0.5.0...v0.6.0) - 2026-03-25
 
 ### Fixed

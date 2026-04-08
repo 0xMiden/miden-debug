@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-dap-v0.1.0...miden-debug-dap-v0.6.1) - 2026-04-08
+
+### Fixed
+
+- broken workspace configuration
+
 ## [0.1.0](https://github.com/0xMiden/miden-debug/releases/tag/miden-debug-dap-v0.1.0) - 2026-04-08
 
 ### Added

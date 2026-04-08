@@ -14,8 +14,18 @@ use miden_processor::{ContextId, operation::Operation, trace::RowIndex};
 
 use crate::exec::TraceEvent;
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ControlFlowOp {
+    Span,
+    Respan,
+    Join,
+    Split,
+    End,
+}
+
 pub struct StepInfo<'a> {
     pub op: Option<Operation>,
+    pub control: Option<ControlFlowOp>,
     pub asmop: Option<&'a AssemblyOp>,
     pub clk: RowIndex,
     pub ctx: ContextId,
@@ -39,6 +49,17 @@ impl CallStack {
             trace_events,
             contexts: BTreeSet::default(),
             frames: vec![],
+            block_stack: vec![],
+        }
+    }
+
+    /// Build a [CallStack] from pre-built frames — used in DAP client mode.
+    #[cfg(feature = "dap")]
+    pub fn from_remote_frames(frames: Vec<CallFrame>) -> Self {
+        Self {
+            trace_events: Rc::new(RefCell::new(BTreeMap::new())),
+            contexts: BTreeSet::default(),
+            frames,
             block_stack: vec![],
         }
     }
@@ -67,85 +88,108 @@ impl CallStack {
     ///
     /// Returns the call frame exited this cycle, if any
     pub fn next(&mut self, info: &StepInfo<'_>) -> Option<CallFrame> {
-        if let Some(op) = info.op {
-            // Get the current procedure name context, if available
-            let procedure = info.asmop.map(|op| self.cache_procedure_name(op.context_name()));
+        let procedure = info.asmop.map(|op| self.cache_procedure_name(op.context_name()));
 
-            // Handle trace events for this cycle
-            let event = self.trace_events.borrow().get(&info.clk).copied();
-            log::trace!("handling {op} at cycle {}: {:?}", info.clk, &event);
-            let popped_frame = self.handle_trace_event(event, procedure.as_ref());
-            let is_frame_end = popped_frame.is_some();
+        let event = self.trace_events.borrow().get(&info.clk).copied();
+        log::trace!(
+            "handling {:?}/{:?} at cycle {}: {:?}",
+            info.control,
+            info.op,
+            info.clk,
+            &event
+        );
+        let popped_frame = self.handle_trace_event(event, procedure.as_ref());
+        let is_frame_end = popped_frame.is_some();
 
-            let ignore = false;
-
-            if ignore || is_frame_end {
-                return popped_frame;
-            }
-
-            // Attempt to supply procedure context from the current span context, if needed +
-            // available
-            let (procedure, asmop) = match procedure {
-                proc @ Some(_) => (proc, info.asmop.map(Cow::Borrowed)),
-                None => match self.block_stack.last() {
-                    Some(Some(span_ctx)) => {
-                        let proc =
-                            self.frames.get(span_ctx.frame_index).and_then(|f| f.procedure.clone());
-                        let asmop_cow = info.asmop.map(Cow::Borrowed).or_else(|| {
-                            let context_name = proc.as_deref().unwrap_or("<unknown>").to_string();
-                            let raw_asmop = AssemblyOp::new(
-                                span_ctx.location.clone(),
-                                context_name,
-                                1,
-                                op.to_string(),
-                            );
-                            Some(Cow::Owned(raw_asmop))
-                        });
-                        (proc, asmop_cow)
-                    }
-                    _ => (None, info.asmop.map(Cow::Borrowed)),
-                },
-            };
-
-            // Use the current frame's procedure context, if no other more precise context is
-            // available
-            let procedure =
-                procedure.or_else(|| self.frames.last().and_then(|f| f.procedure.clone()));
-
-            // Do we have a frame? If not, create one
-            if self.frames.is_empty() {
-                self.frames.push(CallFrame::new(procedure.clone()));
-            }
-
-            let current_frame = self.frames.last_mut().unwrap();
-
-            // Does the current frame have a procedure context/location? Use the one from this op if
-            // so
-            let procedure_context_updated =
-                current_frame.procedure.is_none() && procedure.is_some();
-            if procedure_context_updated {
-                current_frame.procedure.clone_from(&procedure);
-            }
-
-            // Push op into call frame if this is any op other than `nop` or frame setup
-            if !matches!(op, Operation::Noop) {
-                let cycle_idx = info.asmop.map(|a| a.num_cycles()).unwrap_or(1);
-                current_frame.push(op, cycle_idx, asmop.as_deref());
-            }
-
-            // Check if we should also update the caller frame's exec detail
-            let num_frames = self.frames.len();
-            if procedure_context_updated && num_frames > 1 {
-                let caller_frame = &mut self.frames[num_frames - 2];
-                if let Some(OpDetail::Exec { callee }) = caller_frame.context.back_mut()
-                    && callee.is_none()
-                {
-                    *callee = procedure;
+        match info.control {
+            Some(ControlFlowOp::Span) => {
+                if let Some(asmop) = info.asmop {
+                    log::debug!("{asmop:#?}");
+                    self.block_stack.push(Some(SpanContext {
+                        frame_index: self.frames.len().saturating_sub(1),
+                        location: asmop.location().cloned(),
+                    }));
+                } else {
+                    self.block_stack.push(None);
                 }
+            }
+            Some(ControlFlowOp::Join | ControlFlowOp::Split) => {
+                self.block_stack.push(None);
+            }
+            Some(ControlFlowOp::End) => {
+                self.block_stack.pop();
+            }
+            Some(ControlFlowOp::Respan) | None => {}
+        }
+
+        let Some(op) = info.op else {
+            return popped_frame;
+        };
+
+        if is_frame_end {
+            return popped_frame;
+        }
+
+        // Attempt to supply procedure context from the current span context, if needed +
+        // available
+        let (procedure, asmop) = match procedure {
+            proc @ Some(_) => (proc, info.asmop.map(Cow::Borrowed)),
+            None => match self.block_stack.last() {
+                Some(Some(span_ctx)) => {
+                    let proc =
+                        self.frames.get(span_ctx.frame_index).and_then(|f| f.procedure.clone());
+                    let asmop_cow = info.asmop.map(Cow::Borrowed).or_else(|| {
+                        let context_name = proc.as_deref().unwrap_or("<unknown>").to_string();
+                        let raw_asmop = AssemblyOp::new(
+                            span_ctx.location.clone(),
+                            context_name,
+                            1,
+                            op.to_string(),
+                        );
+                        Some(Cow::Owned(raw_asmop))
+                    });
+                    (proc, asmop_cow)
+                }
+                _ => (None, info.asmop.map(Cow::Borrowed)),
+            },
+        };
+
+        // Use the current frame's procedure context, if no other more precise context is
+        // available
+        let procedure = procedure.or_else(|| self.frames.last().and_then(|f| f.procedure.clone()));
+
+        // Do we have a frame? If not, create one
+        if self.frames.is_empty() {
+            self.frames.push(CallFrame::new(procedure.clone()));
+        }
+
+        let current_frame = self.frames.last_mut().unwrap();
+
+        // Does the current frame have a procedure context/location? Use the one from this op if
+        // so
+        let procedure_context_updated = current_frame.procedure.is_none() && procedure.is_some();
+        if procedure_context_updated {
+            current_frame.procedure.clone_from(&procedure);
+        }
+
+        // Push op into call frame if this is any op other than `nop` or frame setup
+        if !matches!(op, Operation::Noop) {
+            let cycle_idx = info.asmop.map(|a| a.num_cycles()).unwrap_or(1);
+            current_frame.push(op, cycle_idx, asmop.as_deref());
+        }
+
+        // Check if we should also update the caller frame's exec detail
+        let num_frames = self.frames.len();
+        if procedure_context_updated && num_frames > 1 {
+            let caller_frame = &mut self.frames[num_frames - 2];
+            if let Some(OpDetail::Exec { callee }) = caller_frame.context.back_mut()
+                && callee.is_none()
+            {
+                *callee = procedure;
             }
         }
 
-        None
+        popped_frame
     }
 
     // Get or cache procedure name/context as `Rc<str>`
@@ -198,6 +242,32 @@ impl CallFrame {
         Self {
             procedure,
             context: Default::default(),
+            display_name: Default::default(),
+            finishing: false,
+        }
+    }
+
+    /// Build a frame from remote (DAP) data — used in DAP client mode.
+    ///
+    /// The frame stores the procedure name and an optional [ResolvedLocation]
+    /// as a pre-resolved `OpDetail::Full` entry so that `last_resolved()` and
+    /// `recent()` work correctly for pane rendering.
+    #[cfg(feature = "dap")]
+    pub fn from_remote(name: Option<String>, resolved: Option<ResolvedLocation>) -> Self {
+        let procedure = name.map(|n| Rc::from(n.into_boxed_str()));
+        let mut context = VecDeque::new();
+        if let Some(loc) = resolved {
+            let cell = OnceCell::new();
+            cell.set(Some(loc)).ok();
+            context.push_back(OpDetail::Full {
+                op: miden_processor::operation::Operation::Noop,
+                location: None,
+                resolved: cell,
+            });
+        }
+        Self {
+            procedure,
+            context,
             display_name: Default::default(),
             finishing: false,
         }

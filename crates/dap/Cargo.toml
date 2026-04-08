@@ -1,0 +1,26 @@
+[package]
+name = "miden-debug-dap"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+authors = ["Miden contributors"]
+description = "In-repo Debug Adapter Protocol support for miden-debug"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/0xMiden/miden-debug"
+homepage = "https://github.com/0xMiden/miden-debug"
+keywords = ["debugging", "protocol", "debug", "framework"]
+categories = ["development-tools::debugging"]
+
+[lib]
+name = "dap"
+
+[features]
+integration_testing = ["fake", "rand"]
+client = []
+
+[dependencies]
+serde = { version = "1.*", features = ["derive"] }
+serde_json = "1.*"
+thiserror = "1.*"
+fake = { version = "2.*", features = ["derive"], optional = true }
+rand = { version = "0.*", optional = true }

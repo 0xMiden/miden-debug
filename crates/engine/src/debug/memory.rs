@@ -39,6 +39,56 @@ impl FromStr for ReadMemoryExpr {
     }
 }
 
+impl fmt::Display for ReadMemoryExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.raw_addr())?;
+        write!(f, " -t {}", self.ty_name())?;
+        if self.count != 1 {
+            write!(f, " -c {}", self.count)?;
+        }
+        if self.mode != MemoryMode::Word {
+            write!(f, " -m {}", self.mode)?;
+        }
+        if self.format != FormatType::Decimal {
+            write!(f, " -f {}", self.format)?;
+        }
+        Ok(())
+    }
+}
+
+impl ReadMemoryExpr {
+    fn raw_addr(&self) -> u32 {
+        match self.mode {
+            MemoryMode::Word => self.addr.addr,
+            MemoryMode::Byte => self.addr.addr.saturating_mul(4) + u32::from(self.addr.offset),
+        }
+    }
+
+    fn ty_name(&self) -> &'static str {
+        match &self.ty {
+            Type::I1 => "i1",
+            Type::I8 => "i8",
+            Type::I16 => "i16",
+            Type::I32 => "i32",
+            Type::I64 => "i64",
+            Type::I128 => "i128",
+            Type::U8 => "u8",
+            Type::U16 => "u16",
+            Type::U32 => "u32",
+            Type::U64 => "u64",
+            Type::U128 => "u128",
+            Type::Felt => "felt",
+            Type::Array(array_ty)
+                if array_ty.element_type() == &Type::Felt && array_ty.len() == 4 =>
+            {
+                "word"
+            }
+            Type::Ptr(_) => "ptr",
+            ty => panic!("unsupported memory read type serialization: {ty}"),
+        }
+    }
+}
+
 #[derive(Default, Debug, Parser)]
 #[command(name = "read")]
 pub struct Read {

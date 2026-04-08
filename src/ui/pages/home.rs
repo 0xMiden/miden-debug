@@ -161,24 +161,38 @@ impl Page for Home {
                 }
             }
             Action::Continue => {
-                let start_cycle = state.executor.cycle;
+                // DAP client mode: send step commands over the network
+                #[cfg(feature = "dap")]
+                if state.debug_mode == crate::ui::state::DebugMode::Remote {
+                    self.step_remote(state, &mut actions)?;
+                    // Send any pending actions
+                    if let Some(tx) = &mut self.command_tx {
+                        actions.into_iter().flatten().for_each(|action| {
+                            tx.send(action).ok();
+                        });
+                    }
+                    return Ok(None);
+                }
+
+                let start_cycle = state.executor().cycle;
+                let start_asmop = state.executor().current_asmop.clone();
                 let mut breakpoints = core::mem::take(&mut state.breakpoints);
                 state.stopped = false;
                 let stopped = loop {
                     // If stepping the program results in the program terminating succesfully, stop
-                    if state.executor.stopped {
+                    if state.executor().stopped {
                         break true;
                     }
 
                     let mut consume_most_recent_finish = false;
-                    match state.executor.step() {
+                    match state.executor_mut().step() {
                         Ok(Some(exited)) if exited.should_break_on_exit() => {
                             consume_most_recent_finish = true;
                         }
                         Ok(_) => (),
                         Err(err) => {
                             // Execution terminated with an error
-                            state.execution_failed = Some(err);
+                            state.set_execution_failed(err);
                             break true;
                         }
                     }
@@ -189,14 +203,14 @@ impl Page for Home {
                     }
 
                     let (_op, is_op_boundary, proc, loc) = {
-                        let op = state.executor.current_op;
+                        let op = state.executor().current_op;
                         let is_boundary = state
-                            .executor
+                            .executor()
                             .current_asmop
                             .as_ref()
                             .map(|_info| true)
                             .unwrap_or(false);
-                        let (proc, loc) = match state.executor.callstack.current_frame() {
+                        let (proc, loc) = match state.executor().callstack.current_frame() {
                             Some(frame) => {
                                 let loc = frame
                                     .recent()
@@ -211,7 +225,7 @@ impl Page for Home {
                     };
 
                     // Remove all breakpoints triggered at this cycle
-                    let current_cycle = state.executor.cycle;
+                    let current_cycle = state.executor().cycle;
                     let cycles_stepped = current_cycle - start_cycle;
                     breakpoints.retain_mut(|bp| {
                         if let Some(n) = bp.cycles_to_skip(current_cycle) {
@@ -231,6 +245,7 @@ impl Page for Home {
                         if cycles_stepped > 0
                             && is_op_boundary
                             && matches!(&bp.ty, BreakpointType::Next)
+                            && state.executor().current_asmop != start_asmop
                         {
                             state.breakpoints_hit.push(core::mem::take(bp));
                             return false;
@@ -289,8 +304,8 @@ impl Page for Home {
                 state.stopped = stopped;
 
                 // Report program termination to the user
-                if stopped && state.executor.stopped {
-                    if let Some(err) = state.execution_failed.as_ref() {
+                if stopped && state.executor().stopped {
+                    if let Some(err) = state.execution_failed() {
                         actions.push(Some(Action::StatusLine(err.to_string())));
                     } else {
                         actions.push(Some(Action::StatusLine(
@@ -371,24 +386,24 @@ impl Page for Home {
                         EventResponse::Stop(Action::Continue)
                     }
                     // Only step if we're stopped, and execution has not terminated
-                    KeyCode::Char('s') if state.stopped && !state.executor.stopped => {
+                    KeyCode::Char('s') if state.stopped && !state.executor().stopped => {
                         state.create_breakpoint(BreakpointType::Step);
                         state.stopped = false;
                         EventResponse::Stop(Action::Continue)
                     }
                     // Only step-next if we're stopped, and execution has not terminated
-                    KeyCode::Char('n') if state.stopped && !state.executor.stopped => {
+                    KeyCode::Char('n') if state.stopped && !state.executor().stopped => {
                         state.create_breakpoint(BreakpointType::Next);
                         state.stopped = false;
                         EventResponse::Stop(Action::Continue)
                     }
                     // Only resume execution if we're stopped, and execution has not terminated
-                    KeyCode::Char('c') if state.stopped && !state.executor.stopped => {
+                    KeyCode::Char('c') if state.stopped && !state.executor().stopped => {
                         state.stopped = false;
                         EventResponse::Stop(Action::Continue)
                     }
                     // Do not try to continue if execution has terminated, but warn user
-                    KeyCode::Char('c' | 's' | 'n') if state.stopped && state.executor.stopped => {
+                    KeyCode::Char('c' | 's' | 'n') if state.stopped && state.executor().stopped => {
                         EventResponse::Stop(Action::TimedStatusLine(
                             "program has terminated, cannot continue".to_string(),
                             3,
@@ -437,6 +452,49 @@ impl Page for Home {
             self.panes[3].draw(frame, right_panes[0], state)?;
             self.panes[4].draw(frame, right_panes[1], state)?;
         }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "dap")]
+impl Home {
+    /// Handle stepping in DAP remote mode.
+    ///
+    /// Determines which DAP command to send based on the current breakpoints,
+    /// sends it, waits for the response, and updates the TUI state.
+    fn step_remote(
+        &mut self,
+        state: &mut State,
+        actions: &mut Vec<Option<Action>>,
+    ) -> Result<(), Report> {
+        use crate::exec::DapStopReason;
+        let result = state.step_remote();
+
+        match result {
+            Ok(DapStopReason::Stopped(_)) => state.stopped = true,
+            Ok(DapStopReason::Terminated) => {
+                state.executor_mut().stopped = true;
+                state.stopped = true;
+                actions.push(Some(Action::StatusLine("program terminated successfully".into())));
+            }
+            Ok(DapStopReason::Restarting) => {
+                state.stopped = true;
+                actions.push(Some(Action::StatusLine(
+                    "server signaled Phase 2 restart during step".into(),
+                )));
+            }
+            Err(e) => {
+                state.executor_mut().stopped = true;
+                state.stopped = true;
+                actions.push(Some(Action::StatusLine(format!("DAP error: {e}"))));
+            }
+        }
+
+        // Update panes with latest state
+        for pane in self.panes.iter_mut() {
+            actions.push(pane.update(Action::Update, state)?);
+        }
+
         Ok(())
     }
 }

@@ -10,7 +10,7 @@ use miden_processor::{
 };
 
 use super::{DebuggerHost, ExecutionTrace};
-use crate::debug::{CallFrame, CallStack, StepInfo};
+use crate::debug::{CallFrame, CallStack, ControlFlowOp, StepInfo};
 
 /// Resolve a future that is expected to complete immediately (synchronous host methods).
 ///
@@ -70,9 +70,9 @@ pub struct DebugExecutor {
 
 /// Extract the current operation and assembly info from the continuation stack
 /// before a step is executed. This lets us know what operation will run next.
-fn extract_current_op(
+pub(crate) fn extract_current_op(
     ctx: &ResumeContext,
-) -> (Option<Operation>, Option<MastNodeId>, Option<usize>) {
+) -> (Option<Operation>, Option<MastNodeId>, Option<usize>, Option<ControlFlowOp>) {
     let forest = ctx.current_forest();
     for cont in ctx.continuation_stack().iter_continuations_for_next_clock() {
         match cont {
@@ -90,20 +90,47 @@ fn extract_current_op(
                     }
                     global_idx += op_idx_in_batch;
                     let op = block.op_batches()[*batch_index].ops().get(*op_idx_in_batch).copied();
-                    return (op, Some(*node_id), Some(global_idx));
+                    return (op, Some(*node_id), Some(global_idx), None);
+                }
+            }
+            Continuation::Respan {
+                node_id,
+                batch_index,
+            } => {
+                let node = &forest[*node_id];
+                if let MastNode::Block(block) = node {
+                    let mut global_idx = 0;
+                    for batch in &block.op_batches()[..*batch_index] {
+                        global_idx += batch.ops().len();
+                    }
+                    return (None, Some(*node_id), Some(global_idx), Some(ControlFlowOp::Respan));
                 }
             }
             Continuation::StartNode(node_id) => {
-                return (None, Some(*node_id), None);
+                let control = match &forest[*node_id] {
+                    MastNode::Block(_) => Some(ControlFlowOp::Span),
+                    MastNode::Join(_) => Some(ControlFlowOp::Join),
+                    MastNode::Split(_) => Some(ControlFlowOp::Split),
+                    _ => None,
+                };
+                return (None, Some(*node_id), None, control);
             }
-            Continuation::FinishBasicBlock(_) => return (None, None, None),
+            Continuation::FinishBasicBlock(_)
+            | Continuation::FinishJoin(_)
+            | Continuation::FinishSplit(_)
+            | Continuation::FinishLoop { .. }
+            | Continuation::FinishCall(_)
+            | Continuation::FinishDyn(_)
+            | Continuation::FinishExternal(_) => {
+                return (None, None, None, Some(ControlFlowOp::End));
+            }
             other if other.increments_clk() => {
-                return (None, None, None);
+                return (None, None, None, None);
             }
             _ => continue,
         }
     }
-    (None, None, None)
+    (None, None, None, None)
 }
 
 impl DebugExecutor {
@@ -127,7 +154,7 @@ impl DebugExecutor {
         };
 
         // Before step: peek continuation to determine what will execute
-        let (op, node_id, op_idx) = extract_current_op(&resume_ctx);
+        let (op, node_id, op_idx, control) = extract_current_op(&resume_ctx);
         let asmop = node_id
             .and_then(|nid| resume_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
 
@@ -161,6 +188,7 @@ impl DebugExecutor {
                 // Update call stack
                 let step_info = StepInfo {
                     op,
+                    control,
                     asmop: self.current_asmop.as_ref(),
                     clk: RowIndex::from(self.cycle as u32),
                     ctx: self.current_context,

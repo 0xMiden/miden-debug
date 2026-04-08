@@ -57,16 +57,16 @@ impl Pane for DisassemblyPane {
     }
 
     fn draw(&mut self, frame: &mut Frame<'_>, area: Rect, state: &State) -> Result<(), Report> {
-        let (current_proc, lines) = match state.executor.callstack.current_frame() {
+        let (current_proc, lines) = match state.executor().callstack.current_frame() {
             None => {
                 let proc = Line::from("in <unknown>").right_aligned();
                 (
                     proc,
                     state
-                        .executor
+                        .executor()
                         .recent
                         .iter()
-                        .map(|op| Line::from(vec![Span::styled(format!(" | {op}"), Color::White)]))
+                        .map(|op| Line::from(vec![Span::styled(format!(" | {op}"), Color::Gray)]))
                         .collect::<Vec<_>>(),
                 )
             }
@@ -84,7 +84,7 @@ impl Pane for DisassemblyPane {
                         .map(|op| {
                             Line::from(vec![Span::styled(
                                 format!(" | {}", &op.display()),
-                                Color::White,
+                                Color::Gray,
                             )])
                         })
                         .collect::<Vec<_>>(),
@@ -97,7 +97,7 @@ impl Pane for DisassemblyPane {
             .block(Block::default().borders(Borders::ALL))
             .highlight_symbol(symbols::scrollbar::HORIZONTAL.end)
             .highlight_spacing(HighlightSpacing::Always)
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD));
+            .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
         let mut list_state = ListState::default().with_selected(Some(selected_line));
 
         frame.render_stateful_widget(list, area, &mut list_state);
@@ -110,7 +110,7 @@ impl Pane for DisassemblyPane {
                 .title_bottom(current_proc)
                 .title(
                     Line::styled(
-                        format!(" at cycle {}", state.executor.cycle),
+                        format!(" at cycle {}", state.executor().cycle),
                         Style::default().add_modifier(Modifier::ITALIC),
                     )
                     .right_aligned(),

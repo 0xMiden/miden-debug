@@ -40,8 +40,17 @@ pub struct App {
 pub type KeyBindings = HashMap<Mode, HashMap<Vec<KeyEvent>, Action>>;
 
 impl App {
+    #[allow(dead_code)]
     pub async fn new(config: Box<DebuggerConfig>) -> Result<Self, Report> {
         let state = State::new(config)?;
+        Self::from_state(state).await
+    }
+
+    /// Create an [App] from a pre-built [State].
+    ///
+    /// This is used for transaction debugging where the state is constructed
+    /// externally with pre-recorded event replay data.
+    pub async fn from_state(state: State) -> Result<Self, Report> {
         let home = Home::new()?;
         Ok(Self {
             pages: vec![Box::new(home)],

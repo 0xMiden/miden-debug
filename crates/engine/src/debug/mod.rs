@@ -8,6 +8,7 @@ pub use self::{
     memory::{FormatType, MemoryMode, ReadMemoryExpr},
     native_ptr::NativePtr,
     stacktrace::{
-        CallFrame, CallStack, CurrentFrame, OpDetail, ResolvedLocation, StackTrace, StepInfo,
+        CallFrame, CallStack, ControlFlowOp, CurrentFrame, OpDetail, ResolvedLocation, StackTrace,
+        StepInfo,
     },
 };

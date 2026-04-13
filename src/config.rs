@@ -8,8 +8,7 @@ use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile, linker::LinkLib
 
 /// Run a compiled Miden program with the Miden VM
 #[derive(Default, Debug)]
-#[cfg_attr(any(feature = "tui", feature = "repl"), derive(clap::Parser))]
-#[cfg_attr(any(feature = "tui", feature = "repl"), command(author, version, about = "The interactive Miden debugger", long_about = None))]
+#[cfg_attr(any(feature = "tui", feature = "repl"), derive(clap::Args))]
 pub struct DebuggerConfig {
     /// Specify the path to a Miden program file to execute.
     ///

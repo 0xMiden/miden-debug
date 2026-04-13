@@ -31,7 +31,7 @@
 //!
 //! Our dummy server is going to read its input from a text file and write the output to stdout.
 //!
-//! ```rust
+//! ```rust,no_run
 //! use std::fs::File;
 //! use std::io::{BufReader, BufWriter};
 //!
@@ -62,9 +62,9 @@
 //!   };
 //!   if let Command::Initialize(_) = req.command {
 //!     let rsp = req.success(
-//!       ResponseBody::Initialize(Some(types::Capabilities {
+//!       ResponseBody::Initialize(types::Capabilities {
 //!         ..Default::default()
-//!       })),
+//!       }),
 //!     );
 //!
 //!     // When you call respond, send_event etc. the message will be wrapped

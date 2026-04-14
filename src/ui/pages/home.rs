@@ -159,6 +159,33 @@ impl Page for Home {
                             let result = state.format_variables(false);
                             actions.push(Some(Action::StatusLine(result)));
                         }
+                        "p" | "proc" | "where" => {
+                            // Show the current procedure name so users can craft
+                            // `b in <pattern>` breakpoints.
+                            let live = state
+                                .executor()
+                                .current_asmop
+                                .as_ref()
+                                .map(|op| op.context_name().to_string());
+                            let frame = state
+                                .executor()
+                                .callstack
+                                .current_frame()
+                                .and_then(|f| f.procedure(""))
+                                .map(|p| p.to_string());
+                            let msg = match (live, frame) {
+                                (Some(l), Some(f)) if l == f => {
+                                    format!("proc: {l}")
+                                }
+                                (Some(l), Some(f)) => {
+                                    format!("proc (live): {l} / (frame): {f}")
+                                }
+                                (Some(l), None) => format!("proc (live): {l}"),
+                                (None, Some(f)) => format!("proc (frame): {f}"),
+                                (None, None) => "proc: <unknown>".to_string(),
+                            };
+                            actions.push(Some(Action::StatusLine(msg)));
+                        }
                         invalid => {
                             log::debug!("unknown command: '{invalid}'");
                             actions.push(Some(Action::TimedStatusLine("unknown command".into(), 1)))

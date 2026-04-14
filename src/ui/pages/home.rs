@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},
@@ -147,7 +149,7 @@ impl Page for Home {
                     },
                     None => match args.trim() {
                         "q" | "quit" => actions.push(Some(Action::Quit)),
-                        "reload" => {
+                        "r" | "reload" | "restart" => {
                             actions.push(Some(Action::Reload));
                         }
                         "debug" => {
@@ -180,6 +182,16 @@ impl Page for Home {
                             tx.send(action).ok();
                         });
                     }
+                    return Ok(None);
+                }
+
+                // If the program has already terminated, there's nothing to run.
+                // Let the user know they can restart with `:r` / `:reload`.
+                if state.executor().stopped {
+                    actions.push(Some(Action::TimedStatusLine(
+                        "program has terminated — use :r to restart".into(),
+                        3,
+                    )));
                     return Ok(None);
                 }
 
@@ -219,7 +231,15 @@ impl Page for Home {
                             .as_ref()
                             .map(|_info| true)
                             .unwrap_or(false);
-                        let (proc, loc) = match state.executor().callstack.current_frame() {
+                        // Procedure matching uses the live AsmOp's context_name so that
+                        // exec'd procedures (which share the caller's CallFrame) are still
+                        // visible to `b in <pattern>` breakpoints.
+                        let live_proc: Option<Rc<str>> = state
+                            .executor()
+                            .current_asmop
+                            .as_ref()
+                            .map(|op| Rc::from(op.context_name()));
+                        let (frame_proc, loc) = match state.executor().callstack.current_frame() {
                             Some(frame) => {
                                 let loc = frame
                                     .recent()
@@ -230,6 +250,7 @@ impl Page for Home {
                             }
                             None => (None, None),
                         };
+                        let proc = live_proc.or(frame_proc);
                         (op, is_boundary, proc, loc)
                     };
 

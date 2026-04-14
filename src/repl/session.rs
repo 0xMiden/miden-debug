@@ -231,7 +231,16 @@ impl ReplSession {
 
             // Get current execution state for breakpoint checking
             let is_op_boundary = self.state.executor().current_asmop.is_some();
-            let (proc, loc) = match self.state.executor().callstack.current_frame() {
+            // Live AsmOp context so exec'd procedures match `b in <pat>` breakpoints
+            // (the callstack frame's procedure is sticky and only reflects the first
+            // procedure seen per CallFrame).
+            let live_proc: Option<std::rc::Rc<str>> = self
+                .state
+                .executor()
+                .current_asmop
+                .as_ref()
+                .map(|op| std::rc::Rc::from(op.context_name()));
+            let (frame_proc, loc) = match self.state.executor().callstack.current_frame() {
                 Some(frame) => {
                     let loc = frame
                         .recent()
@@ -242,6 +251,7 @@ impl ReplSession {
                 }
                 None => (None, None),
             };
+            let proc = live_proc.or(frame_proc);
 
             // Check breakpoints
             let current_cycle = self.state.executor().cycle;

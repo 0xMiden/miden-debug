@@ -100,13 +100,11 @@ impl ReplSession {
     }
 
     fn print_location(&self) {
-        if let Some(frame) = self.state.executor().callstack.current_frame() {
-            if let Some(resolved) = frame.last_resolved(&*self.state.source_manager) {
-                let proc_name = frame.procedure("").unwrap_or_else(|| Rc::from("<unknown>"));
-                println!("at {} in {}", resolved, proc_name);
-            } else if let Some(proc_name) = frame.procedure("") {
-                println!("in {}", proc_name);
-            }
+        let proc_name = self.state.current_procedure().unwrap_or_else(|| Rc::from("<unknown>"));
+        if let Some(resolved) = self.state.current_display_location() {
+            println!("at {} in {}", resolved, proc_name);
+        } else if self.state.executor().callstack.current_frame().is_some() {
+            println!("in {}", proc_name);
         }
     }
 
@@ -115,6 +113,7 @@ impl ReplSession {
             ReplCommand::Step => self.cmd_step(1),
             ReplCommand::StepN(n) => self.cmd_step(n),
             ReplCommand::Next => self.cmd_next(),
+            ReplCommand::NextLine => self.cmd_next_line(),
             ReplCommand::Continue => self.cmd_continue(),
             ReplCommand::Finish => self.cmd_finish(),
             ReplCommand::Break(bp_type) => self.cmd_break(bp_type),
@@ -123,7 +122,7 @@ impl ReplSession {
             ReplCommand::Stack => self.cmd_stack(),
             ReplCommand::Memory(expr) => self.cmd_memory(&expr),
             ReplCommand::Locals => self.cmd_locals(),
-            ReplCommand::Vars => self.cmd_vars(),
+            ReplCommand::Vars(show_all) => self.cmd_vars(show_all),
             ReplCommand::Where => self.cmd_where(),
             ReplCommand::List => self.cmd_list(),
             ReplCommand::Backtrace => self.cmd_backtrace(),
@@ -168,6 +167,18 @@ impl ReplSession {
         Ok(())
     }
 
+    fn cmd_next_line(&mut self) -> Result<(), String> {
+        if self.state.executor().stopped {
+            return Err("program has terminated, cannot continue".into());
+        }
+
+        self.state.create_breakpoint(BreakpointType::NextLine);
+        self.state.stopped = false;
+        self.run_until_stopped();
+        self.print_location();
+        Ok(())
+    }
+
     fn cmd_continue(&mut self) -> Result<(), String> {
         if self.state.executor().stopped {
             return Err("program has terminated, cannot continue".into());
@@ -203,7 +214,13 @@ impl ReplSession {
 
     fn run_until_stopped(&mut self) {
         let start_cycle = self.state.executor().cycle;
+        let start_asmop = self.state.executor().current_asmop.clone();
+        let start_proc = self.state.current_procedure();
+        let start_line_loc = self.state.current_display_location();
+        let mut previous_proc = self.state.current_procedure();
+        let mut pending_called_breakpoints = Vec::new();
         let mut breakpoints: Vec<Breakpoint> = core::mem::take(&mut self.state.breakpoints);
+        self.state.breakpoints_hit.clear();
 
         loop {
             // Check if program has terminated
@@ -231,27 +248,9 @@ impl ReplSession {
 
             // Get current execution state for breakpoint checking
             let is_op_boundary = self.state.executor().current_asmop.is_some();
-            // Live AsmOp context so exec'd procedures match `b in <pat>` breakpoints
-            // (the callstack frame's procedure is sticky and only reflects the first
-            // procedure seen per CallFrame).
-            let live_proc: Option<std::rc::Rc<str>> = self
-                .state
-                .executor()
-                .current_asmop
-                .as_ref()
-                .map(|op| std::rc::Rc::from(op.context_name()));
-            let (frame_proc, loc) = match self.state.executor().callstack.current_frame() {
-                Some(frame) => {
-                    let loc = frame
-                        .recent()
-                        .back()
-                        .and_then(|detail| detail.resolve(&*self.state.source_manager))
-                        .cloned();
-                    (frame.procedure(""), loc)
-                }
-                None => (None, None),
-            };
-            let proc = live_proc.or(frame_proc);
+            let loc = self.state.current_location();
+            let line_loc = self.state.current_display_location();
+            let proc = self.state.current_procedure();
 
             // Check breakpoints
             let current_cycle = self.state.executor().cycle;
@@ -271,9 +270,34 @@ impl ReplSession {
                     return true;
                 }
 
-                if cycles_stepped > 0 && is_op_boundary && matches!(&bp.ty, BreakpointType::Next) {
+                if cycles_stepped > 0
+                    && is_op_boundary
+                    && matches!(&bp.ty, BreakpointType::Next)
+                    && self.state.executor().current_asmop != start_asmop
+                {
                     self.state.breakpoints_hit.push(core::mem::take(bp));
                     return false;
+                }
+
+                if cycles_stepped > 0
+                    && is_op_boundary
+                    && matches!(&bp.ty, BreakpointType::NextLine)
+                {
+                    let has_source_context = start_line_loc.is_some() || line_loc.is_some();
+                    let reached_next = if has_source_context {
+                        State::is_next_source_line(
+                            start_proc.as_deref(),
+                            start_line_loc.as_ref(),
+                            proc.as_deref(),
+                            line_loc.as_ref(),
+                        )
+                    } else {
+                        self.state.executor().current_asmop != start_asmop
+                    };
+                    if reached_next {
+                        self.state.breakpoints_hit.push(core::mem::take(bp));
+                        return false;
+                    }
                 }
 
                 if let Some(loc) = loc.as_ref()
@@ -288,16 +312,45 @@ impl ReplSession {
                     return retained;
                 }
 
-                if let Some(proc) = proc.as_deref()
-                    && bp.should_break_in(proc)
+                if matches!(&bp.ty, BreakpointType::Called(_))
+                    && let Some(proc) = proc.as_deref()
                 {
-                    let retained = !bp.is_one_shot();
-                    if retained {
-                        self.state.breakpoints_hit.push(bp.clone());
-                    } else {
-                        self.state.breakpoints_hit.push(core::mem::take(bp));
+                    let matched = bp.should_break_in(proc);
+                    if !matched {
+                        pending_called_breakpoints.retain(|id| *id != bp.id);
+                        return true;
                     }
-                    return retained;
+
+                    let was_matched = previous_proc
+                        .as_deref()
+                        .is_some_and(|previous| bp.should_break_in(previous));
+                    let matched_at_start =
+                        start_proc.as_deref().is_some_and(|start| bp.should_break_in(start));
+                    let pending = pending_called_breakpoints.contains(&bp.id);
+                    let entered_matching_proc = !was_matched && !matched_at_start;
+
+                    if entered_matching_proc
+                        && self.state.executor().procedure_has_debug_vars(proc)
+                        && self.state.executor().last_debug_var_count == 0
+                    {
+                        if !pending {
+                            pending_called_breakpoints.push(bp.id);
+                        }
+                        return true;
+                    }
+
+                    if entered_matching_proc
+                        || (pending && self.state.executor().last_debug_var_count > 0)
+                    {
+                        pending_called_breakpoints.retain(|id| *id != bp.id);
+                        let retained = !bp.is_one_shot();
+                        if retained {
+                            self.state.breakpoints_hit.push(bp.clone());
+                        } else {
+                            self.state.breakpoints_hit.push(core::mem::take(bp));
+                        }
+                        return retained;
+                    }
                 }
 
                 true
@@ -322,6 +375,8 @@ impl ReplSession {
                 self.state.stopped = true;
                 break;
             }
+
+            previous_proc = proc;
         }
 
         // Restore breakpoints
@@ -399,17 +454,17 @@ impl ReplSession {
         Ok(())
     }
 
-    fn cmd_vars(&mut self) -> Result<(), String> {
-        let output = self.state.format_variables(false);
+    fn cmd_vars(&mut self, show_all: bool) -> Result<(), String> {
+        let output = self.state.format_variables(show_all);
         println!("{}", output);
         Ok(())
     }
 
     fn cmd_where(&mut self) -> Result<(), String> {
-        if let Some(frame) = self.state.executor().callstack.current_frame() {
-            let proc_name = frame.procedure("").unwrap_or_else(|| Rc::from("<unknown>"));
+        if self.state.executor().callstack.current_frame().is_some() {
+            let proc_name = self.state.current_procedure().unwrap_or_else(|| Rc::from("<unknown>"));
 
-            if let Some(resolved) = frame.last_resolved(&*self.state.source_manager) {
+            if let Some(resolved) = self.state.current_display_location() {
                 println!(
                     "{}:{}:{} in {}",
                     resolved.source_file.uri().as_str(),
@@ -484,8 +539,9 @@ fn format_bp_type(ty: &BreakpointType) -> String {
         BreakpointType::StepN(n) => format!("after {} cycles", n),
         BreakpointType::StepTo(c) => format!("at cycle {}", c),
         BreakpointType::Next => "next instruction".into(),
+        BreakpointType::NextLine => "next source line".into(),
         BreakpointType::Finish => "function return".into(),
-        BreakpointType::File(pat) => format!("{}", pat.as_str()),
+        BreakpointType::File(pat) => pat.as_str().to_string(),
         BreakpointType::Line { pattern, line } => format!("{}:{}", pattern.as_str(), line),
         BreakpointType::Opcode(op) => format!("opcode {:?}", op),
         BreakpointType::Called(pat) => format!("call {}", pat.as_str()),

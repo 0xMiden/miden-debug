@@ -11,6 +11,8 @@ pub enum ReplCommand {
     StepN(usize),
     /// Execute until next instruction boundary
     Next,
+    /// Execute until next source line
+    NextLine,
     /// Run until breakpoint or end
     Continue,
     /// Run until current function returns
@@ -27,8 +29,8 @@ pub enum ReplCommand {
     Memory(ReadMemoryExpr),
     /// Show local variables
     Locals,
-    /// Show all debug variables
-    Vars,
+    /// Show debug variables, including compiler-generated locals if true.
+    Vars(bool),
     /// Show current source location
     Where,
     /// Show recent instructions
@@ -68,6 +70,7 @@ impl FromStr for ReplCommand {
                 None => Ok(ReplCommand::Step),
             },
             "n" | "next" => Ok(ReplCommand::Next),
+            "nl" | "next-line" | "nextline" => Ok(ReplCommand::NextLine),
             "c" | "continue" => Ok(ReplCommand::Continue),
             "e" | "finish" => Ok(ReplCommand::Finish),
 
@@ -94,7 +97,7 @@ impl FromStr for ReplCommand {
                 Ok(ReplCommand::Memory(expr))
             }
             "locals" => Ok(ReplCommand::Locals),
-            "vars" | "variables" => Ok(ReplCommand::Vars),
+            "vars" | "variables" => Ok(ReplCommand::Vars(args == Some("all"))),
             "where" | "w" => Ok(ReplCommand::Where),
             "l" | "list" => Ok(ReplCommand::List),
             "bt" | "backtrace" => Ok(ReplCommand::Backtrace),
@@ -117,6 +120,7 @@ impl ReplCommand {
 Execution:
   s, step [N]        Execute one (or N) VM cycle(s)
   n, next            Execute until next instruction boundary
+  nl, next-line      Execute until next source line
   c, continue        Run until breakpoint or end
   e, finish          Run until current function returns
   reload             Restart program execution
@@ -131,7 +135,7 @@ Inspection:
   stack              Show operand stack
   mem <addr> [type]  Show memory at address (e.g., mem 0x100 u32)
   locals             Show local variables
-  vars               Show all debug variables
+  vars [all]         Show source variables; include compiler locals with `all`
   where              Show current source location
   l, list            Show recent instructions
   bt, backtrace      Show call stack

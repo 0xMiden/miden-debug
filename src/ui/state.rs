@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, sync::Arc};
+use std::{collections::VecDeque, rc::Rc, sync::Arc};
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
@@ -11,7 +11,7 @@ use miden_processor::{
 
 use crate::{
     config::DebuggerConfig,
-    debug::{Breakpoint, BreakpointType, ReadMemoryExpr, resolve_variable_value},
+    debug::{Breakpoint, BreakpointType, ReadMemoryExpr, ResolvedLocation, resolve_variable_value},
     exec::{DebugExecutor, ExecutionTrace, Executor},
     input::InputFile,
 };
@@ -130,7 +130,9 @@ impl RemoteState {
             root_context: ContextId::root(),
             current_context: ContextId::root(),
             callstack: snapshot.callstack,
+            current_proc: None,
             debug_vars,
+            last_debug_var_count: 0,
             recent: VecDeque::new(),
             cycle: snapshot.cycle,
             stopped: false,
@@ -197,7 +199,9 @@ impl RemoteState {
         self.sync_breakpoints(breakpoints);
 
         let has_step = breakpoints.iter().any(|bp| matches!(bp.ty, BreakpointType::Step));
-        let has_next = breakpoints.iter().any(|bp| matches!(bp.ty, BreakpointType::Next));
+        let has_next = breakpoints
+            .iter()
+            .any(|bp| matches!(bp.ty, BreakpointType::Next | BreakpointType::NextLine));
         let has_finish = breakpoints.iter().any(|bp| matches!(bp.ty, BreakpointType::Finish));
 
         if has_step {
@@ -525,6 +529,60 @@ impl State {
         }
     }
 
+    pub fn current_procedure(&self) -> Option<Rc<str>> {
+        let live_proc = self
+            .executor()
+            .current_asmop
+            .as_ref()
+            .map(|op| Rc::from(op.context_name()))
+            .or_else(|| self.executor().current_proc.clone());
+        let frame_proc =
+            self.executor().callstack.current_frame().and_then(|frame| frame.procedure(""));
+        live_proc.or(frame_proc)
+    }
+
+    pub fn current_location(&self) -> Option<ResolvedLocation> {
+        self.executor()
+            .callstack
+            .current_frame()
+            .and_then(|frame| frame.recent().back())
+            .and_then(|detail| detail.resolve(&*self.source_manager))
+            .cloned()
+    }
+
+    pub fn current_display_location(&self) -> Option<ResolvedLocation> {
+        self.executor()
+            .callstack
+            .current_frame()
+            .and_then(|frame| frame.last_resolved(&*self.source_manager))
+            .cloned()
+    }
+
+    pub fn is_next_source_line(
+        start_proc: Option<&str>,
+        start_loc: Option<&ResolvedLocation>,
+        current_proc: Option<&str>,
+        current_loc: Option<&ResolvedLocation>,
+    ) -> bool {
+        let same_proc = match (start_proc, current_proc) {
+            (Some(start), Some(current)) => start == current,
+            (Some(_), None) => false,
+            _ => true,
+        };
+        if !same_proc {
+            return false;
+        }
+
+        match (start_loc, current_loc) {
+            (Some(start), Some(current)) => {
+                start.source_file.uri().as_str() == current.source_file.uri().as_str()
+                    && start.line != current.line
+            }
+            (None, Some(_)) => true,
+            _ => false,
+        }
+    }
+
     pub fn execution_failed(&self) -> Option<&miden_processor::ExecutionError> {
         match &self.session {
             SessionState::Local(local) => local.execution_failed.as_ref(),
@@ -691,10 +749,24 @@ impl State {
             executor.processor.memory().read_element(context, Felt::new(addr as u64)).ok()
         };
 
+        let current_source = if show_all {
+            None
+        } else {
+            self.current_display_location()
+        };
+
         for var_snapshot in debug_vars.current_variables() {
             let name = var_snapshot.info.name();
 
             if !show_all && is_compiler_generated_name(name) {
+                continue;
+            }
+
+            if let (Some(current), Some(var_loc)) =
+                (current_source.as_ref(), var_snapshot.info.location())
+                && (var_loc.uri.as_str() != current.source_file.uri().as_str()
+                    || var_loc.line.to_u32() > current.line)
+            {
                 continue;
             }
 

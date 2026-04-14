@@ -171,9 +171,10 @@ impl Pane for BreakpointsPane {
                     Span::styled("", Style::default())
                 };
                 let line = match &bp.ty {
-                    BreakpointType::Next | BreakpointType::Step | BreakpointType::Finish => {
-                        unreachable!()
-                    }
+                    BreakpointType::Next
+                    | BreakpointType::NextLine
+                    | BreakpointType::Step
+                    | BreakpointType::Finish => unreachable!(),
                     BreakpointType::StepN(n) => Line::from(vec![
                         gutter,
                         Span::styled("cycle:", yellow),

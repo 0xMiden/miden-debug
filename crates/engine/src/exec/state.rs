@@ -1,4 +1,7 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    rc::Rc,
+};
 
 use miden_core::{
     mast::{MastNode, MastNodeId},
@@ -60,8 +63,12 @@ pub struct DebugExecutor {
     pub current_context: ContextId,
     /// The current call stack
     pub callstack: CallStack,
+    /// The most recent live procedure name observed from assembly operation metadata.
+    pub current_proc: Option<Rc<str>>,
     /// Debug variable tracker for source-level variable inspection
     pub debug_vars: DebugVarTracker,
+    /// Number of debug variable location records observed during the most recent step.
+    pub last_debug_var_count: usize,
     /// A sliding window of the last 5 operations successfully executed by the VM
     pub recent: VecDeque<Operation>,
     /// The current clock cycle
@@ -136,6 +143,35 @@ pub(crate) fn extract_current_op(
 }
 
 impl DebugExecutor {
+    /// Returns true if the current program forest has debug-variable locations associated with
+    /// `procedure`.
+    pub fn procedure_has_debug_vars(&self, procedure: &str) -> bool {
+        let Some(resume_ctx) = self.resume_ctx.as_ref() else {
+            return false;
+        };
+
+        let forest = resume_ctx.current_forest();
+        for (node_idx, node) in forest.nodes().iter().enumerate() {
+            let MastNode::Block(block) = node else {
+                continue;
+            };
+            let node_id = MastNodeId::new_unchecked(node_idx as u32);
+            for op_idx in 0..block.num_operations() as usize {
+                if forest.debug_vars_for_operation(node_id, op_idx).is_empty() {
+                    continue;
+                }
+                if forest
+                    .get_assembly_op(node_id, Some(op_idx))
+                    .is_some_and(|op| op.context_name() == procedure)
+                {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
     /// Advance the program state by one cycle.
     ///
     /// If the program has already reached its termination state, it returns the same result
@@ -144,6 +180,7 @@ impl DebugExecutor {
     /// Returns the call frame exited this cycle, if any
     pub fn step(&mut self) -> Result<Option<CallFrame>, ExecutionError> {
         if self.stopped {
+            self.last_debug_var_count = 0;
             return Ok(None);
         }
 
@@ -151,6 +188,7 @@ impl DebugExecutor {
             Some(ctx) => ctx,
             None => {
                 self.stopped = true;
+                self.last_debug_var_count = 0;
                 return Ok(None);
             }
         };
@@ -191,6 +229,9 @@ impl DebugExecutor {
                 // Track operation
                 self.current_op = op;
                 self.current_asmop = asmop.clone();
+                if let Some(asmop) = asmop.as_ref() {
+                    self.current_proc = Some(Rc::from(asmop.context_name()));
+                }
 
                 if let Some(op) = op {
                     if self.recent.len() == 5 {
@@ -210,15 +251,18 @@ impl DebugExecutor {
                 let exited = self.callstack.next(&step_info);
 
                 // Record and process debug variable events
+                let debug_var_count = debug_var_infos.len();
                 self.debug_vars
                     .record_events(RowIndex::from(self.cycle as u32), debug_var_infos);
                 self.debug_vars.update_to_cycle(RowIndex::from(self.cycle as u32));
+                self.last_debug_var_count = debug_var_count;
 
                 Ok(exited)
             }
             Ok(None) => {
                 // Program completed
                 self.stopped = true;
+                self.last_debug_var_count = 0;
                 let state = self.processor.state();
                 self.current_stack = state.get_stack_state();
 
@@ -230,6 +274,7 @@ impl DebugExecutor {
             }
             Err(err) => {
                 self.stopped = true;
+                self.last_debug_var_count = 0;
                 Err(err)
             }
         }

@@ -15,7 +15,10 @@ use crate::{
         action::Action,
         panes::Pane,
         state::State,
-        syntax_highlighting::{Highlighter, HighlighterState, NoopHighlighter, SyntectHighlighter},
+        syntax_highlighting::{
+            Highlighter, HighlighterState, NoopHighlighter, SyntectHighlighter,
+            clamp_byte_selection_to_str,
+        },
         tui::Frame,
     },
 };
@@ -83,6 +86,7 @@ impl SourceCodePane {
                     } else {
                         (resolved_span.start - span.start)..(resolved_span.end - span.start)
                     };
+                    let selection = clamp_byte_selection_to_str(&line_content, selection);
                     highlighter_state.highlight_line_with_selection(
                         line_content.into(),
                         selection,
@@ -382,6 +386,11 @@ impl Pane for SourceCodePane {
                     ..(selected.end - line_span.start.to_usize())
             }
         };
+        let selected_line_content = selected_line_deconstructed
+            .iter()
+            .map(|(_, content)| *content)
+            .collect::<String>();
+        let selected = clamp_byte_selection_to_str(&selected_line_content, selected);
         let mut parts = syntect::util::modify_range(
             selected_line_deconstructed.as_slice(),
             selected,

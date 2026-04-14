@@ -6,6 +6,17 @@ use miden_core::{
 };
 use miden_processor::trace::RowIndex;
 
+const FRAME_BASE_LOCAL_MARKER: u32 = 1 << 31;
+
+fn decode_frame_base_local_offset(encoded: u32) -> Option<i16> {
+    if encoded & FRAME_BASE_LOCAL_MARKER == 0 {
+        return None;
+    }
+
+    let low_bits = (encoded & 0xffff) as u16;
+    Some(i16::from_le_bytes(low_bits.to_le_bytes()))
+}
+
 /// A snapshot of a debug variable at a specific clock cycle.
 #[derive(Debug, Clone)]
 pub struct DebugVarSnapshot {
@@ -103,6 +114,13 @@ pub fn resolve_variable_value(
             global_index,
             byte_offset,
         } => {
+            if let Some(local_offset) = decode_frame_base_local_offset(*global_index) {
+                let base = get_local(local_offset)?;
+                let byte_addr = base.as_canonical_u64() as i64 + byte_offset;
+                let elem_addr = u32::try_from(byte_addr / 4).ok()?;
+                return get_memory(elem_addr);
+            }
+
             // global_index was resolved to a Miden byte address during compilation.
             // Convert to element address (÷4) to read the stack pointer value.
             let sp_elem_addr = *global_index / 4;

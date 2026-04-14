@@ -95,6 +95,7 @@ fn default_line_with_selection(
     selected: Range<usize>,
     style: Style,
 ) -> Vec<Span<'_>> {
+    let selected = clamp_byte_selection_to_str(&line, selected);
     let prefix_content =
         core::str::from_utf8(&line.as_bytes()[..selected.start]).expect("invalid selection");
     let selected_content =
@@ -111,6 +112,20 @@ fn default_line_with_selection(
         Span::styled(selected_content.to_string(), style),
         Span::raw(suffix_content.to_string()),
     ]
+}
+
+pub fn clamp_byte_selection_to_str(line: &str, selected: Range<usize>) -> Range<usize> {
+    fn floor_char_boundary(line: &str, idx: usize) -> usize {
+        let mut idx = idx.min(line.len());
+        while idx > 0 && !line.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        idx
+    }
+
+    let start = floor_char_boundary(line, selected.start);
+    let end = floor_char_boundary(line, selected.end).max(start);
+    start..end
 }
 
 /// Syntax highlighting provided by [syntect](https://docs.rs/syntect/latest/syntect/).
@@ -221,6 +236,7 @@ impl HighlighterState for SyntectHighlighterState<'_> {
         selected: Range<usize>,
         style: Style,
     ) -> Vec<Span<'a>> {
+        let selected = clamp_byte_selection_to_str(&line, selected);
         if let Ok(ops) = self.parse_state.parse_line(&line, &self.syntax_set) {
             let use_bg_color = self.use_bg_color;
             let parts = syntax::HighlightIterator::new(

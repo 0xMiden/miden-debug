@@ -292,7 +292,14 @@ impl Executor {
             }
             match executor.step() {
                 Ok(_) => continue,
-                Err(_) => break,
+                Err(err) => {
+                    log::warn!(
+                        target: "executor",
+                        "capture_trace stopped early at cycle {}: {err}",
+                        executor.cycle,
+                    );
+                    break;
+                }
             }
         }
         executor.into_execution_trace()

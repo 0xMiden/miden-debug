@@ -368,6 +368,20 @@ impl Executor {
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+enum PrintLnError {
+    #[error("address should fit in u32")]
+    InvalidAddress,
+    #[error("string length should fit in usize")]
+    InvalidLength,
+    #[error("memory is not initialized")]
+    MemoryNotInitialized,
+    #[error("failed to read memory: {0}")]
+    MemoryRead(#[from] super::trace::MemoryReadError),
+    #[error("invalid UTF-8")]
+    InvalidUtf8,
+}
+
 fn register_builtin_trace_handlers(
     host: &mut DebuggerHost<dyn SourceManager>,
     trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>>,
@@ -383,8 +397,18 @@ fn register_builtin_trace_handlers(
     });
 
     host.register_trace_handler(TraceEvent::PrintLn, move |process, _event| {
-        let line = decode_println(process);
-        printed_lines.borrow_mut().insert(process.clock(), line);
+        match decode_println(process) {
+            Ok(line) => {
+                printed_lines.borrow_mut().insert(process.clock(), line);
+            }
+            Err(err) => {
+                log::warn!(
+                    target: "executor",
+                    "trace.{TRACE_PRINT_LN:#x} failed at cycle {}: {err}",
+                    process.clock(),
+                );
+            }
+        }
     });
 
     let assertion_events = Rc::clone(&trace_events);
@@ -397,27 +421,19 @@ fn register_builtin_trace_handlers(
 ///
 /// Expects `[address, length]` on the operand stack. Reads `length` bytes from
 /// `address` in the current context's memory and returns them as a string.
-///
-/// # Panics
-///
-/// Panics if inputs are invalid or if reading from memory fails.
-fn decode_println(process: &ProcessorState<'_>) -> String {
+fn decode_println(process: &ProcessorState<'_>) -> Result<String, PrintLnError> {
     let addr = u32::try_from(process.get_stack_item(0).as_canonical_u64())
-        .unwrap_or_else(|_| panic!("trace.{TRACE_PRINT_LN:#x} address should fit in u32"));
+        .map_err(|_| PrintLnError::InvalidAddress)?;
     let len = usize::try_from(process.get_stack_item(1).as_canonical_u64())
-        .unwrap_or_else(|_| panic!("trace.{TRACE_PRINT_LN:#x} string length should fit in usize"));
+        .map_err(|_| PrintLnError::InvalidLength)?;
     let ptr = NativePtr::from_ptr(addr);
     let ctx = process.ctx();
 
     let bytes = read_memory_bytes(ptr, len, |addr| {
-        process.get_mem_value(ctx, addr).unwrap_or_else(|| {
-            panic!("trace.{TRACE_PRINT_LN:#x} tried to read unwritten memory at element {addr}")
-        })
-    })
-    .unwrap_or_else(|err| panic!("trace.{TRACE_PRINT_LN:#x} failed to read memory: {err}"));
+        process.get_mem_value(ctx, addr).ok_or(PrintLnError::MemoryNotInitialized)
+    })?;
 
-    String::from_utf8(bytes)
-        .unwrap_or_else(|_| panic!("trace.{TRACE_PRINT_LN:#x} should produce valid UTF-8"))
+    String::from_utf8(bytes).map_err(|_| PrintLnError::InvalidUtf8)
 }
 
 #[track_caller]

@@ -135,7 +135,7 @@ impl ExecutionTrace {
 
         if addr.is_element_aligned() {
             read_memory_bytes(addr, size, |addr| {
-                self.read_memory_element_in_context(addr, ctx, clk).unwrap_or_default()
+                Ok(self.read_memory_element_in_context(addr, ctx, clk).unwrap_or_default())
             })
         } else {
             Err(MemoryReadError::UnalignedRead)
@@ -181,24 +181,30 @@ pub(crate) fn felt_to_le_bytes(elem: Felt) -> [u8; 4] {
 /// Reads `size` bytes from memory, starting at `ptr`. Handles `ptr`'s offset.
 ///
 /// The `read_elem` callback is used to fetch an element from an element address.
-pub(crate) fn read_memory_bytes(
+pub(crate) fn read_memory_bytes<E>(
     ptr: NativePtr,
     size: usize,
-    mut read_elem: impl FnMut(u32) -> Felt,
-) -> Result<Vec<u8>, MemoryReadError> {
+    mut read_elem: impl FnMut(u32) -> Result<Felt, E>,
+) -> Result<Vec<u8>, E>
+where
+    E: From<MemoryReadError>,
+{
     if size == 0 {
         return Ok(Vec::new());
     }
 
     let start = usize::from(ptr.offset);
-    let end = start.checked_add(size).ok_or(MemoryReadError::OutOfBounds)?;
+    let end = start.checked_add(size).ok_or_else(|| E::from(MemoryReadError::OutOfBounds))?;
     let num_elements = end.div_ceil(4);
 
     let mut bytes = Vec::with_capacity(num_elements.saturating_mul(4));
     for index in 0..num_elements {
-        let index = u32::try_from(index).map_err(|_| MemoryReadError::OutOfBounds)?;
-        let elem_addr = ptr.addr.checked_add(index).ok_or(MemoryReadError::OutOfBounds)?;
-        bytes.extend(felt_to_le_bytes(read_elem(elem_addr)));
+        let index = u32::try_from(index).map_err(|_| E::from(MemoryReadError::OutOfBounds))?;
+        let elem_addr = ptr
+            .addr
+            .checked_add(index)
+            .ok_or_else(|| E::from(MemoryReadError::OutOfBounds))?;
+        bytes.extend(felt_to_le_bytes(read_elem(elem_addr)?));
     }
 
     Ok(bytes[start..end].to_vec())
@@ -313,6 +319,75 @@ end
             assert_eq!(trace.printed_lines().len(), 1);
             assert_eq!(trace.printed_lines().values().next().unwrap(), "");
         }
+    }
+
+    #[test]
+    fn trace_println_error_doesnt_stop_execution() {
+        let source = format!(
+            r#"
+begin
+    # Store an invalid UTF-8 byte (0xFF) at element 278528
+    push.255
+    push.278528
+    mem_store
+
+    # Try to print it (length 1, byte address 1114112 = 278528*4)
+    push.1
+    push.1114112
+    trace.{TRACE_PRINT_LN}
+    drop
+    drop
+
+    # Store 42 at element 278529 to prove execution continued
+    push.42
+    push.278529
+    mem_store
+end
+"#
+        );
+        let trace = execute_trace(&source);
+
+        assert!(
+            trace.printed_lines().is_empty(),
+            "expected no printed lines due to invalid UTF-8"
+        );
+        assert_eq!(
+            trace.read_memory_element(278529).map(|f| f.as_canonical_u64()),
+            Some(42),
+            "expected execution to continue and write 42 to memory"
+        );
+    }
+
+    #[test]
+    fn trace_println_uninitialized_memory_doesnt_stop_execution() {
+        let source = format!(
+            r#"
+begin
+    # Try to print a byte from uninitialized memory.
+    push.1
+    push.1114112
+    trace.{TRACE_PRINT_LN}
+    drop
+    drop
+
+    # Store 42 at element 278529 to prove execution continued.
+    push.42
+    push.278529
+    mem_store
+end
+"#
+        );
+        let trace = execute_trace(&source);
+
+        assert!(
+            trace.printed_lines().is_empty(),
+            "expected no printed lines due to uninitialized memory"
+        );
+        assert_eq!(
+            trace.read_memory_element(278529).map(|f| f.as_canonical_u64()),
+            Some(42),
+            "expected execution to continue and write 42 to memory"
+        );
     }
 
     #[test]

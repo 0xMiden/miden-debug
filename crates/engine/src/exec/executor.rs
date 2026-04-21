@@ -32,6 +32,8 @@ use crate::{
     felt::FromMidenRepr,
 };
 
+const MAX_PRINTLN_BYTES: usize = 512 * 1024;
+
 /// The [Executor] is responsible for executing a program with the Miden VM.
 ///
 /// It is used by either converting it into a [DebugExecutor], and using that to
@@ -374,6 +376,8 @@ enum PrintLnError {
     InvalidAddress,
     #[error("string length should fit in usize")]
     InvalidLength,
+    #[error("string length {requested} exceeds maximum {max}")]
+    LengthExceeded { requested: usize, max: usize },
     #[error("memory is not initialized")]
     MemoryNotInitialized,
     #[error("failed to read memory: {0}")]
@@ -426,6 +430,12 @@ fn decode_println(process: &ProcessorState<'_>) -> Result<String, PrintLnError> 
         .map_err(|_| PrintLnError::InvalidAddress)?;
     let len = usize::try_from(process.get_stack_item(1).as_canonical_u64())
         .map_err(|_| PrintLnError::InvalidLength)?;
+    if len > MAX_PRINTLN_BYTES {
+        return Err(PrintLnError::LengthExceeded {
+            requested: len,
+            max: MAX_PRINTLN_BYTES,
+        });
+    }
     let ptr = NativePtr::from_ptr(addr);
     let ctx = process.ctx();
 

@@ -391,6 +391,38 @@ end
     }
 
     #[test]
+    fn trace_println_oversized_length_doesnt_stop_execution() {
+        let source = format!(
+            r#"
+begin
+    # Ask TRACE_PRINT_LN to read more than the maximum allowed byte length.
+    push.524289
+    push.1114112
+    trace.{TRACE_PRINT_LN}
+    drop
+    drop
+
+    # Store 42 at element 278529 to prove execution continued.
+    push.42
+    push.278529
+    mem_store
+end
+"#
+        );
+        let trace = execute_trace(&source);
+
+        assert!(
+            trace.printed_lines().is_empty(),
+            "expected no printed lines due to oversized string length"
+        );
+        assert_eq!(
+            trace.read_memory_element(278529).map(|f| f.as_canonical_u64()),
+            Some(42),
+            "expected execution to continue and write 42 to memory"
+        );
+    }
+
+    #[test]
     fn stepped_trace_println_preserves_lines_across_non_printing_steps() {
         let source = format!(
             r#"

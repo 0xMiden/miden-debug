@@ -5,7 +5,7 @@ mod input;
 mod linker;
 
 #[cfg(feature = "tui")]
-mod logger;
+pub mod logger;
 #[cfg(feature = "tui")]
 mod ui;
 

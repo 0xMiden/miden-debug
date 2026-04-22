@@ -4,9 +4,15 @@ use std::{
     sync::{Arc, LazyLock, Mutex},
 };
 
+use compact_str::CompactString;
 use log::{Level, Log};
 
 static LOGGER: LazyLock<DebugLogger> = LazyLock::new(DebugLogger::default);
+
+/// The maximum depth of the debug log.
+///
+/// When reached, older messages are dropped first
+const HISTORY_SIZE: usize = 100;
 
 #[derive(Default)]
 struct DebugLoggerImpl {
@@ -16,26 +22,28 @@ struct DebugLoggerImpl {
 
 pub struct LogEntry {
     pub level: Level,
-    #[allow(unused)]
+    pub target: CompactString,
     pub file: Option<Cow<'static, str>>,
-    #[allow(unused)]
     pub line: Option<u32>,
     pub message: String,
 }
 
 #[derive(Default, Clone)]
 pub struct DebugLogger(Arc<Mutex<DebugLoggerImpl>>);
+
 impl Log for DebugLogger {
     fn enabled(&self, _metadata: &log::Metadata) -> bool {
         true
     }
 
     fn log(&self, record: &log::Record) {
+        let target = CompactString::new(record.target());
         let file = record
             .file_static()
             .map(Cow::Borrowed)
             .or_else(|| record.file().map(|f| f.to_string()).map(Cow::Owned));
         let entry = LogEntry {
+            target,
             level: record.level(),
             file,
             line: record.line(),
@@ -43,7 +51,7 @@ impl Log for DebugLogger {
         };
         let mut guard = self.0.lock().unwrap();
         guard.captured.push_back(entry);
-        if guard.captured.len() > 100 {
+        if guard.captured.len() > HISTORY_SIZE {
             guard.captured.pop_front();
         }
         if let Some(inner) = guard.inner.as_ref()
@@ -55,6 +63,7 @@ impl Log for DebugLogger {
 
     fn flush(&self) {}
 }
+
 impl DebugLogger {
     pub fn install(inner: Box<dyn Log>) {
         let logger = &*LOGGER;

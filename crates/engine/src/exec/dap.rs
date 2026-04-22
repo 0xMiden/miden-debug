@@ -614,6 +614,14 @@ impl DapExecutor {
                         server.respond(req.success(ResponseBody::Launch)).ok();
                     }
 
+                    // VS Code's default flow issues `attach` when launch.json uses
+                    // `request: "attach"`. The server is already bound to a TCP port and
+                    // running against a compiled script, so there is nothing to do beyond
+                    // acknowledging the request — mirror the `Launch` handling.
+                    Command::Attach(_) => {
+                        server.respond(req.success(ResponseBody::Attach)).ok();
+                    }
+
                     Command::ConfigurationDone => {
                         if let Ok(resp) = req.ack() {
                             server.respond(resp).ok();

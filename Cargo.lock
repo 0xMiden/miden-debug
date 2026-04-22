@@ -244,24 +244,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "chacha20"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f8d983286843e49675a4b7a2d174efe136dc93a18d69130dd18198a6c167601"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.3.0",
- "rand_core 0.10.0",
-]
-
-[[package]]
 name = "chacha20poly1305"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10cd79432192d1c0f4e1a0fef9527696cc039165d729fb41b3f4f4f354c2dc35"
 dependencies = [
  "aead",
- "chacha20 0.9.1",
+ "chacha20",
  "cipher",
  "poly1305",
  "zeroize",
@@ -979,7 +968,6 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi 6.0.0",
- "rand_core 0.10.0",
  "wasip2",
  "wasip3",
 ]
@@ -1467,7 +1455,7 @@ dependencies = [
 
 [[package]]
 name = "miden-debug"
-version = "0.5.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "crossterm",
@@ -1505,10 +1493,10 @@ dependencies = [
 
 [[package]]
 name = "miden-debug-dap"
-version = "0.1.0"
+version = "0.6.1"
 dependencies = [
  "fake",
- "rand 0.10.0",
+ "rand 0.8.5",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -1516,7 +1504,7 @@ dependencies = [
 
 [[package]]
 name = "miden-debug-engine"
-version = "0.1.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "glob",
@@ -2593,8 +2581,6 @@ version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc266eb313df6c5c09c1c7b1fbe2510961e5bcd3add930c1e31f7ed9da0feff8"
 dependencies = [
- "chacha20 0.10.0",
- "getrandom 0.4.2",
  "rand_core 0.10.0",
 ]
 

@@ -8,8 +8,10 @@ use std::{
 };
 
 use miden_assembly_syntax::{Library, diagnostics::Report};
-use miden_core::Word;
-use miden_core::program::{Program, StackInputs};
+use miden_core::{
+    Word,
+    program::{Program, StackInputs},
+};
 use miden_debug_types::{SourceManager, SourceManagerExt};
 use miden_mast_package::Dependency;
 use miden_processor::{

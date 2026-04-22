@@ -1,15 +1,16 @@
 [package]
 name = "miden-debug-dap"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.90"
-authors = ["Miden contributors"]
 description = "In-repo Debug Adapter Protocol support for miden-debug"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/0xMiden/miden-debug"
-homepage = "https://github.com/0xMiden/miden-debug"
-keywords = ["debugging", "protocol", "debug", "framework"]
-categories = ["development-tools::debugging"]
+version.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+categories.workspace = true
+keywords.workspace = true
+license.workspace = true
+edition.workspace = true
 
 [lib]
 name = "dap"

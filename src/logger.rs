@@ -1,13 +1,14 @@
 use std::{
     borrow::Cow,
     collections::VecDeque,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, LazyLock, Mutex, Once},
 };
 
 use compact_str::CompactString;
 use log::{Level, LevelFilter, Log};
 
 static LOGGER: LazyLock<DebugLogger> = LazyLock::new(DebugLogger::default);
+static LOGGER_INSTALLED: Once = Once::new();
 
 /// The maximum depth of the debug log.
 ///
@@ -74,8 +75,10 @@ impl DebugLogger {
     pub fn install_with_max_level(inner: Box<dyn Log>, max_level: LevelFilter) {
         let logger = &*LOGGER;
         logger.set_inner(inner);
-        log::set_logger(logger).unwrap_or_else(|err| panic!("failed to install logger: {err}"));
-        log::set_max_level(max_level);
+        LOGGER_INSTALLED.call_once(|| {
+            log::set_logger(logger).unwrap_or_else(|err| panic!("failed to install logger: {err}"));
+            log::set_max_level(max_level);
+        });
     }
 
     pub fn get() -> &'static Self {
@@ -89,5 +92,35 @@ impl DebugLogger {
 
     fn set_inner(&self, logger: Box<dyn Log>) {
         drop(self.0.lock().unwrap().inner.replace(logger));
+    }
+
+    #[cfg(test)]
+    // Tests share a global logger, so one test may observe logs emitted by another test.
+    pub fn init_for_tests() {
+        let mut builder = env_logger::Builder::from_env("MIDENC_TRACE");
+        builder.format_indent(Some(2));
+        builder.format_timestamp(None);
+        Self::install_with_max_level(Box::new(builder.build()), LevelFilter::Trace);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::DebugLogger;
+
+    static NEXT_LOG_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn test_logger_captures_logs() {
+        DebugLogger::init_for_tests();
+
+        let id = NEXT_LOG_ID.fetch_add(1, Ordering::Relaxed);
+        let expected = format!("logger test message {id}");
+        log::info!("{expected}");
+
+        let captured = DebugLogger::get().take_captured();
+        assert!(captured.iter().any(|entry| entry.message == expected));
     }
 }

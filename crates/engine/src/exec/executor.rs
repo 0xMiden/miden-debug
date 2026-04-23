@@ -32,6 +32,12 @@ use crate::{
     felt::FromMidenRepr,
 };
 
+/// Maximum number of bytes for a single `println` output.
+///
+/// A limit is required as `u32::MAX` exceeds the size that strings can take in Miden VM. The limit
+/// is generous and still permits use cases like formatting a large amount of data in storage.
+///
+/// Exceeding the limit likely indicates a bug in the corresponding trace event handling.
 const MAX_PRINTLN_BYTES: usize = 512 * 1024;
 
 /// The [Executor] is responsible for executing a program with the Miden VM.

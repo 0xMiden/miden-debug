@@ -14,7 +14,10 @@ pub const TRACE_FRAME_END: u32 = 0xfc;
 /// This event is emitted via `trace`, and indicates that a line should be printed.
 ///
 /// The bytes representing the string are expected in memory. The executor reads the start address
-/// and length from the operand stack.  
+/// and length from the operand stack.
+///
+/// The decoded string is emitted through the [`log`] infra at `Info` level on the `stdout`
+/// target.
 ///
 /// The mnemonic here is ASCII `PRNT`.
 pub const TRACE_PRINT_LN: u32 = 0x50_52_4e_54;

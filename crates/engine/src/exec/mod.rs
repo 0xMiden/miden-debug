@@ -28,5 +28,5 @@ pub use self::{
     host::DebuggerHost,
     state::DebugExecutor,
     trace::{ExecutionTrace, TraceHandler},
-    trace_event::TraceEvent,
+    trace_event::{TRACE_PRINT_LN, TraceEvent},
 };

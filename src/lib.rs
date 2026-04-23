@@ -18,6 +18,9 @@ pub use self::repl::{run as run_repl, run_with_log_level as run_repl_with_log_le
 pub use self::ui::{
     DebugMode, State, run, run_with_log_level, run_with_state, run_with_state_and_log_level,
 };
+#[cfg(all(test, feature = "tui"))]
+mod trace_println_tests;
+
 pub use self::{
     config::{ColorChoice, DebuggerConfig},
     debug::*,

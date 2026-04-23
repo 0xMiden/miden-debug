@@ -1,8 +1,4 @@
-use std::{
-    collections::{BTreeMap, VecDeque},
-    rc::Rc,
-    sync::Arc,
-};
+use std::{collections::VecDeque, rc::Rc, sync::Arc};
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
@@ -137,7 +133,6 @@ impl RemoteState {
             recent: VecDeque::new(),
             cycle: snapshot.cycle,
             stopped: false,
-            printed_lines: Rc::new(RefCell::new(BTreeMap::new())),
         };
 
         Ok(Self {

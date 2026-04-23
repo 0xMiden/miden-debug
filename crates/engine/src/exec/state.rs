@@ -1,6 +1,5 @@
 use std::{
-    cell::RefCell,
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeSet, VecDeque},
     rc::Rc,
 };
 
@@ -76,8 +75,6 @@ pub struct DebugExecutor {
     pub cycle: usize,
     /// Whether or not execution has terminated
     pub stopped: bool,
-    /// Lines printed indexed by the cycle when they were emitted.
-    pub printed_lines: Rc<RefCell<BTreeMap<RowIndex, String>>>,
 }
 
 /// Extract the current operation and assembly info from the continuation stack
@@ -290,7 +287,6 @@ impl DebugExecutor {
             last_cycle: RowIndex::from(self.cycle as u32),
             processor: self.processor,
             outputs: self.stack_outputs,
-            printed_lines: self.printed_lines.borrow().clone(),
         }
     }
 }

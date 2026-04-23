@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use log::Level;
 use miden_assembly_syntax::{Library, diagnostics::Report};
 use miden_core::{
     Word,
@@ -167,12 +168,7 @@ impl Executor {
         }
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
-        let printed_lines: Rc<RefCell<BTreeMap<RowIndex, String>>> = Rc::new(Default::default());
-        register_builtin_trace_handlers(
-            &mut host,
-            Rc::clone(&trace_events),
-            Rc::clone(&printed_lines),
-        );
+        register_builtin_trace_handlers(&mut host, Rc::clone(&trace_events));
 
         // Set up debug variable tracking
         // Note: Currently no debug var events are emitted (requires new miden-core),
@@ -211,7 +207,6 @@ impl Executor {
             recent: VecDeque::with_capacity(5),
             cycle: 0,
             stopped: false,
-            printed_lines,
         }
     }
 
@@ -245,12 +240,7 @@ impl Executor {
             Rc::new(Default::default());
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
-        let printed_lines: Rc<RefCell<BTreeMap<RowIndex, String>>> = Rc::new(Default::default());
-        register_builtin_trace_handlers(
-            &mut host,
-            Rc::clone(&trace_events),
-            Rc::clone(&printed_lines),
-        );
+        register_builtin_trace_handlers(&mut host, Rc::clone(&trace_events));
 
         let mut processor = FastProcessor::new(self.stack)
             .with_advice(self.advice)
@@ -283,7 +273,6 @@ impl Executor {
             recent: VecDeque::with_capacity(5),
             cycle: 0,
             stopped: false,
-            printed_lines,
         }
     }
 
@@ -395,7 +384,6 @@ enum PrintLnError {
 fn register_builtin_trace_handlers(
     host: &mut DebuggerHost<dyn SourceManager>,
     trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>>,
-    printed_lines: Rc<RefCell<BTreeMap<RowIndex, String>>>,
 ) {
     let frame_start_events = Rc::clone(&trace_events);
     host.register_trace_handler(TraceEvent::FrameStart, move |process, event| {
@@ -408,8 +396,8 @@ fn register_builtin_trace_handlers(
 
     host.register_trace_handler(TraceEvent::PrintLn, move |process, _event| {
         match decode_println(process) {
-            Ok(line) => {
-                printed_lines.borrow_mut().insert(process.clock(), line);
+            Ok(content) => {
+                log::log!(target: "stdout", Level::Info, "{content}");
             }
             Err(err) => {
                 log::warn!(

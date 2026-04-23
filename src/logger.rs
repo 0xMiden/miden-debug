@@ -17,6 +17,7 @@ struct DebugLoggerImpl {
     captured: VecDeque<LogEntry>,
 }
 
+#[derive(Clone)]
 pub struct LogEntry {
     pub level: Level,
     #[allow(unused)]
@@ -86,6 +87,11 @@ impl DebugLogger {
         core::mem::take(&mut guard.captured)
     }
 
+    #[cfg(test)]
+    pub fn peek_captured(&self) -> VecDeque<LogEntry> {
+        self.0.lock().unwrap().captured.clone()
+    }
+
     fn set_inner(&self, logger: Box<dyn Log>) {
         drop(self.0.lock().unwrap().inner.replace(logger));
     }
@@ -112,11 +118,12 @@ mod tests {
     fn test_logger_captures_logs() {
         DebugLogger::init_for_tests();
 
+        let before = DebugLogger::get().peek_captured().len();
         let id = NEXT_LOG_ID.fetch_add(1, Ordering::Relaxed);
         let expected = format!("logger test message {id}");
         log::info!("{expected}");
 
-        let captured = DebugLogger::get().take_captured();
-        assert!(captured.iter().any(|entry| entry.message == expected));
+        let captured = DebugLogger::get().peek_captured();
+        assert!(captured.iter().skip(before).any(|entry| entry.message == expected));
     }
 }

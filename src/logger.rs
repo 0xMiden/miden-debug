@@ -9,11 +9,7 @@ use log::{Level, LevelFilter, Log};
 
 static LOGGER: LazyLock<DebugLogger> = LazyLock::new(DebugLogger::default);
 static LOGGER_INSTALLED: Once = Once::new();
-
-/// The maximum depth of the debug log.
-///
-/// When reached, older messages are dropped first
-const HISTORY_SIZE: usize = 100;
+const MAX_CAPTURED_LOGS: usize = 1000;
 
 #[derive(Default)]
 struct DebugLoggerImpl {
@@ -60,7 +56,7 @@ impl Log for DebugLogger {
             message: format!("{}", record.args()),
         };
         guard.captured.push_back(entry);
-        if guard.captured.len() > HISTORY_SIZE {
+        if guard.captured.len() > MAX_CAPTURED_LOGS {
             guard.captured.pop_front();
         }
         if let Some(inner) = guard.inner.as_ref() {

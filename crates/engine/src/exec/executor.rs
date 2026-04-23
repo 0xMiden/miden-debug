@@ -414,7 +414,7 @@ fn register_builtin_trace_handlers(
             Err(err) => {
                 log::warn!(
                     target: "executor",
-                    "trace.{TRACE_PRINT_LN:#x} failed at cycle {}: {err}",
+                    "trace.{TRACE_PRINT_LN} failed at cycle {}: {err}",
                     process.clock(),
                 );
             }

@@ -87,7 +87,6 @@ impl DebugLogger {
         core::mem::take(&mut guard.captured)
     }
 
-    #[cfg(test)]
     pub fn peek_captured(&self) -> VecDeque<LogEntry> {
         self.0.lock().unwrap().captured.clone()
     }
@@ -96,7 +95,6 @@ impl DebugLogger {
         drop(self.0.lock().unwrap().inner.replace(logger));
     }
 
-    #[cfg(test)]
     // Tests share a global logger, so one test may observe logs emitted by another test.
     pub fn init_for_tests() {
         let mut builder = env_logger::Builder::from_env("MIDENC_TRACE");

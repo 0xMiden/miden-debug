@@ -47,6 +47,30 @@ required-features = ["std"]
 name = "compile-masm"
 required-features = ["std"]
 
+[[test]]
+name = "println_smoke_test"
+required-features = ["tui"]
+
+[[test]]
+name = "println_empty_string"
+required-features = ["tui"]
+
+[[test]]
+name = "println_invalid_utf8"
+required-features = ["tui"]
+
+[[test]]
+name = "println_oversized_length"
+required-features = ["tui"]
+
+[[test]]
+name = "println_uninitialized_memory"
+required-features = ["tui"]
+
+[[test]]
+name = "println_multiple_prints"
+required-features = ["tui"]
+
 [features]
 default = ["tui", "dap"]
 tui = ["std", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect", "miden-debug-engine/tui"]

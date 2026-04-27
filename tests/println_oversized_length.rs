@@ -1,0 +1,39 @@
+mod common;
+
+use log::Level;
+use miden_debug::TRACE_PRINT_LN;
+
+#[test]
+fn trace_println_oversized_length_logs_warning_and_continues_execution() {
+    let before = common::init_test_debug_logger();
+    let source = format!(
+        r#"
+begin
+    # Ask TRACE_PRINT_LN to read more than the maximum allowed byte length.
+    push.524289
+    push.1114112
+    trace.{TRACE_PRINT_LN}
+    drop
+    drop
+
+    # Store 42 at element 278529 to prove execution continued.
+    push.42
+    push.278529
+    mem_store
+end
+"#,
+    );
+    let trace = common::execute_trace(&source);
+
+    assert_eq!(
+        trace.read_memory_element(278529).map(|f| f.as_canonical_u64()),
+        Some(42),
+        "expected execution to continue and write 42 to memory",
+    );
+    common::assert_log_message(
+        before,
+        Level::Warn,
+        |message| message.contains("exceeds maximum"),
+        "trying to print oversized string should log warning",
+    );
+}

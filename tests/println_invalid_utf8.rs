@@ -1,0 +1,44 @@
+mod common;
+
+use log::Level;
+use miden_debug::TRACE_PRINT_LN;
+
+#[test]
+fn trace_println_invalid_utf8_logs_warning_and_continues_execution() {
+    let before = common::init_test_debug_logger();
+    let source = format!(
+        r#"
+begin
+    # Store an invalid UTF-8 byte (0xFF) at element 278528
+    push.255
+    push.278528
+    mem_store
+
+    # Try to print it (length 1, byte address 1114112 = 278528*4)
+    push.1
+    push.1114112
+    trace.{TRACE_PRINT_LN}
+    drop
+    drop
+
+    # Store 42 at element 278529 to prove execution continued
+    push.42
+    push.278529
+    mem_store
+end
+"#,
+    );
+    let trace = common::execute_trace(&source);
+
+    assert_eq!(
+        trace.read_memory_element(278529).map(|f| f.as_canonical_u64()),
+        Some(42),
+        "expected execution to continue and write 42 to memory",
+    );
+    common::assert_log_message(
+        before,
+        Level::Warn,
+        |message| message.contains("invalid UTF-8"),
+        "invalid UTF-8 passed to println should log warning",
+    );
+}

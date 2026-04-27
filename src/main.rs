@@ -3,12 +3,12 @@ use std::env;
 use clap::Parser;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report, WrapErr};
 use miden_debug::DebuggerConfig;
-#[cfg(feature = "tui")]
-use miden_debug::run;
 #[cfg(feature = "repl")]
-use miden_debug::run_repl;
+use miden_debug::run_repl_with_log_level as run_repl;
+#[cfg(feature = "tui")]
+use miden_debug::run_with_log_level as run;
 #[cfg(feature = "dap")]
-use miden_debug::{State, run_with_state};
+use miden_debug::{State, run_with_state_and_log_level as run_with_state};
 
 pub fn main() -> Result<(), Report> {
     setup_diagnostics();
@@ -33,7 +33,9 @@ pub fn main() -> Result<(), Report> {
         builder.format_timestamp(None);
     }
 
-    let logger = Box::new(builder.build());
+    let logger = builder.build();
+    let log_level = logger.filter();
+    let logger = Box::new(logger);
     let mut config = Box::new(DebuggerConfig::parse());
 
     if config.working_dir.is_none() {
@@ -47,16 +49,16 @@ pub fn main() -> Result<(), Report> {
     #[cfg(feature = "dap")]
     if let Some(addr) = config.dap_connect.as_ref() {
         let state = State::new_for_dap(addr)?;
-        return run_with_state(state, logger);
+        return run_with_state(state, logger, log_level);
     }
 
     #[cfg(feature = "repl")]
     if config.repl {
-        return run_repl(config, logger);
+        return run_repl(config, logger, log_level);
     }
 
     #[cfg(feature = "tui")]
-    return run(config, logger);
+    return run(config, logger, log_level);
 
     #[cfg(not(feature = "tui"))]
     Err(Report::msg(

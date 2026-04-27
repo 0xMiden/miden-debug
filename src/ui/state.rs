@@ -12,7 +12,7 @@ use miden_processor::{
 use crate::{
     config::DebuggerConfig,
     debug::{Breakpoint, BreakpointType, ReadMemoryExpr, ResolvedLocation, resolve_variable_value},
-    exec::{DebugExecutor, ExecutionTrace, Executor},
+    exec::{DebugExecutor, Executor},
     input::InputFile,
 };
 
@@ -74,7 +74,6 @@ pub enum InputMode {
 
 struct LocalState {
     executor: DebugExecutor,
-    execution_trace: ExecutionTrace,
     execution_failed: Option<miden_processor::ExecutionError>,
 }
 
@@ -300,22 +299,10 @@ impl State {
         // Now resolve package dependencies (they should find the registered libraries)
         let dependencies = package.manifest.dependencies();
         executor.with_dependencies(dependencies)?;
-        executor.with_advice_inputs(inputs.advice_inputs.clone());
+        executor.with_advice_inputs(inputs.advice_inputs);
 
         let program = package.unwrap_program();
         let executor = executor.into_debug(&program, source_manager.clone());
-
-        // Execute the program until it terminates to capture a full trace for use during debugging
-        let mut trace_executor = Executor::new(args);
-        for lib in libs.iter() {
-            trace_executor.register_library_dependency(lib.clone());
-            trace_executor.with_library(lib.clone());
-        }
-        let dependencies = package.manifest.dependencies();
-        trace_executor.with_dependencies(dependencies)?;
-        trace_executor.with_advice_inputs(inputs.advice_inputs.clone());
-
-        let execution_trace = trace_executor.capture_trace(&program, source_manager.clone());
 
         Ok(Self::new_local(
             source_manager,
@@ -323,7 +310,6 @@ impl State {
             DebugMode::Program,
             LocalState {
                 executor,
-                execution_trace,
                 execution_failed: None,
             },
         ))
@@ -345,27 +331,14 @@ impl State {
         let args = stack_inputs.iter().copied().rev().collect::<Vec<_>>();
 
         // Create debug executor with event replay
-        let mut executor = Executor::new(args.clone());
-        executor.with_advice_inputs(advice_inputs.clone());
+        let mut executor = Executor::new(args);
+        executor.with_advice_inputs(advice_inputs);
         let debug_executor = executor.into_debug_with_replay(
-            &program,
-            source_manager.clone(),
-            mast_forests.clone(),
-            clone_event_replay_queue(&event_replay),
-        );
-
-        // Create trace executor with a cloned replay queue
-        let mut trace_executor = Executor::new(args);
-        trace_executor.with_advice_inputs(advice_inputs);
-        let trace_debug = trace_executor.into_debug_with_replay(
             &program,
             source_manager.clone(),
             mast_forests,
             clone_event_replay_queue(&event_replay),
         );
-
-        // Run trace executor to completion to capture execution trace
-        let execution_trace = run_to_trace(trace_debug);
 
         Ok(Self::new_local(
             source_manager,
@@ -373,7 +346,6 @@ impl State {
             DebugMode::Transaction,
             LocalState {
                 executor: debug_executor,
-                execution_trace,
                 execution_failed: None,
             },
         ))
@@ -444,25 +416,13 @@ impl State {
         // Now resolve package dependencies
         let dependencies = package.manifest.dependencies();
         executor.with_dependencies(dependencies)?;
-        executor.with_advice_inputs(inputs.advice_inputs.clone());
+        executor.with_advice_inputs(inputs.advice_inputs);
 
         let program = package.unwrap_program();
         let executor = executor.into_debug(&program, self.source_manager.clone());
 
-        // Execute the program until it terminates to capture a full trace for use during debugging
-        let mut trace_executor = Executor::new(args);
-        for lib in libs.iter() {
-            trace_executor.register_library_dependency(lib.clone());
-            trace_executor.with_library(lib.clone());
-        }
-        let dependencies = package.manifest.dependencies();
-        trace_executor.with_dependencies(dependencies)?;
-        trace_executor.with_advice_inputs(core::mem::take(&mut inputs.advice_inputs));
-        let execution_trace = trace_executor.capture_trace(&program, self.source_manager.clone());
-
         self.session = SessionState::Local(Box::new(LocalState {
             executor,
-            execution_trace,
             execution_failed: None,
         }));
         self.breakpoints_hit.clear();
@@ -600,14 +560,6 @@ impl State {
             }
         }
     }
-
-    fn local_session(&self) -> &LocalState {
-        match &self.session {
-            SessionState::Local(local) => local,
-            #[cfg(feature = "dap")]
-            SessionState::Remote(_) => panic!("local session requested while in remote mode"),
-        }
-    }
 }
 
 macro_rules! write_with_format_type {
@@ -641,9 +593,13 @@ impl State {
             return Err("remote debug mode requires the `dap` feature".into());
         }
 
-        let cycle = miden_processor::trace::RowIndex::from(self.executor().cycle);
-        let context = self.executor().current_context;
-        let local = self.local_session();
+        let executor = self.executor();
+        let cycle = miden_processor::trace::RowIndex::from(executor.cycle);
+        let context = executor.current_context;
+        let memory = executor.processor.memory();
+        let read_element = |addr: u32| -> Option<Felt> {
+            memory.read_element(context, Felt::new(addr as u64)).ok()
+        };
         let mut output = String::new();
         if expr.count > 1 {
             return Err("-count with value > 1 is not yet implemented".into());
@@ -653,10 +609,7 @@ impl State {
                     "read failed: type 'felt' must be aligned to an element boundary".into()
                 );
             }
-            let felt = local
-                .execution_trace
-                .read_memory_element_in_context(expr.addr.addr, context, cycle)
-                .unwrap_or(Felt::ZERO);
+            let felt = read_element(expr.addr.addr).unwrap_or(Felt::ZERO);
             write_with_format_type!(output, expr, felt.as_canonical_u64());
         } else if matches!(
             expr.ty,
@@ -665,7 +618,9 @@ impl State {
             if !expr.addr.is_word_aligned() {
                 return Err("read failed: type 'word' must be aligned to a word boundary".into());
             }
-            let word = local.execution_trace.read_memory_word(expr.addr.addr).unwrap_or_default();
+            let word = memory
+                .read_word(context, Felt::new(expr.addr.addr as u64), cycle)
+                .unwrap_or_default();
             output.push('[');
             for (i, elem) in word.iter().enumerate() {
                 if i > 0 {
@@ -675,10 +630,26 @@ impl State {
             }
             output.push(']');
         } else {
-            let bytes = local
-                .execution_trace
-                .read_bytes_for_type(expr.addr, &expr.ty, context, cycle)
-                .map_err(|err| format!("invalid read: {err}"))?;
+            if !expr.addr.is_element_aligned() {
+                return Err("invalid read: unaligned reads are not supported yet".into());
+            }
+
+            const U32_MASK: u64 = u32::MAX as u64;
+            let size = expr.ty.size_in_bytes();
+            let size_in_felts = expr.ty.size_in_felts();
+            let mut bytes = Vec::with_capacity(size);
+            let mut needed = size;
+            for i in 0..size_in_felts {
+                let addr = expr.addr.addr.checked_add(i as u32).ok_or_else(|| {
+                    "invalid read: attempted to read beyond end of linear memory".to_string()
+                })?;
+                let elem = read_element(addr).unwrap_or_default();
+                let elem_bytes = ((elem.as_canonical_u64() & U32_MASK) as u32).to_le_bytes();
+                let take = core::cmp::min(needed, 4);
+                bytes.extend(&elem_bytes[..take]);
+                needed -= take;
+            }
+
             match &expr.ty {
                 Type::I1 => match expr.format {
                     FormatType::Decimal => write!(&mut output, "{}", bytes[0] != 0).unwrap(),
@@ -969,20 +940,6 @@ fn load_sysroot_libs(
     }
 
     Ok(libs)
-}
-
-/// Run a [DebugExecutor] to completion and return the [ExecutionTrace].
-fn run_to_trace(mut executor: DebugExecutor) -> ExecutionTrace {
-    loop {
-        if executor.stopped {
-            break;
-        }
-        match executor.step() {
-            Ok(_) => continue,
-            Err(_) => break,
-        }
-    }
-    executor.into_execution_trace()
 }
 
 fn load_package(config: &DebuggerConfig) -> Result<Arc<miden_mast_package::Package>, Report> {

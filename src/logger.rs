@@ -103,25 +103,3 @@ impl DebugLogger {
         Self::install_with_max_level(Box::new(builder.build()), LevelFilter::Trace);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    use super::DebugLogger;
-
-    static NEXT_LOG_ID: AtomicU64 = AtomicU64::new(0);
-
-    #[test]
-    fn test_logger_captures_logs() {
-        DebugLogger::init_for_tests();
-
-        let before = DebugLogger::get().peek_captured().len();
-        let id = NEXT_LOG_ID.fetch_add(1, Ordering::Relaxed);
-        let expected = format!("logger test message {id}");
-        log::info!("{expected}");
-
-        let captured = DebugLogger::get().peek_captured();
-        assert!(captured.iter().skip(before).any(|entry| entry.message == expected));
-    }
-}

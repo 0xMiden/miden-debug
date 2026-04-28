@@ -1,14 +1,13 @@
 use std::{
     borrow::Cow,
     collections::VecDeque,
-    sync::{Arc, LazyLock, Mutex, Once},
+    sync::{Arc, LazyLock, Mutex},
 };
 
 use compact_str::CompactString;
 use log::{Level, LevelFilter, Log};
 
 static LOGGER: LazyLock<DebugLogger> = LazyLock::new(DebugLogger::default);
-static LOGGER_INSTALLED: Once = Once::new();
 const MAX_CAPTURED_LOGS: usize = 1000;
 
 #[derive(Default)]
@@ -69,13 +68,17 @@ impl Log for DebugLogger {
 }
 
 impl DebugLogger {
-    pub fn install_with_max_level(inner: Box<dyn Log>, max_level: LevelFilter) {
+    /// Returns an error if the global logger was already initialized.
+    pub fn install_with_max_level(
+        inner: Box<dyn Log>,
+        max_level: LevelFilter,
+    ) -> Result<(), log::SetLoggerError> {
         let logger = &*LOGGER;
+        log::set_logger(logger)?;
+        // Update `inner` only if `set_logger` succeeded.
         logger.set_inner(inner);
-        LOGGER_INSTALLED.call_once(|| {
-            log::set_logger(logger).unwrap_or_else(|err| panic!("failed to install logger: {err}"));
-            log::set_max_level(max_level);
-        });
+        log::set_max_level(max_level);
+        Ok(())
     }
 
     pub fn get() -> &'static Self {
@@ -87,7 +90,12 @@ impl DebugLogger {
         core::mem::take(&mut guard.captured)
     }
 
-    pub fn peek_captured(&self) -> VecDeque<LogEntry> {
+    /// Returns the current number of captured log entries.
+    pub fn log_count(&self) -> usize {
+        self.0.lock().unwrap().captured.len()
+    }
+
+    pub fn clone_captured(&self) -> VecDeque<LogEntry> {
         self.0.lock().unwrap().captured.clone()
     }
 
@@ -95,11 +103,11 @@ impl DebugLogger {
         drop(self.0.lock().unwrap().inner.replace(logger));
     }
 
-    // Tests share a global logger, so one test may observe logs emitted by another test.
-    pub fn init_for_tests() {
+    /// Returns an error if the global logger was already initialized.
+    pub fn init_for_tests() -> Result<(), log::SetLoggerError> {
         let mut builder = env_logger::Builder::from_env("MIDENC_TRACE");
         builder.format_indent(Some(2));
         builder.format_timestamp(None);
-        Self::install_with_max_level(Box::new(builder.build()), LevelFilter::Trace);
+        Self::install_with_max_level(Box::new(builder.build()), LevelFilter::Trace)
     }
 }

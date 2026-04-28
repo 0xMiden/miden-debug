@@ -27,16 +27,25 @@ pub fn execute_debug(source: &str) -> miden_debug::DebugExecutor {
 
 /// Initializes the debug logger for tests and returns the current log count.
 ///
-/// `DebugLogger` is built on top of `env_logger`, which uses a logger that is global per
-/// process. So without proper scoping a `DebugLogger` may collect logs from multiple tests.
+/// # Panics
+///
+/// Panics if called more than once per process, as integration tests should not share a
+/// `DebugLogger`
 pub fn init_test_debug_logger() -> usize {
-    DebugLogger::init_for_tests();
-    DebugLogger::get().peek_captured().len()
+    DebugLogger::init_for_tests().expect(
+        "integration tests should run in different processes to isolate their `DebugLogger`",
+    );
+    DebugLogger::get().clone_captured().len()
+}
+
+/// Returns the current number of captured log entries.
+pub fn log_count() -> usize {
+    DebugLogger::get().log_count()
 }
 
 /// Returns all log entries captured since the given snapshot index.
 pub fn logs_since(before: usize) -> Vec<miden_debug::logger::LogEntry> {
-    DebugLogger::get().peek_captured().into_iter().skip(before).collect()
+    DebugLogger::get().clone_captured().into_iter().skip(before).collect()
 }
 
 pub fn assert_log_message(

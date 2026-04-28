@@ -5,8 +5,9 @@ use miden_debug::TRACE_PRINT_LN;
 
 #[test]
 fn trace_println_logs_empty_strings() {
+    common::init_test_debug_logger();
     for offset in 0..4 {
-        let before = common::init_test_debug_logger();
+        let before = common::log_count();
         let byte_addr = (278528 + offset) * 4;
 
         let source = format!(

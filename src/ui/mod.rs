@@ -56,7 +56,7 @@ pub async fn start_ui(
 ) -> Result<(), Report> {
     use ratatui::crossterm as term;
 
-    crate::logger::DebugLogger::install_with_max_level(logger, max_level);
+    crate::logger::DebugLogger::install_with_max_level(logger, max_level).into_diagnostic()?;
 
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
@@ -78,7 +78,7 @@ async fn start_ui_with_state(
 ) -> Result<(), Report> {
     use ratatui::crossterm as term;
 
-    crate::logger::DebugLogger::install_with_max_level(logger, max_level);
+    crate::logger::DebugLogger::install_with_max_level(logger, max_level).into_diagnostic()?;
 
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {

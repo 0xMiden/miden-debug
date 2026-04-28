@@ -72,8 +72,7 @@ end
 
         let logs = common::logs_since(before);
         hi_seen |= logs.iter().any(|entry| entry.level == Level::Info && entry.message == "hi");
-        bye_seen |=
-            logs.iter().any(|entry| entry.level == Level::Info && entry.message == "bye");
+        bye_seen |= logs.iter().any(|entry| entry.level == Level::Info && entry.message == "bye");
         ok_seen |= logs.iter().any(|entry| entry.level == Level::Info && entry.message == "ok");
 
         if hi_seen {

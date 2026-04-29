@@ -10,6 +10,7 @@ use std::{
 use miden_assembly_syntax::{Library, diagnostics::Report};
 use miden_core::{
     Word,
+    operations::DebugVarInfo,
     program::{Program, StackInputs},
 };
 use miden_debug_types::{SourceManager, SourceManagerExt};
@@ -23,7 +24,10 @@ use miden_processor::{
 };
 
 use super::{DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent};
-use crate::{debug::CallStack, felt::FromMidenRepr};
+use crate::{
+    debug::{CallStack, DebugVarTracker},
+    felt::FromMidenRepr,
+};
 
 /// The [Executor] is responsible for executing a program with the Miden VM.
 ///
@@ -165,6 +169,12 @@ impl Executor {
             assertion_events.borrow_mut().insert(clk, event);
         });
 
+        // Set up debug variable tracking
+        // Note: Currently no debug var events are emitted (requires new miden-core),
+        // but we set up the infrastructure for when they become available.
+        let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
+            Rc::new(Default::default());
+
         let mut processor = FastProcessor::new(self.stack)
             .with_advice(self.advice)
             .with_options(self.options)
@@ -177,6 +187,7 @@ impl Executor {
             .expect("failed to get initial resume context");
 
         let callstack = CallStack::new(trace_events);
+        let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
             processor,
             host,
@@ -189,6 +200,9 @@ impl Executor {
             root_context,
             current_context: root_context,
             callstack,
+            current_proc: None,
+            debug_vars,
+            last_debug_var_count: 0,
             recent: VecDeque::with_capacity(5),
             cycle: 0,
             stopped: false,
@@ -221,6 +235,9 @@ impl Executor {
         }
         host.set_event_replay(event_replay);
 
+        let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
+            Rc::new(Default::default());
+
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
         let frame_start_events = Rc::clone(&trace_events);
         host.register_trace_handler(TraceEvent::FrameStart, move |clk, event| {
@@ -247,6 +264,7 @@ impl Executor {
             .expect("failed to get initial resume context");
 
         let callstack = CallStack::new(trace_events);
+        let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
             processor,
             host,
@@ -259,6 +277,9 @@ impl Executor {
             root_context,
             current_context: root_context,
             callstack,
+            current_proc: None,
+            debug_vars,
+            last_debug_var_count: 0,
             recent: VecDeque::with_capacity(5),
             cycle: 0,
             stopped: false,

@@ -59,6 +59,11 @@ impl Pane for StackTracePane {
     fn draw(&mut self, frame: &mut Frame<'_>, area: Rect, state: &State) -> Result<(), Report> {
         let mut lines = Vec::default();
         let num_frames = state.executor().callstack.frames().len();
+        // For the top frame, prefer the live AsmOp's context_name over the
+        // frame's cached procedure, which is set once on frame entry and
+        // stays stale for programs that use `exec` instead of `call`.
+        let live_top_name: Option<String> =
+            state.executor().current_asmop.as_ref().map(|op| op.context_name().to_string());
         for (i, frame) in state.executor().callstack.frames().iter().enumerate() {
             let is_top = i + 1 == num_frames;
             let mut parts = vec![];
@@ -71,15 +76,16 @@ impl Pane for StackTracePane {
             */
             let gutter = Span::styled(" ", Color::Gray);
             parts.push(gutter);
-            let name = frame.procedure("");
-            let name = name.as_deref().unwrap_or("<unknown>").to_string();
+            let name = if is_top {
+                live_top_name.clone().or_else(|| frame.procedure("").map(|p| p.to_string()))
+            } else {
+                frame.procedure("").map(|p| p.to_string())
+            };
+            let name = name.unwrap_or_else(|| "<unknown>".to_string());
             let name = if is_top {
                 Span::styled(name, Color::Gray)
             } else {
-                Span::styled(
-                    name,
-                    Style::default().fg(Color::Cyan).bg(Color::Black).add_modifier(Modifier::BOLD),
-                )
+                Span::styled(name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
             };
             parts.push(name);
             if let Some(resolved) = frame.last_resolved(&state.source_manager) {

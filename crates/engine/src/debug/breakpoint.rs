@@ -54,6 +54,8 @@ pub enum BreakpointType {
     StepTo(usize),
     /// Break at the first cycle of the next instruction
     Next,
+    /// Break at the next source line, or the next instruction if no source location is available.
+    NextLine,
     /// Break when we exit the current call frame
     Finish,
     /// Break when any cycle corresponds to a source location whose file matches PATTERN
@@ -100,7 +102,13 @@ impl BreakpointType {
 
     /// Returns true if this breakpoint is internal to the debugger (i.e. not creatable via :b)
     pub fn is_internal(&self) -> bool {
-        matches!(self, BreakpointType::Next | BreakpointType::Step | BreakpointType::Finish)
+        matches!(
+            self,
+            BreakpointType::Next
+                | BreakpointType::NextLine
+                | BreakpointType::Step
+                | BreakpointType::Finish
+        )
     }
 
     /// Returns true if this breakpoint is removed upon being hit
@@ -108,6 +116,7 @@ impl BreakpointType {
         matches!(
             self,
             BreakpointType::Next
+                | BreakpointType::NextLine
                 | BreakpointType::Finish
                 | BreakpointType::Step
                 | BreakpointType::StepN(_)

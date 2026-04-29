@@ -135,6 +135,11 @@ impl Page for Home {
                             },
                             Err(err) => actions.push(Some(Action::TimedStatusLine(err, 5))),
                         },
+                        "vars" | "variables" | "locals" => {
+                            let show_all = rest.trim() == "all";
+                            let result = state.format_variables(show_all);
+                            actions.push(Some(Action::StatusLine(result)));
+                        }
                         _ => {
                             log::debug!("unknown command with arguments: '{cmd} {args}'");
                             actions.push(Some(Action::TimedStatusLine("unknown command".into(), 1)))
@@ -142,11 +147,54 @@ impl Page for Home {
                     },
                     None => match args.trim() {
                         "q" | "quit" => actions.push(Some(Action::Quit)),
-                        "reload" => {
+                        "r" | "reload" | "restart" => {
                             actions.push(Some(Action::Reload));
+                        }
+                        "nl" | "next-line" | "nextline" => {
+                            if state.stopped && !state.executor().stopped {
+                                state.create_breakpoint(BreakpointType::NextLine);
+                                state.stopped = false;
+                                actions.push(Some(Action::Continue));
+                            } else if state.executor().stopped {
+                                actions.push(Some(Action::TimedStatusLine(
+                                    "program has terminated, cannot continue".to_string(),
+                                    3,
+                                )));
+                            }
                         }
                         "debug" => {
                             actions.push(Some(Action::ShowDebug));
+                        }
+                        "vars" | "variables" | "locals" => {
+                            let result = state.format_variables(false);
+                            actions.push(Some(Action::StatusLine(result)));
+                        }
+                        "p" | "proc" | "where" => {
+                            // Show the current procedure name so users can craft
+                            // `b in <pattern>` breakpoints.
+                            let live = state
+                                .executor()
+                                .current_asmop
+                                .as_ref()
+                                .map(|op| op.context_name().to_string());
+                            let frame = state
+                                .executor()
+                                .callstack
+                                .current_frame()
+                                .and_then(|f| f.procedure(""))
+                                .map(|p| p.to_string());
+                            let msg = match (live, frame) {
+                                (Some(l), Some(f)) if l == f => {
+                                    format!("proc: {l}")
+                                }
+                                (Some(l), Some(f)) => {
+                                    format!("proc (live): {l} / (frame): {f}")
+                                }
+                                (Some(l), None) => format!("proc (live): {l}"),
+                                (None, Some(f)) => format!("proc (frame): {f}"),
+                                (None, None) => "proc: <unknown>".to_string(),
+                            };
+                            actions.push(Some(Action::StatusLine(msg)));
                         }
                         invalid => {
                             log::debug!("unknown command: '{invalid}'");
@@ -174,9 +222,24 @@ impl Page for Home {
                     return Ok(None);
                 }
 
+                // If the program has already terminated, there's nothing to run.
+                // Let the user know they can restart with `:r` / `:reload`.
+                if state.executor().stopped {
+                    actions.push(Some(Action::TimedStatusLine(
+                        "program has terminated — use :r to restart".into(),
+                        3,
+                    )));
+                    return Ok(None);
+                }
+
                 let start_cycle = state.executor().cycle;
                 let start_asmop = state.executor().current_asmop.clone();
+                let start_proc = state.current_procedure();
+                let start_line_loc = state.current_display_location();
+                let mut previous_proc = state.current_procedure();
+                let mut pending_called_breakpoints = Vec::new();
                 let mut breakpoints = core::mem::take(&mut state.breakpoints);
+                state.breakpoints_hit.clear();
                 state.stopped = false;
                 let stopped = loop {
                     // If stepping the program results in the program terminating succesfully, stop
@@ -202,7 +265,7 @@ impl Page for Home {
                         continue;
                     }
 
-                    let (_op, is_op_boundary, proc, loc) = {
+                    let (_op, is_op_boundary, proc, loc, line_loc) = {
                         let op = state.executor().current_op;
                         let is_boundary = state
                             .executor()
@@ -210,18 +273,10 @@ impl Page for Home {
                             .as_ref()
                             .map(|_info| true)
                             .unwrap_or(false);
-                        let (proc, loc) = match state.executor().callstack.current_frame() {
-                            Some(frame) => {
-                                let loc = frame
-                                    .recent()
-                                    .back()
-                                    .and_then(|detail| detail.resolve(&state.source_manager))
-                                    .cloned();
-                                (frame.procedure(""), loc)
-                            }
-                            None => (None, None),
-                        };
-                        (op, is_boundary, proc, loc)
+                        let loc = state.current_location();
+                        let line_loc = state.current_display_location();
+                        let proc = state.current_procedure();
+                        (op, is_boundary, proc, loc, line_loc)
                     };
 
                     // Remove all breakpoints triggered at this cycle
@@ -251,6 +306,27 @@ impl Page for Home {
                             return false;
                         }
 
+                        if cycles_stepped > 0
+                            && is_op_boundary
+                            && matches!(&bp.ty, BreakpointType::NextLine)
+                        {
+                            let has_source_context = start_line_loc.is_some() || line_loc.is_some();
+                            let reached_next = if has_source_context {
+                                State::is_next_source_line(
+                                    start_proc.as_deref(),
+                                    start_line_loc.as_ref(),
+                                    proc.as_deref(),
+                                    line_loc.as_ref(),
+                                )
+                            } else {
+                                state.executor().current_asmop != start_asmop
+                            };
+                            if reached_next {
+                                state.breakpoints_hit.push(core::mem::take(bp));
+                                return false;
+                            }
+                        }
+
                         if let Some(loc) = loc.as_ref()
                             && bp.should_break_at(loc)
                         {
@@ -263,16 +339,45 @@ impl Page for Home {
                             return retained;
                         }
 
-                        if let Some(proc) = proc.as_deref()
-                            && bp.should_break_in(proc)
+                        if matches!(&bp.ty, BreakpointType::Called(_))
+                            && let Some(proc) = proc.as_deref()
                         {
-                            let retained = !bp.is_one_shot();
-                            if retained {
-                                state.breakpoints_hit.push(bp.clone());
-                            } else {
-                                state.breakpoints_hit.push(core::mem::take(bp));
+                            let matched = bp.should_break_in(proc);
+                            if !matched {
+                                pending_called_breakpoints.retain(|id| *id != bp.id);
+                                return true;
                             }
-                            return retained;
+
+                            let was_matched = previous_proc
+                                .as_deref()
+                                .is_some_and(|previous| bp.should_break_in(previous));
+                            let matched_at_start = start_proc
+                                .as_deref()
+                                .is_some_and(|start| bp.should_break_in(start));
+                            let pending = pending_called_breakpoints.contains(&bp.id);
+                            let entered_matching_proc = !was_matched && !matched_at_start;
+                            if entered_matching_proc
+                                && state.executor().procedure_has_debug_vars(proc)
+                                && state.executor().last_debug_var_count == 0
+                            {
+                                if !pending {
+                                    pending_called_breakpoints.push(bp.id);
+                                }
+                                return true;
+                            }
+
+                            if entered_matching_proc
+                                || (pending && state.executor().last_debug_var_count > 0)
+                            {
+                                pending_called_breakpoints.retain(|id| *id != bp.id);
+                                let retained = !bp.is_one_shot();
+                                if retained {
+                                    state.breakpoints_hit.push(bp.clone());
+                                } else {
+                                    state.breakpoints_hit.push(core::mem::take(bp));
+                                }
+                                return retained;
+                            }
                         }
 
                         true
@@ -294,6 +399,8 @@ impl Page for Home {
                     if !state.breakpoints_hit.is_empty() {
                         break true;
                     }
+
+                    previous_proc = proc;
                 };
 
                 // Restore the breakpoints state

@@ -5,7 +5,7 @@ use std::{
 };
 
 use compact_str::CompactString;
-use log::{Level, Log};
+use log::{Level, LevelFilter, Log};
 
 static LOGGER: LazyLock<DebugLogger> = LazyLock::new(DebugLogger::default);
 
@@ -22,8 +22,11 @@ struct DebugLoggerImpl {
 
 pub struct LogEntry {
     pub level: Level,
+    #[allow(unused)]
     pub target: CompactString,
+    #[allow(unused)]
     pub file: Option<Cow<'static, str>>,
+    #[allow(unused)]
     pub line: Option<u32>,
     pub message: String,
 }
@@ -32,11 +35,17 @@ pub struct LogEntry {
 pub struct DebugLogger(Arc<Mutex<DebugLoggerImpl>>);
 
 impl Log for DebugLogger {
-    fn enabled(&self, _metadata: &log::Metadata) -> bool {
-        true
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        let guard = self.0.lock().unwrap();
+        guard.inner.as_ref().is_some_and(|inner| inner.enabled(metadata))
     }
 
     fn log(&self, record: &log::Record) {
+        let mut guard = self.0.lock().unwrap();
+        if !guard.inner.as_ref().is_some_and(|inner| inner.enabled(record.metadata())) {
+            return;
+        }
+
         let target = CompactString::new(record.target());
         let file = record
             .file_static()
@@ -49,14 +58,11 @@ impl Log for DebugLogger {
             line: record.line(),
             message: format!("{}", record.args()),
         };
-        let mut guard = self.0.lock().unwrap();
         guard.captured.push_back(entry);
         if guard.captured.len() > HISTORY_SIZE {
             guard.captured.pop_front();
         }
-        if let Some(inner) = guard.inner.as_ref()
-            && inner.enabled(record.metadata())
-        {
+        if let Some(inner) = guard.inner.as_ref() {
             inner.log(record);
         }
     }
@@ -65,11 +71,11 @@ impl Log for DebugLogger {
 }
 
 impl DebugLogger {
-    pub fn install(inner: Box<dyn Log>) {
+    pub fn install_with_max_level(inner: Box<dyn Log>, max_level: LevelFilter) {
         let logger = &*LOGGER;
         logger.set_inner(inner);
         log::set_logger(logger).unwrap_or_else(|err| panic!("failed to install logger: {err}"));
-        log::set_max_level(log::LevelFilter::Trace);
+        log::set_max_level(max_level);
     }
 
     pub fn get() -> &'static Self {

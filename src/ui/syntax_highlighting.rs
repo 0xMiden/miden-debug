@@ -95,6 +95,7 @@ fn default_line_with_selection(
     selected: Range<usize>,
     style: Style,
 ) -> Vec<Span<'_>> {
+    let selected = clamp_byte_selection_to_str(&line, selected);
     let prefix_content =
         core::str::from_utf8(&line.as_bytes()[..selected.start]).expect("invalid selection");
     let selected_content =
@@ -111,6 +112,20 @@ fn default_line_with_selection(
         Span::styled(selected_content.to_string(), style),
         Span::raw(suffix_content.to_string()),
     ]
+}
+
+pub fn clamp_byte_selection_to_str(line: &str, selected: Range<usize>) -> Range<usize> {
+    fn floor_char_boundary(line: &str, idx: usize) -> usize {
+        let mut idx = idx.min(line.len());
+        while idx > 0 && !line.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        idx
+    }
+
+    let start = floor_char_boundary(line, selected.start);
+    let end = floor_char_boundary(line, selected.end).max(start);
+    start..end
 }
 
 /// Syntax highlighting provided by [syntect](https://docs.rs/syntect/latest/syntect/).
@@ -221,6 +236,7 @@ impl HighlighterState for SyntectHighlighterState<'_> {
         selected: Range<usize>,
         style: Style,
     ) -> Vec<Span<'a>> {
+        let selected = clamp_byte_selection_to_str(&line, selected);
         if let Ok(ops) = self.parse_state.parse_line(&line, &self.syntax_set) {
             let use_bg_color = self.use_bg_color;
             let parts = syntax::HighlightIterator::new(
@@ -254,14 +270,21 @@ impl HighlighterState for SyntectHighlighterState<'_> {
 /// Convert syntect [syntax::Style] into ratatui [Style] */
 #[inline]
 pub fn convert_style(syntect_style: syntax::Style, use_bg_color: bool) -> Style {
-    let style = if use_bg_color {
-        let fg = blend_fg_color(syntect_style);
-        let bg = convert_color(syntect_style.background);
-        Style::new().fg(fg).bg(bg)
-    } else {
-        let fg = convert_color(syntect_style.foreground);
-        Style::new().fg(fg)
-    };
+    let fg = syntect_style.foreground;
+    let bg = syntect_style.background;
+    let mut style = Style::new();
+    // Skip transparent colors (alpha=0) to use the terminal's native colors
+    if fg.a > 0 {
+        let fg_color = if use_bg_color {
+            blend_fg_color(syntect_style)
+        } else {
+            convert_color(fg)
+        };
+        style = style.fg(fg_color);
+    }
+    if use_bg_color && bg.a > 0 {
+        style = style.bg(convert_color(bg));
+    }
     let mods = convert_font_style(syntect_style.font_style);
     style.add_modifier(mods)
 }
@@ -270,9 +293,18 @@ pub fn convert_to_syntect_style(style: Style, _use_bg_color: bool) -> syntax::St
     let fg = style.fg.map(convert_to_syntect_color);
     let bg = style.bg.map(convert_to_syntect_color);
     let fs = convert_to_font_style(style.add_modifier);
+    // Use transparent (alpha=0) fallbacks so that convert_style will skip
+    // setting explicit colors, letting the terminal's native colors show through.
+    // This avoids hardcoded White/Black that break on light/dark terminals.
+    let transparent = syntax::Color {
+        r: 0,
+        g: 0,
+        b: 0,
+        a: 0,
+    };
     syntax::Style {
-        foreground: fg.unwrap_or(convert_to_syntect_color(Color::White)),
-        background: bg.unwrap_or(convert_to_syntect_color(Color::Black)),
+        foreground: fg.unwrap_or(transparent),
+        background: bg.unwrap_or(transparent),
         font_style: fs,
     }
 }

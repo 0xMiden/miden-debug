@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use log::Level;
 use miden_assembly_syntax::{Library, diagnostics::Report};
 use miden_core::{
     Word,
@@ -16,18 +17,29 @@ use miden_core::{
 use miden_debug_types::{SourceManager, SourceManagerExt};
 use miden_mast_package::Dependency;
 use miden_processor::{
-    ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt,
+    ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt, ProcessorState,
     advice::{AdviceInputs, AdviceMutation},
     event::{EventHandler, EventName},
     mast::MastForest,
     trace::RowIndex,
 };
 
-use super::{DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent};
+use super::{
+    DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent,
+    trace::read_memory_bytes, trace_event::TRACE_PRINT_LN,
+};
 use crate::{
-    debug::{CallStack, DebugVarTracker},
+    debug::{CallStack, DebugVarTracker, NativePtr},
     felt::FromMidenRepr,
 };
+
+/// Maximum number of bytes for a single `println` output.
+///
+/// A limit is required as `u32::MAX` exceeds the size that strings can take in Miden VM. The limit
+/// is generous and still permits use cases like formatting a large amount of data in storage.
+///
+/// Exceeding the limit likely indicates a bug in the corresponding trace event handling.
+const MAX_PRINTLN_BYTES: usize = 512 * 1024;
 
 /// The [Executor] is responsible for executing a program with the Miden VM.
 ///
@@ -156,18 +168,7 @@ impl Executor {
         }
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
-        let frame_start_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameStart, move |clk, event| {
-            frame_start_events.borrow_mut().insert(clk, event);
-        });
-        let frame_end_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameEnd, move |clk, event| {
-            frame_end_events.borrow_mut().insert(clk, event);
-        });
-        let assertion_events = Rc::clone(&trace_events);
-        host.register_assert_failed_tracer(move |clk, event| {
-            assertion_events.borrow_mut().insert(clk, event);
-        });
+        register_builtin_trace_handlers(&mut host, Rc::clone(&trace_events));
 
         // Set up debug variable tracking
         // Note: Currently no debug var events are emitted (requires new miden-core),
@@ -239,18 +240,7 @@ impl Executor {
             Rc::new(Default::default());
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
-        let frame_start_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameStart, move |clk, event| {
-            frame_start_events.borrow_mut().insert(clk, event);
-        });
-        let frame_end_events = Rc::clone(&trace_events);
-        host.register_trace_handler(TraceEvent::FrameEnd, move |clk, event| {
-            frame_end_events.borrow_mut().insert(clk, event);
-        });
-        let assertion_events = Rc::clone(&trace_events);
-        host.register_assert_failed_tracer(move |clk, event| {
-            assertion_events.borrow_mut().insert(clk, event);
-        });
+        register_builtin_trace_handlers(&mut host, Rc::clone(&trace_events));
 
         let mut processor = FastProcessor::new(self.stack)
             .with_advice(self.advice)
@@ -299,7 +289,14 @@ impl Executor {
             }
             match executor.step() {
                 Ok(_) => continue,
-                Err(_) => break,
+                Err(err) => {
+                    log::warn!(
+                        target: "executor",
+                        "capture_trace stopped early at cycle {}: {err}",
+                        executor.cycle,
+                    );
+                    break;
+                }
             }
         }
         executor.into_execution_trace()
@@ -366,6 +363,81 @@ impl Executor {
         let digest = *lib.digest();
         self.dependency_resolver.insert(digest, lib);
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PrintLnError {
+    #[error("address should fit in u32")]
+    InvalidAddress,
+    #[error("string length should fit in usize")]
+    InvalidLength,
+    #[error("string length {requested} exceeds maximum {max}")]
+    LengthExceeded { requested: usize, max: usize },
+    #[error("memory is not initialized")]
+    MemoryNotInitialized,
+    #[error("failed to read memory: {0}")]
+    MemoryRead(#[from] super::trace::MemoryReadError),
+    #[error("invalid UTF-8")]
+    InvalidUtf8,
+}
+
+fn register_builtin_trace_handlers(
+    host: &mut DebuggerHost<dyn SourceManager>,
+    trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>>,
+) {
+    let frame_start_events = Rc::clone(&trace_events);
+    host.register_trace_handler(TraceEvent::FrameStart, move |process, event| {
+        frame_start_events.borrow_mut().insert(process.clock(), event);
+    });
+    let frame_end_events = Rc::clone(&trace_events);
+    host.register_trace_handler(TraceEvent::FrameEnd, move |process, event| {
+        frame_end_events.borrow_mut().insert(process.clock(), event);
+    });
+
+    host.register_trace_handler(TraceEvent::PrintLn, move |process, _event| {
+        match decode_println(process) {
+            Ok(content) => {
+                log::log!(target: "stdout", Level::Info, "{content}");
+            }
+            Err(err) => {
+                log::warn!(
+                    target: "executor",
+                    "trace.{TRACE_PRINT_LN} failed at cycle {}: {err}",
+                    process.clock(),
+                );
+            }
+        }
+    });
+
+    let assertion_events = Rc::clone(&trace_events);
+    host.register_assert_failed_tracer(move |process, event| {
+        assertion_events.borrow_mut().insert(process.clock(), event);
+    });
+}
+
+/// Decode a `TRACE_PRINT_LN` event into a UTF-8 string.
+///
+/// Expects `[address, length]` on the operand stack. Reads `length` bytes from
+/// `address` in the current context's memory and returns them as a string.
+fn decode_println(process: &ProcessorState<'_>) -> Result<String, PrintLnError> {
+    let addr = u32::try_from(process.get_stack_item(0).as_canonical_u64())
+        .map_err(|_| PrintLnError::InvalidAddress)?;
+    let len = usize::try_from(process.get_stack_item(1).as_canonical_u64())
+        .map_err(|_| PrintLnError::InvalidLength)?;
+    if len > MAX_PRINTLN_BYTES {
+        return Err(PrintLnError::LengthExceeded {
+            requested: len,
+            max: MAX_PRINTLN_BYTES,
+        });
+    }
+    let ptr = NativePtr::from_ptr(addr);
+    let ctx = process.ctx();
+
+    let bytes = read_memory_bytes(ptr, len, |addr| {
+        process.get_mem_value(ctx, addr).ok_or(PrintLnError::MemoryNotInitialized)
+    })?;
+
+    String::from_utf8(bytes).map_err(|_| PrintLnError::InvalidUtf8)
 }
 
 #[track_caller]

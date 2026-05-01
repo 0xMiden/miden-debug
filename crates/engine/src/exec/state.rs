@@ -3,6 +3,7 @@ use std::{
     rc::Rc,
 };
 
+use miden_assembly::SourceManager;
 use miden_core::{
     mast::{MastNode, MastNodeId},
     operations::AssemblyOp,
@@ -12,8 +13,11 @@ use miden_processor::{
     operation::Operation, trace::RowIndex,
 };
 
-use super::{DebuggerHost, ExecutionTrace};
-use crate::debug::{CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo};
+use super::{DebuggerHost, ExecutionTrace, TraceMonitor};
+use crate::{
+    Breakpoint, BreakpointType,
+    debug::{CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo},
+};
 
 /// Resolve a future that is expected to complete immediately (synchronous host methods).
 ///
@@ -172,6 +176,12 @@ impl DebugExecutor {
         false
     }
 
+    pub fn register_trace_monitor_for(&mut self, monitor: TraceMonitor, event: super::TraceEvent) {
+        self.host.register_trace_handler(event, move |state, event| {
+            monitor.handle_event(state.clock(), event)
+        });
+    }
+
     /// Advance the program state by one cycle.
     ///
     /// If the program has already reached its termination state, it returns the same result
@@ -280,6 +290,105 @@ impl DebugExecutor {
         }
     }
 
+    /// Advance the program state until `breakpoint` is hit.
+    ///
+    /// If the program has already reached its termination state, it returns the same result
+    /// as the previous time it was called.
+    pub fn step_until(
+        &mut self,
+        breakpoint: BreakpointType,
+        trace_monitor: Option<TraceMonitor>,
+        source_manager: &dyn SourceManager,
+    ) -> Result<(), ExecutionError> {
+        let start_cycle = self.cycle;
+        let start_clock = self.processor.state().clock();
+        let breakpoint = Breakpoint {
+            id: 0,
+            creation_cycle: start_cycle,
+            ty: breakpoint,
+        };
+        let start_asmop = self.current_asmop.clone();
+        while !self.stopped {
+            match self.step()? {
+                Some(exited)
+                    if exited.should_break_on_exit() && breakpoint.ty == BreakpointType::Finish =>
+                {
+                    return Ok(());
+                }
+                _ => (),
+            }
+
+            // Break on trace events, if monitored
+            if let BreakpointType::Trace(event_id) = breakpoint.ty
+                && let Some(trace_monitor) = trace_monitor.as_ref()
+                && trace_monitor.has_event_occurred_since(start_clock, |event| event == event_id)
+            {
+                return Ok(());
+            }
+
+            let (op, is_op_boundary, proc, loc) = {
+                let op = self.current_op;
+                let is_boundary = self.current_asmop.as_ref().map(|_info| true).unwrap_or(false);
+                let (proc, loc) = match self.callstack.current_frame() {
+                    Some(frame) => {
+                        let loc = frame
+                            .recent()
+                            .back()
+                            .and_then(|detail| detail.resolve(source_manager))
+                            .cloned();
+                        (frame.procedure(""), loc)
+                    }
+                    None => (None, None),
+                };
+                (op, is_boundary, proc, loc)
+            };
+
+            if let Some(op) = op
+                && breakpoint.should_break_for(&op)
+            {
+                return Ok(());
+            }
+
+            if is_op_boundary
+                && let Some(asmop) = self.current_asmop.as_ref()
+                && matches!(breakpoint.ty, BreakpointType::AsmOpcode(asm_opcode) if asmop.op() == asm_opcode)
+            {
+                return Ok(());
+            }
+
+            // Check if `breakpoint` was triggered at this cycle
+            let current_cycle = self.cycle;
+            let cycles_stepped = current_cycle - start_cycle;
+            if let Some(n) = breakpoint.cycles_to_skip(current_cycle)
+                && cycles_stepped >= n
+            {
+                return Ok(());
+            }
+
+            if cycles_stepped > 0
+                && is_op_boundary
+                && matches!(&breakpoint.ty, BreakpointType::Next)
+                && self.current_asmop != start_asmop
+            {
+                return Ok(());
+            }
+
+            if let Some(loc) = loc.as_ref()
+                && breakpoint.should_break_at(loc)
+            {
+                return Ok(());
+            }
+
+            if let Some(proc) = proc.as_deref()
+                && breakpoint.should_break_in(proc)
+            {
+                return Ok(());
+            }
+        }
+
+        Ok(())
+    }
+
     /// Consume the [DebugExecutor], converting it into an [ExecutionTrace] at the current cycle.
     pub fn into_execution_trace(self) -> ExecutionTrace {
         ExecutionTrace {
@@ -297,9 +406,8 @@ mod tests {
 
     use miden_assembly::DefaultSourceManager;
 
-    use crate::exec::Executor;
-
     use super::*;
+    use crate::exec::Executor;
 
     #[test]
     fn callstack_tracks_nested_frame_trace_events() {

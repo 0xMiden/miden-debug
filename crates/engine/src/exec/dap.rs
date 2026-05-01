@@ -192,8 +192,6 @@ fn read_memory_at_current_state(
 
     use miden_assembly_syntax::ast::types::Type;
 
-    const U32_MASK: u64 = u32::MAX as u64;
-
     if expr.count > 1 {
         return Err("-count with value > 1 is not yet implemented".into());
     }
@@ -265,7 +263,7 @@ fn read_memory_at_current_state(
     let mut bytes = Vec::with_capacity(expr.ty.size_in_bytes());
     let mut needed = expr.ty.size_in_bytes();
     for elem in elems {
-        let elem_bytes = ((elem.as_canonical_u64() & U32_MASK) as u32).to_le_bytes();
+        let elem_bytes = super::trace::felt_to_le_bytes(elem);
         let take = core::cmp::min(needed, 4);
         bytes.extend(&elem_bytes[..take]);
         needed -= take;

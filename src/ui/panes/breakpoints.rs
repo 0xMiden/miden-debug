@@ -1,8 +1,5 @@
 use miden_assembly_syntax::diagnostics::Report;
-use ratatui::{
-    prelude::*,
-    widgets::{block::*, *},
-};
+use ratatui::{prelude::*, widgets::*};
 
 use crate::{
     debug::{Breakpoint, BreakpointType},
@@ -205,6 +202,16 @@ impl Pane for BreakpointsPane {
                         gutter,
                         Span::styled("opcode:", yellow),
                         Span::styled(format!("{op}"), gray),
+                    ]),
+                    BreakpointType::AsmOpcode(opcode_name) => Line::from(vec![
+                        gutter,
+                        Span::styled("masm op:", yellow),
+                        Span::styled(*opcode_name, gray),
+                    ]),
+                    BreakpointType::Trace(id) => Line::from(vec![
+                        gutter,
+                        Span::styled("trace:", yellow),
+                        Span::styled(format!("{id}"), gray),
                     ]),
                 };
                 if is_hit {

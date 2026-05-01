@@ -5,9 +5,9 @@ mod input;
 mod linker;
 
 #[cfg(any(feature = "tui", feature = "repl"))]
-mod logger;
+pub mod logger;
 #[cfg(any(feature = "tui", feature = "repl"))]
-pub(crate) mod ui;
+mod ui;
 
 #[cfg(feature = "repl")]
 mod repl;

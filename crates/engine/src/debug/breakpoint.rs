@@ -3,6 +3,7 @@ use std::{ops::Deref, path::Path, str::FromStr};
 use glob::Pattern;
 
 use super::ResolvedLocation;
+use crate::TraceEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Breakpoint {
@@ -22,6 +23,14 @@ impl Default for Breakpoint {
 }
 
 impl Breakpoint {
+    /// Create a new default `Breakpoint` of the given type
+    pub fn new(ty: BreakpointType) -> Self {
+        Self {
+            ty,
+            ..Default::default()
+        }
+    }
+
     /// Return the number of cycles this breakpoint indicates we should skip, or `None` if the
     /// number of cycles is context-specific, or the breakpoint is triggered by something other
     /// than cycle count.
@@ -64,14 +73,16 @@ pub enum BreakpointType {
     /// on LINE
     Line { pattern: Pattern, line: u32 },
     /// Break anytime the given operation occurs
-    #[allow(unused)]
     Opcode(miden_core::operations::Operation),
+    /// Break at the next cycle where the current assembly opcode matches the given name
+    AsmOpcode(&'static str),
     /// Break when any cycle causes us to push a frame for PROCEDURE on the call stack
     Called(Pattern),
+    /// Break when the given trace event occurs
+    Trace(TraceEvent),
 }
 impl BreakpointType {
     /// Return true if this breakpoint indicates we should break for `current_op`
-    #[allow(unused)]
     pub fn should_break_for(&self, current_op: &miden_core::operations::Operation) -> bool {
         match self {
             Self::Opcode(op) => current_op == op,

@@ -40,7 +40,7 @@ serde = { version = "1.0", default-features = false, features = [
     "rc",
 ] }
 serde_json = "1"
-socket2 = { version = "0.5", optional = true }
+socket2 = { version = "0.6", optional = true }
 smallvec = { version = "1.14", default-features = false, features = [
     "union",
     "const_generics",
@@ -48,4 +48,4 @@ smallvec = { version = "1.14", default-features = false, features = [
     "drain_filter",
 ] }
 thiserror = { package = "miden-thiserror", version = "1.0" }
-toml = { version = "0.8", features = ["preserve_order"] }
+toml = { version = "1.1.2", features = ["preserve_order"] }

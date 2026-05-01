@@ -32,6 +32,7 @@ pub enum TraceEvent {
     AssertionFailed(Option<NonZeroU32>),
     Unknown(u32),
 }
+
 impl TraceEvent {
     #[inline(always)]
     pub fn is_frame_start(&self) -> bool {
@@ -54,6 +55,20 @@ impl TraceEvent {
         }
     }
 }
+
+impl core::fmt::Display for TraceEvent {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::FrameStart => f.write_str("FRAME_START"),
+            Self::FrameEnd => f.write_str("FRAME_END"),
+            Self::PrintLn => f.write_str("PRNT"),
+            Self::AssertionFailed(None) => write!(f, "ASSERT_FAILED"),
+            Self::AssertionFailed(Some(id)) => write!(f, "ASSERT_FAILED({id})"),
+            Self::Unknown(id) => write!(f, "{id}"),
+        }
+    }
+}
+
 impl From<u32> for TraceEvent {
     fn from(raw: u32) -> Self {
         match raw {
@@ -64,6 +79,7 @@ impl From<u32> for TraceEvent {
         }
     }
 }
+
 impl From<TraceEvent> for u32 {
     fn from(event: TraceEvent) -> Self {
         match event {

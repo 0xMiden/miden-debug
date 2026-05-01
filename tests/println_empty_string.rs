@@ -1,13 +1,17 @@
 mod common;
 
-use log::Level;
+use std::sync::Arc;
+
+use miden_assembly::DefaultSourceManager;
 use miden_debug::TRACE_PRINT_LN;
 
 #[test]
 fn trace_println_logs_empty_strings() {
     common::init_test_debug_logger();
+
+    let source_manager = Arc::new(DefaultSourceManager::default());
+
     for offset in 0..4 {
-        let before = common::log_count();
         let byte_addr = (278528 + offset) * 4;
 
         let source = format!(
@@ -25,12 +29,8 @@ begin
 end
 "#,
         );
-        common::execute_trace(&source);
-        common::assert_log_message(
-            before,
-            Level::Info,
-            |message| message.is_empty(),
-            "empty passed to println",
-        );
+        common::execute_trace(&source, source_manager.clone());
+        assert_println!(entry => entry.message.is_empty());
+        common::clear_logs();
     }
 }

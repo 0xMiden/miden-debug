@@ -3,12 +3,16 @@
 
 use std::sync::Arc;
 
-use log::Level;
-use miden_assembly::DefaultSourceManager;
-use miden_debug::{Executor, logger::DebugLogger};
+use miden_assembly::SourceManager;
+use miden_debug::{
+    Executor,
+    logger::{self, DebugLogger},
+};
 
-pub fn execute_trace(source: &str) -> miden_debug::ExecutionTrace {
-    let source_manager = Arc::new(DefaultSourceManager::default());
+pub fn execute_trace(
+    source: &str,
+    source_manager: Arc<dyn SourceManager>,
+) -> miden_debug::ExecutionTrace {
     let program = miden_assembly::Assembler::new(source_manager.clone())
         .assemble_program(source)
         .unwrap();
@@ -16,8 +20,10 @@ pub fn execute_trace(source: &str) -> miden_debug::ExecutionTrace {
     Executor::new(vec![]).capture_trace(&program, source_manager)
 }
 
-pub fn execute_debug(source: &str) -> miden_debug::DebugExecutor {
-    let source_manager = Arc::new(DefaultSourceManager::default());
+pub fn execute_debug(
+    source: &str,
+    source_manager: Arc<dyn SourceManager>,
+) -> miden_debug::DebugExecutor {
     let program = miden_assembly::Assembler::new(source_manager.clone())
         .assemble_program(source)
         .unwrap();
@@ -25,41 +31,85 @@ pub fn execute_debug(source: &str) -> miden_debug::DebugExecutor {
     Executor::new(vec![]).into_debug(&program, source_manager)
 }
 
-/// Initializes the debug logger for tests and returns the current log count.
+/// Initializes the debug logger for tests
 ///
 /// # Panics
 ///
 /// Panics if called more than once per process, as integration tests should not share a
 /// `DebugLogger`
-pub fn init_test_debug_logger() -> usize {
+pub fn init_test_debug_logger() {
     DebugLogger::init_for_tests().expect(
         "integration tests should run in different processes to isolate their `DebugLogger`",
     );
-    DebugLogger::get().clone_captured().len()
 }
 
-/// Returns the current number of captured log entries.
-pub fn log_count() -> usize {
-    DebugLogger::get().log_count()
+/// Counts the number of log entries in the global logger which match `predicate`
+pub fn count_matching<F>(predicate: F) -> usize
+where
+    F: FnMut(&logger::LogEntry) -> bool,
+{
+    DebugLogger::get().count_matching(predicate)
 }
 
-/// Returns all log entries captured since the given snapshot index.
-pub fn logs_since(before: usize) -> Vec<miden_debug::logger::LogEntry> {
-    DebugLogger::get().clone_captured().into_iter().skip(before).collect()
+/// Returns true if any entry in the global logger matches `predicate`
+pub fn contains_matching<F>(predicate: F) -> bool
+where
+    F: FnMut(&logger::LogEntry) -> bool,
+{
+    DebugLogger::get().contains_matching(predicate)
 }
 
-pub fn assert_log_message(
-    before: usize,
-    level: Level,
-    predicate: impl Fn(&str) -> bool,
-    description: &str,
-) {
-    let logs = logs_since(before);
-    let matches = logs.iter().any(|entry| entry.level == level && predicate(&entry.message));
-    let observed: Vec<String> = logs
-        .into_iter()
-        .map(|entry| format!("{}: {}", entry.level, entry.message))
-        .collect();
+/// Clear the current contents of the global logger
+///
+/// This does not guarantee that the logger will remain empty, but the buffer is reset
+pub fn clear_logs() {
+    let _ = DebugLogger::get().take_captured();
+}
 
-    assert!(matches, "expected {description}; observed logs since snapshot: {observed:?}",);
+#[macro_export]
+macro_rules! assert_println {
+    ($message:literal) => {
+        $crate::assert_logged!(entry => entry.target == "stdout" && entry.message.contains($message));
+    };
+
+    ($message:expr) => {
+        $crate::assert_logged!(entry => entry.target == "stdout" && entry.message.contains($message));
+    };
+
+    ($entry:ident => $filter:expr) => {{
+        $crate::assert_logged!($entry => $entry.target == "stdout" && $filter);
+    }}
+}
+
+#[macro_export]
+macro_rules! assert_logged {
+    ($message:literal) => {
+        $crate::assert_println!(entry => entry.level > log::LevelFilter::Info && entry.message.contains($message));
+    };
+
+    ($level:ident, $message:expr) => {{
+        let level_filter = stringify!($level).parse::<log::LevelFilter>().expect("invalid log level");
+        $crate::assert_println!(entry => entry.level > level_filter && entry.message.contains($message));
+    }};
+
+    ($entry:ident => $filter:expr) => {{
+        let logger = miden_debug::logger::DebugLogger::get();
+        if !logger.contains_matching(|$entry| $filter) {
+            use core::fmt::Write;
+            let log = logger.clone_captured();
+            let mut buf = String::new();
+            for (i, entry) in log.into_iter().enumerate() {
+                if i > 0 {
+                    buf.push('\n');
+                }
+                write!(&mut buf, "[{}][{}]: {}", &entry.target, entry.level, &entry.message).unwrap();
+            }
+            let expr = stringify!($filter);
+            panic!("expected message matching `{expr}` to have been logged:
+
+======== stdout ===========
+{buf}
+===========================");
+        }
+    }};
 }

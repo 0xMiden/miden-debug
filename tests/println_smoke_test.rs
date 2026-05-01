@@ -1,13 +1,16 @@
 mod common;
 
-use log::Level;
+use std::sync::Arc;
+
+use miden_assembly::DefaultSourceManager;
 use miden_debug::TRACE_PRINT_LN;
 
 #[test]
 fn trace_println_logs_byte_addressed_strings() {
     common::init_test_debug_logger();
+    let source_manager = Arc::new(DefaultSourceManager::default());
+
     for offset in 0..4 {
-        let before = common::log_count();
         let base_elem = 278528 + offset;
         let second_elem = base_elem + 1;
         let byte_addr = base_elem * 4;
@@ -39,12 +42,8 @@ end
 "#,
         );
 
-        common::execute_trace(&source);
-        common::assert_log_message(
-            before,
-            Level::Info,
-            |message| message == "hello",
-            "\"hello\" passed to println",
-        );
+        common::execute_trace(&source, source_manager.clone());
+        assert_println!("hello");
+        common::clear_logs();
     }
 }

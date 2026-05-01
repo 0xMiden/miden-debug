@@ -206,6 +206,16 @@ impl Pane for BreakpointsPane {
                         Span::styled("opcode:", yellow),
                         Span::styled(format!("{op}"), gray),
                     ]),
+                    BreakpointType::AsmOpcode(opcode_name) => Line::from(vec![
+                        gutter,
+                        Span::styled("masm op:", yellow),
+                        Span::styled(*opcode_name, gray),
+                    ]),
+                    BreakpointType::Trace(id) => Line::from(vec![
+                        gutter,
+                        Span::styled("trace:", yellow),
+                        Span::styled(format!("{id}"), gray),
+                    ]),
                 };
                 if is_hit {
                     line.patch_style(Style::default().add_modifier(Modifier::BOLD))

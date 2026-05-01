@@ -1,11 +1,13 @@
 mod common;
 
-use log::Level;
-use miden_debug::TRACE_PRINT_LN;
+use std::sync::Arc;
+
+use miden_assembly::DefaultSourceManager;
+use miden_debug::{BreakpointType, TRACE_PRINT_LN, TraceEvent, TraceMonitor};
 
 #[test]
 fn stepped_trace_println_logs_across_non_printing_steps() {
-    let before = common::init_test_debug_logger();
+    common::init_test_debug_logger();
     let source = format!(
         r#"
 begin
@@ -60,45 +62,36 @@ end
 "#,
     );
 
-    let mut executor = common::execute_debug(&source);
-    let mut hi_seen = false;
-    let mut bye_seen = false;
-    let mut ok_seen = false;
-    let mut step_count = 0;
-    let max_steps = 200;
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let mut executor = common::execute_debug(&source, source_manager.clone());
 
-    while !executor.stopped && step_count < max_steps {
-        executor.step().expect("step should not fail");
+    let trace_monitor = TraceMonitor::default();
+    executor.register_trace_monitor_for(trace_monitor.clone(), miden_debug::TraceEvent::PrintLn);
 
-        let logs = common::logs_since(before);
-        hi_seen |= logs.iter().any(|entry| entry.level == Level::Info && entry.message == "hi");
-        bye_seen |= logs.iter().any(|entry| entry.level == Level::Info && entry.message == "bye");
-        ok_seen |= logs.iter().any(|entry| entry.level == Level::Info && entry.message == "ok");
+    executor
+        .step_until(
+            BreakpointType::Trace(TraceEvent::PrintLn),
+            Some(trace_monitor.clone()),
+            &source_manager,
+        )
+        .unwrap();
+    assert_println!("hi");
 
-        if hi_seen {
-            assert!(
-                logs.iter().any(|entry| entry.level == Level::Info && entry.message == "hi"),
-                "expected \"hi\" to remain visible in captured logs",
-            );
-        }
-        if bye_seen {
-            assert!(
-                logs.iter().any(|entry| entry.level == Level::Info && entry.message == "bye"),
-                "expected \"bye\" to remain visible in captured logs",
-            );
-        }
-        if ok_seen {
-            assert!(
-                logs.iter().any(|entry| entry.level == Level::Info && entry.message == "ok"),
-                "expected \"ok\" to remain visible in captured logs",
-            );
-        }
+    executor
+        .step_until(
+            BreakpointType::Trace(TraceEvent::PrintLn),
+            Some(trace_monitor.clone()),
+            &source_manager,
+        )
+        .unwrap();
+    assert_println!("bye");
 
-        step_count += 1;
-    }
-
-    assert!(executor.stopped, "expected execution to stop within {max_steps} steps");
-    assert!(hi_seen, "expected to observe an info log for \"hi\"");
-    assert!(bye_seen, "expected to observe an info log for \"bye\"");
-    assert!(ok_seen, "expected to observe an info log for \"ok\"");
+    executor
+        .step_until(
+            BreakpointType::Trace(TraceEvent::PrintLn),
+            Some(trace_monitor.clone()),
+            &source_manager,
+        )
+        .unwrap();
+    assert_println!("ok");
 }

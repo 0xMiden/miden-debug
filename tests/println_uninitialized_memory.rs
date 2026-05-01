@@ -1,11 +1,14 @@
 mod common;
 
+use std::sync::Arc;
+
 use log::Level;
+use miden_assembly::DefaultSourceManager;
 use miden_debug::TRACE_PRINT_LN;
 
 #[test]
 fn trace_println_uninitialized_memory_logs_warning_and_continues_execution() {
-    let before = common::init_test_debug_logger();
+    common::init_test_debug_logger();
     let source = format!(
         r#"
 begin
@@ -23,17 +26,13 @@ begin
 end
 "#,
     );
-    let trace = common::execute_trace(&source);
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let trace = common::execute_trace(&source, source_manager);
 
     assert_eq!(
         trace.read_memory_element(278529).map(|f| f.as_canonical_u64()),
         Some(42),
         "expected execution to continue and write 42 to memory",
     );
-    common::assert_log_message(
-        before,
-        Level::Warn,
-        |message| message.contains("memory is not initialized"),
-        "printing string from uninitialized memory should log warning",
-    );
+    assert_logged!(entry => entry.level == Level::Warn && entry.message.contains("memory is not initialized"));
 }

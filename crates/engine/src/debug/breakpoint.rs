@@ -2,9 +2,8 @@ use std::{ops::Deref, path::Path, str::FromStr};
 
 use glob::Pattern;
 
-use crate::TraceEvent;
-
 use super::ResolvedLocation;
+use crate::TraceEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Breakpoint {

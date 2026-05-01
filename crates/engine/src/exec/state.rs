@@ -406,9 +406,8 @@ mod tests {
 
     use miden_assembly::DefaultSourceManager;
 
-    use crate::exec::Executor;
-
     use super::*;
+    use crate::exec::Executor;
 
     #[test]
     fn callstack_tracks_nested_frame_trace_events() {

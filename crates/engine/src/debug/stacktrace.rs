@@ -90,7 +90,15 @@ impl CallStack {
     pub fn next(&mut self, info: &StepInfo<'_>) -> Option<CallFrame> {
         let procedure = info.asmop.map(|op| self.cache_procedure_name(op.context_name()));
 
-        let event = self.trace_events.borrow().get(&info.clk).copied();
+        let event = {
+            let mut trace_events = self.trace_events.borrow_mut();
+            match trace_events.first_key_value() {
+                Some((clk, _)) if *clk <= info.clk => {
+                    trace_events.pop_first().map(|(_, event)| event)
+                }
+                _ => None,
+            }
+        };
         log::trace!(
             "handling {:?}/{:?} at cycle {}: {:?}",
             info.control,
@@ -98,7 +106,8 @@ impl CallStack {
             info.clk,
             &event
         );
-        let popped_frame = self.handle_trace_event(event, procedure.as_ref());
+        let is_frame_start = event.is_some_and(|event| event.is_frame_start());
+        let popped_frame = self.handle_trace_event(event);
         let is_frame_end = popped_frame.is_some();
 
         match info.control {
@@ -126,7 +135,7 @@ impl CallStack {
             return popped_frame;
         };
 
-        if is_frame_end {
+        if is_frame_start || is_frame_end {
             return popped_frame;
         }
 
@@ -204,21 +213,18 @@ impl CallStack {
         }
     }
 
-    fn handle_trace_event(
-        &mut self,
-        event: Option<TraceEvent>,
-        procedure: Option<&Rc<str>>,
-    ) -> Option<CallFrame> {
+    fn handle_trace_event(&mut self, event: Option<TraceEvent>) -> Option<CallFrame> {
         // Do we need to handle any frame events?
         if let Some(event) = event {
             match event {
                 TraceEvent::FrameStart => {
                     // Record the fact that we exec'd a new procedure in the op context
                     if let Some(current_frame) = self.frames.last_mut() {
-                        current_frame.push_exec(procedure.cloned());
+                        current_frame.push_exec(None);
                     }
-                    // Push a new frame
-                    self.frames.push(CallFrame::new(procedure.cloned()));
+                    // The trace decorator is emitted in the caller, immediately before the exec.
+                    // Leave the new frame unnamed until the first callee op provides its context.
+                    self.frames.push(CallFrame::new(None));
                 }
                 TraceEvent::Unknown(code) => log::debug!("unknown trace event: {code}"),
                 TraceEvent::FrameEnd => {

@@ -16,7 +16,6 @@ use miden_processor::{
     advice::AdviceMutation,
     event::{EventError, EventHandler, EventHandlerRegistry},
     mast::MastForest,
-    trace::RowIndex,
 };
 
 use super::{TraceEvent, TraceHandler};
@@ -60,7 +59,7 @@ where
     /// Register a trace handler for `event`
     pub fn register_trace_handler<F>(&mut self, event: TraceEvent, callback: F)
     where
-        F: FnMut(RowIndex, TraceEvent) + 'static,
+        F: FnMut(&ProcessorState<'_>, TraceEvent) + 'static,
     {
         let key = match event {
             TraceEvent::AssertionFailed(None) => u32::MAX,
@@ -72,7 +71,7 @@ where
     /// Register a handler to be called when an assertion in the VM fails
     pub fn register_assert_failed_tracer<F>(&mut self, callback: F)
     where
-        F: FnMut(RowIndex, TraceEvent) + 'static,
+        F: FnMut(&ProcessorState<'_>, TraceEvent) + 'static,
     {
         self.on_assert_failed = Some(Box::new(callback));
     }
@@ -81,9 +80,13 @@ where
     ///
     /// This is called externally when `step()` returns an assertion error, since
     /// `on_assert_failed` no longer exists on the Host trait in 0.21.
-    pub fn handle_assert_failed(&mut self, clk: RowIndex, err_code: Option<NonZeroU32>) {
+    pub fn handle_assert_failed(
+        &mut self,
+        process: &ProcessorState<'_>,
+        err_code: Option<NonZeroU32>,
+    ) {
         if let Some(handler) = self.on_assert_failed.as_mut() {
-            handler(clk, TraceEvent::AssertionFailed(err_code));
+            handler(process, TraceEvent::AssertionFailed(err_code));
         }
     }
 
@@ -145,10 +148,9 @@ where
 
     fn on_trace(&mut self, process: &ProcessorState<'_>, trace_id: u32) -> Result<(), TraceError> {
         let event = TraceEvent::from(trace_id);
-        let clk = process.clock();
         if let Some(handlers) = self.tracing_callbacks.get_mut(&trace_id) {
             for handler in handlers.iter_mut() {
-                handler(clk, event);
+                handler(process, event);
             }
         }
         Ok(())

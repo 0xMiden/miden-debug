@@ -1,12 +1,14 @@
 use miden_core::Word;
-use miden_processor::{ContextId, FastProcessor, Felt, StackInputs, StackOutputs, trace::RowIndex};
+use miden_processor::{
+    ContextId, FastProcessor, Felt, ProcessorState, StackInputs, StackOutputs, trace::RowIndex,
+};
 use smallvec::SmallVec;
 
 use super::TraceEvent;
 use crate::{debug::NativePtr, felt::FromMidenRepr};
 
-/// A callback to be executed when a [TraceEvent] occurs at a given clock cycle
-pub type TraceHandler = dyn FnMut(RowIndex, TraceEvent);
+/// A callback to be executed when a [TraceEvent] occurs
+pub type TraceHandler = dyn FnMut(&ProcessorState<'_>, TraceEvent);
 
 /// Occurs when an attempt to read memory of the VM fails
 #[derive(Debug, thiserror::Error)]
@@ -118,31 +120,15 @@ impl ExecutionTrace {
         ctx: ContextId,
         clk: RowIndex,
     ) -> Result<Vec<u8>, MemoryReadError> {
-        const U32_MASK: u64 = u32::MAX as u64;
         let size = ty.size_in_bytes();
-        let mut buf = Vec::with_capacity(size);
-
-        let size_in_felts = ty.size_in_felts();
-        let mut elems = Vec::with_capacity(size_in_felts);
 
         if addr.is_element_aligned() {
-            for i in 0..size_in_felts {
-                let addr = addr.addr.checked_add(i as u32).ok_or(MemoryReadError::OutOfBounds)?;
-                elems.push(self.read_memory_element_in_context(addr, ctx, clk).unwrap_or_default());
-            }
+            read_memory_bytes(addr, size, |addr| {
+                Ok(self.read_memory_element_in_context(addr, ctx, clk).unwrap_or_default())
+            })
         } else {
-            return Err(MemoryReadError::UnalignedRead);
+            Err(MemoryReadError::UnalignedRead)
         }
-
-        let mut needed = size - buf.len();
-        for elem in elems {
-            let bytes = ((elem.as_canonical_u64() & U32_MASK) as u32).to_le_bytes();
-            let take = core::cmp::min(needed, 4);
-            buf.extend(&bytes[0..take]);
-            needed -= take;
-        }
-
-        Ok(buf)
     }
 
     /// Read a value of the given type, given an address in Rust's address space
@@ -175,6 +161,42 @@ impl ExecutionTrace {
         }
         Some(T::from_felts(&felts))
     }
+}
+
+pub(crate) fn felt_to_le_bytes(elem: Felt) -> [u8; 4] {
+    ((elem.as_canonical_u64() & u32::MAX as u64) as u32).to_le_bytes()
+}
+
+/// Reads `size` bytes from memory, starting at `ptr`. Handles `ptr`'s offset.
+///
+/// The `read_elem` callback is used to fetch an element from an element address.
+pub(crate) fn read_memory_bytes<E>(
+    ptr: NativePtr,
+    size: usize,
+    mut read_elem: impl FnMut(u32) -> Result<Felt, E>,
+) -> Result<Vec<u8>, E>
+where
+    E: From<MemoryReadError>,
+{
+    if size == 0 {
+        return Ok(Vec::new());
+    }
+
+    let start = usize::from(ptr.offset);
+    let end = start.checked_add(size).ok_or_else(|| E::from(MemoryReadError::OutOfBounds))?;
+    let num_elements = end.div_ceil(4);
+
+    let mut bytes = Vec::with_capacity(num_elements.saturating_mul(4));
+    for index in 0..num_elements {
+        let index = u32::try_from(index).map_err(|_| E::from(MemoryReadError::OutOfBounds))?;
+        let elem_addr = ptr
+            .addr
+            .checked_add(index)
+            .ok_or_else(|| E::from(MemoryReadError::OutOfBounds))?;
+        bytes.extend(felt_to_le_bytes(read_elem(elem_addr)?));
+    }
+
+    Ok(bytes[start..end].to_vec())
 }
 
 #[cfg(test)]

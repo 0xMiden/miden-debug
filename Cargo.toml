@@ -41,22 +41,48 @@ name = "miden-debug"
 path = "src/main.rs"
 test = false
 bench = false
-required-features = ["tui"]
+required-features = ["std"]
 
 [[example]]
 name = "compile-masm"
 required-features = ["std"]
 
+[[test]]
+name = "println_smoke_test"
+required-features = ["tui"]
+
+[[test]]
+name = "println_empty_string"
+required-features = ["tui"]
+
+[[test]]
+name = "println_invalid_utf8"
+required-features = ["tui"]
+
+[[test]]
+name = "println_oversized_length"
+required-features = ["tui"]
+
+[[test]]
+name = "println_uninitialized_memory"
+required-features = ["tui"]
+
+[[test]]
+name = "println_multiple_prints"
+required-features = ["tui"]
+
 [features]
 default = ["tui", "dap"]
 tui = ["std", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect", "miden-debug-engine/tui"]
+repl = ["std", "dep:env_logger", "dep:rustyline", "miden-debug-engine/tui"]
 dap = ["dep:dap", "dep:socket2", "miden-debug-engine/dap"]
-std = ["dep:glob", "clap/std", "clap/env", "miden-assembly-syntax/std", "miden-debug-engine/std"]
+std = ["dep:glob", "clap/std", "clap/env", "compact_str/std", "miden-assembly-syntax/std", "miden-debug-engine/std"]
 proptest = ["dep:proptest", "miden-debug-engine/proptest"]
 
 [dependencies]
 clap = { version = "4.5", default-features = false, features = ["derive", "std", "env", "help", "suggestions", "error-context"]}
-crossterm = { version = "0.28.1", optional = true, features = ["event-stream"] }
+crossterm = { version = "0.29.0", optional = true, features = ["event-stream"] }
+compact_str = { version = "0.9", default-features = false }
 dap = { workspace = true, optional = true }
 miden-debug-engine.workspace = true
 serde_json = "1"
@@ -72,14 +98,14 @@ miden-processor = { version = "0.22", default-features = false }
 miden-protocol = { version = "0.14", default-features = false }
 miden-tx = { version = "0.14", default-features = false }
 num-traits = "0.2"
-ratatui = { version = "0.29.0", optional = true }
+ratatui = { version = "0.30.0", optional = true }
 rustc-demangle = { version = "0.1", features = ["std"] }
 serde = { version = "1.0", default-features = false, features = [
     "serde_derive",
     "alloc",
     "rc",
 ] }
-signal-hook = { version = "0.3.17", optional = true }
+signal-hook = { version = "0.4.4", optional = true }
 smallvec = { version = "1.14", default-features = false, features = [
     "union",
     "const_generics",
@@ -94,10 +120,11 @@ syntect = { version = "5.2.0", optional = true, default-features = false, featur
     "regex-onig",
 ] }
 thiserror = { package = "miden-thiserror", version = "1.0" }
-toml = { version = "0.8", features = ["preserve_order"] }
-tui-input = { version = "0.11", optional = true }
+toml = { version = "1.1.2", features = ["preserve_order"] }
+tui-input = { version = "0.15", optional = true }
+rustyline = { version = "18.0", optional = true }
 
-socket2 = { version = "0.5", optional = true }
+socket2 = { version = "0.6", optional = true }
 tokio = { version = "1.39.2", features = ["rt", "time", "macros", "rt-multi-thread"] }
 tokio-util = "0.7.11"
 futures = "0.3.30"

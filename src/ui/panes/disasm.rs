@@ -1,8 +1,5 @@
 use miden_assembly_syntax::diagnostics::Report;
-use ratatui::{
-    prelude::*,
-    widgets::{block::*, *},
-};
+use ratatui::{prelude::*, widgets::*};
 
 use crate::ui::{action::Action, panes::Pane, state::State, tui::Frame};
 
@@ -57,9 +54,21 @@ impl Pane for DisassemblyPane {
     }
 
     fn draw(&mut self, frame: &mut Frame<'_>, area: Rect, state: &State) -> Result<(), Report> {
+        // Prefer the live AsmOp's context_name — the frame's procedure is sticky
+        // (set once on frame entry) so for programs that use `exec` instead of
+        // `call` the entire run appears to stay in the first seen procedure.
+        let live_proc_name =
+            state.executor().current_asmop.as_ref().map(|op| op.context_name().to_string());
+
         let (current_proc, lines) = match state.executor().callstack.current_frame() {
             None => {
-                let proc = Line::from("in <unknown>").right_aligned();
+                let proc = Line::from(
+                    live_proc_name
+                        .as_deref()
+                        .map(|p| format!("in {p}"))
+                        .unwrap_or_else(|| "in <unknown>".to_string()),
+                )
+                .right_aligned();
                 (
                     proc,
                     state
@@ -71,9 +80,10 @@ impl Pane for DisassemblyPane {
                 )
             }
             Some(frame) => {
-                let proc = frame
-                    .procedure("")
-                    .map(|proc| Line::from(format!("in {proc}")))
+                let proc_name =
+                    live_proc_name.clone().or_else(|| frame.procedure("").map(|p| p.to_string()));
+                let proc = proc_name
+                    .map(|p| Line::from(format!("in {p}")))
                     .unwrap_or_else(|| Line::from("in <unknown>"))
                     .right_aligned();
                 (

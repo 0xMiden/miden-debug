@@ -11,6 +11,7 @@ mod host;
 mod state;
 mod trace;
 mod trace_event;
+mod trace_monitor;
 mod tx_executor;
 
 #[cfg(feature = "dap")]
@@ -28,5 +29,6 @@ pub use self::{
     host::DebuggerHost,
     state::DebugExecutor,
     trace::{ExecutionTrace, TraceHandler},
-    trace_event::TraceEvent,
+    trace_event::{TRACE_PRINT_LN, TraceEvent},
+    trace_monitor::TraceMonitor,
 };

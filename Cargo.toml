@@ -3,7 +3,7 @@ members = [".", "crates/dap", "crates/engine"]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.1"
+version = "0.7.0"
 rust-version = "1.92"
 authors = ["Miden contributors"]
 repository = "https://github.com/0xMiden/miden-debug"
@@ -16,8 +16,8 @@ readme = "README.md"
 edition = "2024"
 
 [workspace.dependencies]
-dap = { package = "miden-debug-dap", version = "0.6.1", path = "crates/dap", features = ["client"] }
-miden-debug-engine = { version = "0.6.1", path = "crates/engine", default-features = false }
+dap = { package = "miden-debug-dap", version = "0.7.0", path = "crates/dap", features = ["client"] }
+miden-debug-engine = { version = "0.7.0", path = "crates/engine", default-features = false }
 
 [package]
 name = "miden-debug"

@@ -6,6 +6,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.6.1...miden-debug-v0.7.0) - 2026-05-01
+
+### Added
+
+- implement more ergonomic testing primitives, update tests
+- enable `println` via trace
+- *(ui)* add :proc / :p / :where command to show current procedure
+- add REPL mode as alternative to TUI debugger
+- add vars command to display debug variables
+- record log targets in DebugLogger
+
+### Fixed
+
+- use released miden vm debug APIs
+- *(ui)* avoid startup trace capture hang
+- resolve source variables from frame base
+- *(ui)* display live procedure in disassembly and stacktrace
+- *(ui)* procedure breakpoints match exec'd procedures
+- cleanup
+- use human-readable breakpoint display in REPL
+- FrameBase resolution
+- adapt debug variable tracking to v0.22 API
+
+### Other
+
+- fix formatting
+- update dependencies
+- expand on integration tests README
+- rename MAX_CAPTURED_LOGS to HISTORY_SIZE to more accurately describe its semantics
+- make `DebugLogger::install` propagate `Err` instead of panic
+- remove test of log plumbing
+- make `println` tests integration tests
+- output `println` content to `DebugLogger`
+- increase max number of entries in DebugLogger
+- add helpers to use DebugLogger in tests
+- fix formatting after rebase
+- apply rustfmt formatting
+
 ## [0.6.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.6.0...miden-debug-v0.6.1) - 2026-04-08
 
 ### Added

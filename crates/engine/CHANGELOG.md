@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.6.1...miden-debug-engine-v0.7.0) - 2026-05-01
+
+### Added
+
+- implement more ergonomic testing primitives, update tests
+- enable `println` via trace
+- Add `TraceEvent::PrintLn`
+- add vars command to display debug variables
+
+### Fixed
+
+- improve calltrace
+- resolve source variables from frame base
+- cleanup
+- FrameBase resolution
+- adapt debug variable tracking to v0.22 API
+
+### Other
+
+- fix formatting
+- update dependencies
+- output `println` content to `DebugLogger`
+- change TRACE_PRINT_LN mnemonic
+- cleanup log
+- explain the selection of MAX_PRINTLN_BYTES
+- limit length of message for `TRACE_PRINT_LN`
+- don't panic in `decode_println`
+- log errors in `capture_trace`
+- Make `TraceHandler` take `ProcessorState` as arg
+- fix formatting after rebase
+- apply rustfmt formatting
+
 ## [0.6.1](https://github.com/0xMiden/miden-debug/releases/tag/miden-debug-engine-v0.6.1) - 2026-04-08
 
 ### Fixed

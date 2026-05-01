@@ -4,10 +4,7 @@ use miden_assembly_syntax::{
     debuginfo::{SourceFile, SourceId, SourceSpan},
     diagnostics::{Report, SourceCode},
 };
-use ratatui::{
-    prelude::*,
-    widgets::{block::*, *},
-};
+use ratatui::{prelude::*, widgets::*};
 
 use crate::{
     debug::ResolvedLocation,

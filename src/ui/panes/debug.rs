@@ -2,10 +2,7 @@ use std::collections::VecDeque;
 
 use crossterm::event::KeyCode;
 use miden_assembly_syntax::diagnostics::Report;
-use ratatui::{
-    prelude::*,
-    widgets::{block::*, *},
-};
+use ratatui::{prelude::*, widgets::*};
 
 use crate::{
     logger::{DebugLogger, LogEntry},

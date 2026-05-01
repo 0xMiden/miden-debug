@@ -1,8 +1,5 @@
 use miden_assembly_syntax::diagnostics::Report;
-use ratatui::{
-    prelude::*,
-    widgets::{block::*, *},
-};
+use ratatui::{prelude::*, widgets::*};
 
 use crate::ui::{action::Action, panes::Pane, state::State, tui::Frame};
 

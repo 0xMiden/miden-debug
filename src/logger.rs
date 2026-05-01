@@ -8,7 +8,8 @@ use compact_str::CompactString;
 use log::{Level, LevelFilter, Log};
 
 static LOGGER: LazyLock<DebugLogger> = LazyLock::new(DebugLogger::default);
-const MAX_CAPTURED_LOGS: usize = 1000;
+
+const HISTORY_SIZE: usize = 1000;
 
 #[derive(Default)]
 struct DebugLoggerImpl {
@@ -56,7 +57,7 @@ impl Log for DebugLogger {
             message: format!("{}", record.args()),
         };
         guard.captured.push_back(entry);
-        if guard.captured.len() > MAX_CAPTURED_LOGS {
+        if guard.captured.len() > HISTORY_SIZE {
             guard.captured.pop_front();
         }
         if let Some(inner) = guard.inner.as_ref() {

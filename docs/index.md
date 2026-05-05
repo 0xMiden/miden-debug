@@ -16,7 +16,7 @@ The same crate ships three execution modes:
 | Mode | Flag | When to use |
 | ---- | ---- | ----------- |
 | **TUI** (default) | _none_ | Full-screen interactive UI with live source, disassembly, operand stack, call stack, and breakpoints. See [TUI mode](./tui.md). |
-| **REPL** | `--repl` | Plain-text interactive prompt — useful over slow terminals, for scripting, or when ANSI/UTF-8 features aren't available. See [REPL mode](./repl.md). |
+| **REPL** | `--repl` | Plain-text interactive prompt — useful over slow terminals, for scripting, or when ANSI/UTF-8 features aren't available. **Opt-in:** rebuild with `--features repl`. See [REPL mode](./repl.md). |
 | **DAP client** | `--dap-connect ADDR` | Connect to a remote DAP server (typically `miden-client exec --start-debug-adapter`) and drive it through the same TUI. See [DAP](./dap.md). |
 
 The TUI and REPL share the same execution engine and breakpoint model — the
@@ -31,8 +31,15 @@ cargo build --release --bin miden-debug
 ./target/release/miden-debug --version
 ```
 
-By default the build enables `tui`, `repl`, and `dap` features. Drop them with
-`--no-default-features` and re-add what you need.
+The default build enables the `tui` and `dap` features. **REPL mode is opt-in**
+— rebuild with `--features repl` to use `--repl`:
+
+```bash
+cargo build --release --features repl --bin miden-debug
+```
+
+To strip everything except what you need, combine `--no-default-features` with
+the explicit feature list, for example `--features tui,repl`.
 
 ## Quick start
 

@@ -19,6 +19,20 @@ when:
 miden-debug --repl sum.masm
 ```
 
+:::warning REPL is opt-in
+
+The default build enables `tui` and `dap` only. Rebuild with the `repl`
+feature to make `--repl` actually drop into the prompt:
+
+```bash
+cargo build --release --features repl --bin miden-debug
+```
+
+Without that feature the `--repl` flag is accepted but silently ignored —
+the binary falls back to the TUI.
+
+:::
+
 Every TUI capability is reachable via REPL commands; the differences are
 cosmetic. Breakpoint expressions accepted by the REPL match exactly those
 accepted by the TUI's `:break` prompt.

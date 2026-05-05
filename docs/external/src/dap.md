@@ -169,20 +169,3 @@ that IDE clients can hook:
 
 The TUI client uses these to populate the operand-stack, memory, and call-stack
 panes; IDE extensions use them for their inspector views.
-
-## Limitations and caveats
-
-- **The DAP server accepts a single client.** Once connected, the listener
-  closes; reconnect by restarting `miden-client exec`.
-- **Stepping granularity.** DAP `step` advances by one VM cycle, DAP `next`
-  by one MASM operation. This matches the TUI's `s` and `n` shortcuts.
-- **Source mapping.** User code inside transaction scripts only resolves to
-  real source paths when `miden-client` was built with the
-  `compile_tx_script(&Path)` patch — i.e. the
-  [`feature/vscode-dap-plugin`](https://github.com/walnuthq/miden-client/tree/feature/vscode-dap-plugin)
-  branch as of this writing.
-- **Initial stop is in kernel code.** When debugging a transaction script,
-  the entry point is the kernel wrapper (`::$exec::$main`,
-  `tx_script_main.masm`) — execution reaches user code only after the
-  prologue and `dyncall`. For a useful first stop, set a line breakpoint
-  on the user script before continuing.

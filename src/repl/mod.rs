@@ -20,8 +20,7 @@ pub fn run_with_log_level(
 ) -> Result<(), Report> {
     // Install the logger; propagate any failure as a diagnostic so the
     // session doesn't silently start with a half-installed logger.
-    crate::logger::DebugLogger::install_with_max_level(logger, max_level)
-        .into_diagnostic()?;
+    crate::logger::DebugLogger::install_with_max_level(logger, max_level).into_diagnostic()?;
 
     let mut session = ReplSession::new(config)?;
     session.run()

@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.7.0...miden-debug-v0.7.1) - 2026-05-06
+
+### Fixed
+
+- remove miden-tx/miden-protocol dependencies
+- *(repl)* fix rustfmt
+- *(repl)* make --repl build cleanly and document it as opt-in
+
+### Other
+
+- merge main into next
+- build docs in CI
+- add user-facing debugger documentation
+
 ## [0.7.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.6.1...miden-debug-v0.7.0) - 2026-05-01
 
 ### Added

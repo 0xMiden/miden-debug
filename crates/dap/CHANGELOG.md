@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-dap-v0.7.0...miden-debug-dap-v0.7.1) - 2026-05-06
+
+### Fixed
+
+- remove miden-tx/miden-protocol dependencies
+- separate versioning of miden-debug and its subcrates
+
+### Other
+
+- merge main into next
+
 ## [0.7.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-dap-v0.6.1...miden-debug-dap-v0.7.0) - 2026-05-01
 
 ### Other

@@ -1,4 +1,4 @@
-pub use miden_debug_engine::{debug, exec, felt};
+pub use miden_debug_engine::{debug, debug_types, events, exec, felt, processor};
 
 mod config;
 mod input;
@@ -22,7 +22,9 @@ pub use self::{
     config::{ColorChoice, DebuggerConfig},
     debug::*,
     exec::*,
-    felt::{Felt, FromMidenRepr, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack},
+    felt::{
+        Felt, FromMidenRepr, RawFelt, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack,
+    },
     input::InputFile,
     linker::{LibraryKind, LinkLibrary},
 };

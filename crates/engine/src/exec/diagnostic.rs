@@ -10,7 +10,7 @@ use miden_processor::{
     trace::RowIndex,
 };
 
-use super::{ProgramExecutor, TraceEvent};
+use super::TraceEvent;
 
 // DIAGNOSTIC HOST WRAPPER
 // ================================================================================================
@@ -141,8 +141,8 @@ pub struct DiagnosticExecutor {
     options: ExecutionOptions,
 }
 
-impl ProgramExecutor for DiagnosticExecutor {
-    fn new(
+impl DiagnosticExecutor {
+    pub fn new(
         stack_inputs: StackInputs,
         advice_inputs: AdviceInputs,
         options: ExecutionOptions,
@@ -154,7 +154,7 @@ impl ProgramExecutor for DiagnosticExecutor {
         }
     }
 
-    fn execute<H: Host + Send>(
+    pub fn execute_async<H: Host + Send>(
         self,
         program: &Program,
         host: &mut H,

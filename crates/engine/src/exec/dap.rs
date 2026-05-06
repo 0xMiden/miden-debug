@@ -23,7 +23,7 @@ use miden_processor::{
     trace::RowIndex,
 };
 
-use super::{ProgramExecutor, TraceEvent, state::extract_current_op};
+use super::{TraceEvent, state::extract_current_op};
 use crate::debug::{FormatType, ReadMemoryExpr};
 
 // DAP CONFIG
@@ -446,8 +446,8 @@ pub struct DapExecutor {
 const SCOPE_STACK: i64 = 1;
 const SCOPE_MEMORY: i64 = 2;
 
-impl ProgramExecutor for DapExecutor {
-    fn new(
+impl DapExecutor {
+    pub fn new(
         stack_inputs: StackInputs,
         advice_inputs: AdviceInputs,
         options: ExecutionOptions,
@@ -461,7 +461,7 @@ impl ProgramExecutor for DapExecutor {
         }
     }
 
-    fn execute<H: Host + Send>(
+    pub fn execute_async<H: Host + Send>(
         self,
         program: &Program,
         host: &mut H,

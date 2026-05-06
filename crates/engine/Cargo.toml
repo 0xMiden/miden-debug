@@ -12,6 +12,9 @@ keywords.workspace = true
 license.workspace = true
 edition.workspace = true
 
+[lib]
+doctest = false
+
 [features]
 default = ["std"]
 tui = []
@@ -20,17 +23,16 @@ std = ["dep:glob", "clap/std", "clap/env", "miden-assembly-syntax/std"]
 proptest = ["dep:proptest"]
 
 [dependencies]
-clap = { version = "4.5", default-features = false, features = ["derive", "std", "env", "help", "suggestions", "error-context"] }
+clap.workspace = true
 dap = { workspace = true, optional = true, features = ["client"] }
 glob = { version = "0.3.1", optional = true }
-log = "0.4"
+log.workspace = true
 miden-assembly = { version = "0.22", default-features = false }
 miden-assembly-syntax = { version = "0.22", default-features = false }
 miden-core = { version = "0.22", default-features = false }
 miden-debug-types = { version = "0.22", default-features = false }
 miden-mast-package = { version = "0.22", default-features = false }
 miden-processor = { version = "0.22", default-features = false }
-miden-tx = { version = "0.14", default-features = false }
 num-traits = "0.2"
 proptest = { version = "1.4", optional = true }
 rustc-demangle = { version = "0.1", features = ["std"] }
@@ -47,5 +49,5 @@ smallvec = { version = "1.14", default-features = false, features = [
     "const_new",
     "drain_filter",
 ] }
-thiserror = { package = "miden-thiserror", version = "1.0" }
+thiserror.workspace = true
 toml = { version = "1.1.2", features = ["preserve_order"] }

@@ -81,6 +81,31 @@ pub struct DebugExecutor {
     pub stopped: bool,
 }
 
+impl DebugExecutor {
+    /// Read an element from memory at address `addr`, in the current context
+    pub fn read_element(&self, addr: u32) -> Felt {
+        self.processor
+            .memory()
+            .read_element(self.current_context, Felt::from_u32(addr))
+            .unwrap()
+    }
+
+    /// Read a word from memory at address `addr`, in the current context
+    pub fn read_word(&self, addr: u32) -> miden_core::Word {
+        self.processor
+            .memory()
+            .read_word(self.current_context, Felt::from_u32(addr), self.processor.state().clock())
+            .unwrap()
+    }
+
+    /// Get the current operand stack as a slice - the top of the stack is the last item in the slice
+    ///
+    /// This returns the entire stack, not just the top 16 elements
+    pub fn stack(&self) -> &[Felt] {
+        self.processor.stack()
+    }
+}
+
 /// Extract the current operation and assembly info from the continuation stack
 /// before a step is executed. This lets us know what operation will run next.
 pub(crate) fn extract_current_op(

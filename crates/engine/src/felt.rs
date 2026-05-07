@@ -1,5 +1,5 @@
 use miden_core::{Word, field::PrimeField64};
-use miden_processor::Felt as RawFelt;
+pub use miden_processor::Felt as RawFelt;
 #[cfg(feature = "proptest")]
 use proptest::{
     arbitrary::Arbitrary,

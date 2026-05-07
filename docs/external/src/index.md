@@ -24,18 +24,26 @@ difference is purely how the UI is rendered and how you type commands.
 
 ## Installation
 
+You can install either from crates.io:
+
 ```bash
-git clone https://github.com/0xMiden/miden-debug
-cd miden-debug
-cargo build --release --bin miden-debug
-./target/release/miden-debug --version
+cargo install --locked miden-debug
+miden-debug help
+```
+
+Or from source:
+
+```bash
+git clone https://github.com/0xMiden/miden-debug && cd miden-debug
+cargo make miden-debug
+bin/miden-debug help
 ```
 
 The default build enables the `tui` and `dap` features. **REPL mode is opt-in**
-— rebuild with `--features repl` to use `--repl`:
+— rebuild/reinstall with `--features repl` to use `--repl`:
 
 ```bash
-cargo build --release --features repl --bin miden-debug
+cargo install --locked --features repl miden-debug
 ```
 
 To strip everything except what you need, combine `--no-default-features` with
@@ -77,3 +85,4 @@ you can set breakpoints before execution begins.
 - **[DAP integration](./dap.md)** — how the debugger wires up to `miden-client`
   for transaction-script debugging, the architecture of the DAP server,
   and how IDE clients (VS Code, Zed, the TUI itself) attach to it.
+- **[Debugging Programmatically](./debugging-programmatically.md) - how to set up and use the debug engine in Rust for use in tests and as a general program execution engine

@@ -81,23 +81,22 @@ pub struct DebugExecutor {
     pub stopped: bool,
 }
 
+impl super::query::DebugQuery for DebugExecutor {
+    #[inline]
+    fn state(&self) -> miden_processor::ProcessorState<'_> {
+        self.processor.state()
+    }
+
+    fn current_context(&self) -> ContextId {
+        self.current_context
+    }
+
+    fn current_clock(&self) -> RowIndex {
+        self.processor.state().clock()
+    }
+}
+
 impl DebugExecutor {
-    /// Read an element from memory at address `addr`, in the current context
-    pub fn read_element(&self, addr: u32) -> Felt {
-        self.processor
-            .memory()
-            .read_element(self.current_context, Felt::from_u32(addr))
-            .unwrap()
-    }
-
-    /// Read a word from memory at address `addr`, in the current context
-    pub fn read_word(&self, addr: u32) -> miden_core::Word {
-        self.processor
-            .memory()
-            .read_word(self.current_context, Felt::from_u32(addr), self.processor.state().clock())
-            .unwrap()
-    }
-
     /// Get the current operand stack as a slice - the top of the stack is the last item in the slice
     ///
     /// This returns the entire stack, not just the top 16 elements
@@ -417,8 +416,6 @@ impl DebugExecutor {
     /// Consume the [DebugExecutor], converting it into an [ExecutionTrace] at the current cycle.
     pub fn into_execution_trace(self) -> ExecutionTrace {
         ExecutionTrace {
-            root_context: self.root_context,
-            last_cycle: RowIndex::from(self.cycle as u32),
             processor: self.processor,
             outputs: self.stack_outputs,
         }

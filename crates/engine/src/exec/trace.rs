@@ -25,8 +25,6 @@ pub enum MemoryReadError {
 /// any cycle up to the last cycle. It is typically used for those purposes once
 /// execution of a program terminates.
 pub struct ExecutionTrace {
-    pub(super) root_context: ContextId,
-    pub(super) last_cycle: RowIndex,
     pub(super) processor: FastProcessor,
     pub(super) outputs: StackOutputs,
 }
@@ -37,8 +35,6 @@ impl ExecutionTrace {
     /// Used in DAP client mode where no local execution trace is available.
     pub fn empty() -> Self {
         Self {
-            root_context: ContextId::root(),
-            last_cycle: RowIndex::from(0u32),
             processor: FastProcessor::new(StackInputs::default()),
             outputs: StackOutputs::default(),
         }
@@ -70,12 +66,23 @@ impl ExecutionTrace {
     pub fn outputs(&self) -> &StackOutputs {
         &self.outputs
     }
+}
 
-    /// Read the word at the given Miden memory address
-    pub fn read_memory_word(&self, addr: u32) -> Option<Word> {
-        self.read_memory_word_in_context(addr, self.root_context, self.last_cycle)
+impl super::query::DebugQuery for ExecutionTrace {
+    fn state(&self) -> ProcessorState<'_> {
+        self.processor.state()
     }
 
+    fn current_context(&self) -> ContextId {
+        self.processor.state().ctx()
+    }
+
+    fn current_clock(&self) -> RowIndex {
+        self.processor.state().clock()
+    }
+}
+
+impl ExecutionTrace {
     /// Read the word at the given Miden memory address, under `ctx`, at cycle `clk`
     pub fn read_memory_word_in_context(
         &self,
@@ -91,15 +98,6 @@ impl ExecutionTrace {
         }
     }
 
-    /// Read the element at the given Miden memory address
-    #[track_caller]
-    pub fn read_memory_element(&self, addr: u32) -> Option<Felt> {
-        self.processor
-            .memory()
-            .read_element(self.root_context, Felt::new(addr as u64))
-            .ok()
-    }
-
     /// Read the element at the given Miden memory address, under `ctx`, at cycle `clk`
     #[track_caller]
     pub fn read_memory_element_in_context(
@@ -113,7 +111,7 @@ impl ExecutionTrace {
 
     /// Read a raw byte vector from `addr`, under `ctx`, at cycle `clk`, sufficient to hold a value
     /// of type `ty`
-    pub fn read_bytes_for_type(
+    pub fn read_bytes_for_type_in_context(
         &self,
         addr: NativePtr,
         ty: &miden_assembly_syntax::ast::types::Type,
@@ -123,21 +121,12 @@ impl ExecutionTrace {
         let size = ty.size_in_bytes();
 
         if addr.is_element_aligned() {
-            read_memory_bytes(addr, size, |addr| {
+            super::query::read_memory_bytes(addr, size, |addr| {
                 Ok(self.read_memory_element_in_context(addr, ctx, clk).unwrap_or_default())
             })
         } else {
             Err(MemoryReadError::UnalignedRead)
         }
-    }
-
-    /// Read a value of the given type, given an address in Rust's address space
-    #[track_caller]
-    pub fn read_from_rust_memory<T>(&self, addr: u32) -> Option<T>
-    where
-        T: core::any::Any + FromMidenRepr,
-    {
-        self.read_from_rust_memory_in_context(addr, self.root_context, self.last_cycle)
     }
 
     /// Read a value of the given type, given an address in Rust's address space, under `ctx`, at
@@ -163,42 +152,6 @@ impl ExecutionTrace {
     }
 }
 
-pub(crate) fn felt_to_le_bytes(elem: Felt) -> [u8; 4] {
-    ((elem.as_canonical_u64() & u32::MAX as u64) as u32).to_le_bytes()
-}
-
-/// Reads `size` bytes from memory, starting at `ptr`. Handles `ptr`'s offset.
-///
-/// The `read_elem` callback is used to fetch an element from an element address.
-pub(crate) fn read_memory_bytes<E>(
-    ptr: NativePtr,
-    size: usize,
-    mut read_elem: impl FnMut(u32) -> Result<Felt, E>,
-) -> Result<Vec<u8>, E>
-where
-    E: From<MemoryReadError>,
-{
-    if size == 0 {
-        return Ok(Vec::new());
-    }
-
-    let start = usize::from(ptr.offset);
-    let end = start.checked_add(size).ok_or_else(|| E::from(MemoryReadError::OutOfBounds))?;
-    let num_elements = end.div_ceil(4);
-
-    let mut bytes = Vec::with_capacity(num_elements.saturating_mul(4));
-    for index in 0..num_elements {
-        let index = u32::try_from(index).map_err(|_| E::from(MemoryReadError::OutOfBounds))?;
-        let elem_addr = ptr
-            .addr
-            .checked_add(index)
-            .ok_or_else(|| E::from(MemoryReadError::OutOfBounds))?;
-        bytes.extend(felt_to_le_bytes(read_elem(elem_addr)?));
-    }
-
-    Ok(bytes[start..end].to_vec())
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -212,8 +165,6 @@ mod tests {
 
     fn empty_trace() -> ExecutionTrace {
         ExecutionTrace {
-            root_context: ContextId::root(),
-            last_cycle: RowIndex::from(0_u32),
             processor: miden_processor::FastProcessor::new(miden_processor::StackInputs::default()),
             outputs: miden_processor::StackOutputs::default(),
         }
@@ -263,10 +214,20 @@ end
         let ctx = ContextId::root();
 
         let u16_bytes = trace
-            .read_bytes_for_type(NativePtr::new(8, 0), &Type::U16, ctx, RowIndex::from(0_u32))
+            .read_bytes_for_type_in_context(
+                NativePtr::new(8, 0),
+                &Type::U16,
+                ctx,
+                RowIndex::from(0_u32),
+            )
             .unwrap();
         let u64_bytes = trace
-            .read_bytes_for_type(NativePtr::new(12, 0), &Type::U64, ctx, RowIndex::from(0_u32))
+            .read_bytes_for_type_in_context(
+                NativePtr::new(12, 0),
+                &Type::U64,
+                ctx,
+                RowIndex::from(0_u32),
+            )
             .unwrap();
 
         assert_eq!(u16_bytes, vec![0x34, 0x12]);

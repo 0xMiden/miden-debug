@@ -263,7 +263,7 @@ fn read_memory_at_current_state(
     let mut bytes = Vec::with_capacity(expr.ty.size_in_bytes());
     let mut needed = expr.ty.size_in_bytes();
     for elem in elems {
-        let elem_bytes = super::trace::felt_to_le_bytes(elem);
+        let elem_bytes = super::query::felt_to_le_bytes(elem);
         let take = core::cmp::min(needed, 4);
         bytes.extend(&elem_bytes[..take]);
         needed -= take;

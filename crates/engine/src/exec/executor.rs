@@ -26,7 +26,7 @@ use miden_processor::{
 
 use super::{
     DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent,
-    trace::read_memory_bytes, trace_event::TRACE_PRINT_LN,
+    query::read_memory_bytes, trace_event::TRACE_PRINT_LN,
 };
 use crate::{
     debug::{CallStack, DebugVarTracker, NativePtr},

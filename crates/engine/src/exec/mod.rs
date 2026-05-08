@@ -8,6 +8,7 @@ mod dap_types;
 mod diagnostic;
 mod executor;
 mod host;
+mod query;
 mod state;
 mod trace;
 mod trace_event;
@@ -24,6 +25,7 @@ pub use self::{
     diagnostic::DiagnosticExecutor,
     executor::Executor,
     host::DebuggerHost,
+    query::DebugQuery,
     state::DebugExecutor,
     trace::{ExecutionTrace, TraceHandler},
     trace_event::{TRACE_PRINT_LN, TraceEvent},

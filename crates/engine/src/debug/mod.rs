@@ -5,7 +5,7 @@ mod stacktrace;
 mod variables;
 
 pub use self::{
-    breakpoint::{Breakpoint, BreakpointType},
+    breakpoint::{Breakpoint, BreakpointType, OperationMatcher},
     memory::{FormatType, MemoryMode, ReadMemoryExpr},
     native_ptr::NativePtr,
     stacktrace::{

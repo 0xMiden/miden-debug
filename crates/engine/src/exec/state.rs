@@ -15,7 +15,7 @@ use miden_processor::{
 
 use super::{DebuggerHost, ExecutionTrace, TraceMonitor};
 use crate::{
-    Breakpoint, BreakpointType,
+    Breakpoint, BreakpointType, OperationMatcher,
     debug::{CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo},
 };
 
@@ -376,7 +376,7 @@ impl DebugExecutor {
 
             if is_op_boundary
                 && let Some(asmop) = self.current_asmop.as_ref()
-                && matches!(breakpoint.ty, BreakpointType::AsmOpcode(asm_opcode) if asmop.op() == asm_opcode)
+                && matches!(&breakpoint.ty, BreakpointType::Opcode(OperationMatcher::Asm(expected)) if expected == asmop.op())
             {
                 return Ok(());
             }

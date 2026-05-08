@@ -198,15 +198,10 @@ impl Pane for BreakpointsPane {
                         Span::styled("proc:", yellow),
                         Span::styled(pattern.as_str(), gray),
                     ]),
-                    BreakpointType::Opcode(op) => Line::from(vec![
+                    BreakpointType::Opcode(matcher) => Line::from(vec![
                         gutter,
                         Span::styled("opcode:", yellow),
-                        Span::styled(format!("{op}"), gray),
-                    ]),
-                    BreakpointType::AsmOpcode(opcode_name) => Line::from(vec![
-                        gutter,
-                        Span::styled("masm op:", yellow),
-                        Span::styled(*opcode_name, gray),
+                        Span::styled(format!("{matcher}"), gray),
                     ]),
                     BreakpointType::Trace(id) => Line::from(vec![
                         gutter,

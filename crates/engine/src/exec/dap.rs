@@ -1387,6 +1387,15 @@ fn announce_entry_stop<R: std::io::Read, W: std::io::Write, H: Host>(
         return;
     }
     *already_announced = true;
+    // Some DAP clients (Zed) only react to `stopped` events for thread IDs they
+    // already know about; explicitly announce thread 1 as started before the
+    // initial stop. VS Code tolerates the extra event.
+    server
+        .send_event(Event::Thread(events::ThreadEventBody {
+            reason: types::ThreadEventReason::Started,
+            thread_id: 1,
+        }))
+        .ok();
     send_ui_state_snapshot(server, processor, host, current_asmop, cycle);
     server
         .send_event(Event::Stopped(events::StoppedEventBody {

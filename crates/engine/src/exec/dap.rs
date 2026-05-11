@@ -531,6 +531,11 @@ impl DapExecutor {
         let mut breakpoints: Vec<StoredBreakpoint> = Vec::new();
         let mut function_breakpoints: Vec<StoredFunctionBreakpoint> = Vec::new();
         let mut is_restart = false;
+        // VS Code's flow waits for `configurationDone` before stopping the VM at
+        // the entry point; Zed's flow never sends `configurationDone`. Track
+        // whether the entry stop has already been announced so it fires
+        // exactly once regardless of which client we're talking to.
+        let mut entry_announced = false;
         let restart_flag = self.config.restart_requested.clone();
 
         // Outer restart loop — on restart, the DapHostWrapper borrow is dropped,
@@ -612,6 +617,14 @@ impl DapExecutor {
 
                     Command::Launch(_) => {
                         server.respond(req.success(ResponseBody::Launch)).ok();
+                        announce_entry_stop(
+                            &mut server,
+                            &mut processor,
+                            &wrapper,
+                            current_asmop.as_ref(),
+                            cycle,
+                            &mut entry_announced,
+                        );
                     }
 
                     // VS Code's default flow issues `attach` when launch.json uses
@@ -620,35 +633,42 @@ impl DapExecutor {
                     // acknowledging the request — mirror the `Launch` handling.
                     Command::Attach(_) => {
                         server.respond(req.success(ResponseBody::Attach)).ok();
+                        // Zed never sends `configurationDone`, so announce the entry
+                        // stop here as well. The `entry_announced` guard makes this
+                        // a no-op when `configurationDone` later fires (VS Code path).
+                        announce_entry_stop(
+                            &mut server,
+                            &mut processor,
+                            &wrapper,
+                            current_asmop.as_ref(),
+                            cycle,
+                            &mut entry_announced,
+                        );
                     }
 
                     Command::ConfigurationDone => {
                         if let Ok(resp) = req.ack() {
                             server.respond(resp).ok();
                         }
-                        // Push initial UI state snapshot, then pause at entry point.
-                        send_ui_state_snapshot(
+                        announce_entry_stop(
                             &mut server,
                             &mut processor,
                             &wrapper,
                             current_asmop.as_ref(),
                             cycle,
+                            &mut entry_announced,
                         );
-                        server
-                            .send_event(Event::Stopped(events::StoppedEventBody {
-                                reason: types::StoppedEventReason::Entry,
-                                description: Some("Paused at program entry".into()),
-                                thread_id: Some(1),
-                                preserve_focus_hint: None,
-                                text: None,
-                                all_threads_stopped: Some(true),
-                                hit_breakpoint_ids: None,
-                            }))
-                            .ok();
                     }
 
                     Command::Restart(ref args) => {
-                        let has_arguments = args.arguments.is_some();
+                        // `args.is_some()` means the client sent a non-null
+                        // `RestartArguments` envelope; `arguments.arguments.is_some()`
+                        // means that envelope carries an explicit launch/attach payload.
+                        // Only the latter signals "Phase 2: recompile from disk".
+                        let has_arguments = args
+                            .as_ref()
+                            .and_then(|a| a.arguments.as_ref())
+                            .is_some();
                         server.respond(req.success(ResponseBody::Restart)).ok();
                         if has_arguments {
                             // Phase 2: terminate-and-reconnect for recompilation.
@@ -1347,6 +1367,38 @@ fn send_ui_state_snapshot<R: std::io::Read, W: std::io::Write, H: Host>(
     if let Ok(json) = serde_json::to_value(&ui_state) {
         server.send_event(Event::MidenUiState(json)).ok();
     }
+}
+
+/// Announce the entry-point stop to the DAP client (UI snapshot + `Stopped(entry)`),
+/// flipping `already_announced` so subsequent calls become no-ops.
+///
+/// Called from both `Attach`/`Launch` (so clients like Zed that skip
+/// `configurationDone` still see the initial stop) and from `ConfigurationDone`
+/// (the VS Code path).
+fn announce_entry_stop<R: std::io::Read, W: std::io::Write, H: Host>(
+    server: &mut Server<R, W>,
+    processor: &mut FastProcessor,
+    host: &DapHostWrapper<'_, H>,
+    current_asmop: Option<&AssemblyOp>,
+    cycle: usize,
+    already_announced: &mut bool,
+) {
+    if *already_announced {
+        return;
+    }
+    *already_announced = true;
+    send_ui_state_snapshot(server, processor, host, current_asmop, cycle);
+    server
+        .send_event(Event::Stopped(events::StoppedEventBody {
+            reason: types::StoppedEventReason::Entry,
+            description: Some("Paused at program entry".into()),
+            thread_id: Some(1),
+            preserve_focus_hint: None,
+            text: None,
+            all_threads_stopped: Some(true),
+            hit_breakpoint_ids: None,
+        }))
+        .ok();
 }
 
 /// Send a "stopped(step)" event to the DAP client.

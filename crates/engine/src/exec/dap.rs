@@ -617,6 +617,10 @@ impl DapExecutor {
 
                     Command::Launch(_) => {
                         server.respond(req.success(ResponseBody::Launch)).ok();
+                        // Re-emit Initialized — some clients only listen for it after
+                        // launch/attach has been acknowledged. VS Code tolerates the
+                        // duplicate (it ignores Initialized after the first one).
+                        server.send_event(Event::Initialized).ok();
                         announce_entry_stop(
                             &mut server,
                             &mut processor,
@@ -633,6 +637,9 @@ impl DapExecutor {
                     // acknowledging the request — mirror the `Launch` handling.
                     Command::Attach(_) => {
                         server.respond(req.success(ResponseBody::Attach)).ok();
+                        // See the Launch arm — re-emit Initialized for clients that
+                        // miss the first one.
+                        server.send_event(Event::Initialized).ok();
                         // Zed never sends `configurationDone`, so announce the entry
                         // stop here as well. The `entry_announced` guard makes this
                         // a no-op when `configurationDone` later fires (VS Code path).

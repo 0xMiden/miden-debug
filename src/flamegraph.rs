@@ -12,18 +12,124 @@ use miden_assembly_syntax::{
     diagnostics::{IntoDiagnostic, Report, WrapErr},
 };
 use miden_core::serde::Deserializable;
-use miden_processor::StackInputs;
+use miden_processor::{ExecutionError, StackInputs};
 
 use crate::{
     config::{ColorChoice, DebuggerConfig},
     debug::CallFrame,
-    exec::{ExecutionConfig, Executor},
+    exec::{DebugExecutor, ExecutionConfig, Executor},
     felt::Felt,
     input::InputFile,
     linker::LinkLibrary,
 };
 
-type Samples = BTreeMap<String, usize>;
+/// Folded stack samples keyed by semicolon-separated stack paths.
+pub type Samples = BTreeMap<String, usize>;
+
+/// A collected VM cycle profile that can be rendered as folded stacks or an SVG flamegraph.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct FlamegraphProfile {
+    samples: Samples,
+    total_cycles: usize,
+}
+
+/// The output format selected by [`FlamegraphProfile::write_to_path`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FlamegraphOutput {
+    Svg,
+    FoldedStacks,
+}
+
+impl FlamegraphProfile {
+    /// Execute `executor` to completion, sampling its call stack for every VM cycle.
+    pub fn collect(executor: &mut DebugExecutor) -> Result<Self, ExecutionError> {
+        let mut profile = Self::default();
+
+        loop {
+            if executor.stopped {
+                break;
+            }
+
+            let previous_cycle = executor.cycle;
+            match executor.step() {
+                Ok(_) if executor.cycle > previous_cycle => {
+                    let cycle_delta = executor.cycle - previous_cycle;
+                    profile.record_call_stack(executor.callstack.frames(), cycle_delta);
+                }
+                Ok(_) => {
+                    if executor.stopped {
+                        break;
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(profile)
+    }
+
+    /// Record `cycles` against a call stack from the debugger engine.
+    pub fn record_call_stack(&mut self, frames: &[CallFrame], cycles: usize) {
+        let path = build_stack_path(frames);
+        self.record_stack_path(path, cycles);
+    }
+
+    /// Record `cycles` against a stack of frame names.
+    ///
+    /// Frame names are sanitized for folded stack output, then joined with `;`.
+    pub fn record_stack<I, S>(&mut self, frames: I, cycles: usize)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let path = build_stack_path_from_names(frames);
+        self.record_stack_path(path, cycles);
+    }
+
+    /// Record `cycles` against an already formatted folded-stack path.
+    pub fn record_stack_path(&mut self, stack_path: impl Into<String>, cycles: usize) {
+        if cycles == 0 {
+            return;
+        }
+
+        self.total_cycles += cycles;
+        *self.samples.entry(stack_path.into()).or_default() += cycles;
+    }
+
+    pub fn samples(&self) -> &Samples {
+        &self.samples
+    }
+
+    pub fn total_cycles(&self) -> usize {
+        self.total_cycles
+    }
+
+    pub fn unique_stack_paths(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// Write this profile as an SVG when `path` ends in `.svg`, otherwise as folded stack text.
+    pub fn write_to_path(&self, path: impl AsRef<Path>) -> Result<FlamegraphOutput, Report> {
+        let path = path.as_ref();
+        if is_svg_path(path) {
+            self.write_svg(path)?;
+            Ok(FlamegraphOutput::Svg)
+        } else {
+            self.write_folded_stacks(path)?;
+            Ok(FlamegraphOutput::FoldedStacks)
+        }
+    }
+
+    /// Write this profile in folded stack format.
+    pub fn write_folded_stacks(&self, path: impl AsRef<Path>) -> Result<(), Report> {
+        write_folded_stacks(&self.samples, path.as_ref())
+    }
+
+    /// Render this profile as an SVG flamegraph.
+    pub fn write_svg(&self, path: impl AsRef<Path>) -> Result<(), Report> {
+        generate_svg(&self.samples, path.as_ref())
+    }
+}
 
 #[derive(clap::Args, Debug)]
 pub struct FlamegraphArgs {
@@ -123,43 +229,23 @@ pub fn run(args: FlamegraphArgs) -> Result<(), Report> {
     let program = package.unwrap_program();
     let mut executor = executor.into_debug(&program, source_manager);
 
-    let mut samples = Samples::default();
-    let mut total_cycles = 0usize;
-
-    loop {
-        if executor.stopped {
-            break;
+    let profile = match FlamegraphProfile::collect(&mut executor) {
+        Ok(profile) => profile,
+        Err(err) => {
+            return Err(Report::msg(format!(
+                "program execution failed at cycle {}: {err}",
+                executor.cycle
+            )));
         }
+    };
 
-        let previous_cycle = executor.cycle;
-        match executor.step() {
-            Ok(_) if executor.cycle > previous_cycle => {
-                let cycle_delta = executor.cycle - previous_cycle;
-                total_cycles += cycle_delta;
-                let path = build_stack_path(executor.callstack.frames());
-                *samples.entry(path).or_default() += cycle_delta;
-            }
-            Ok(_) => {
-                if executor.stopped {
-                    break;
-                }
-            }
-            Err(err) => {
-                return Err(Report::msg(format!(
-                    "program execution failed at cycle {}: {err}",
-                    executor.cycle
-                )));
-            }
-        }
-    }
+    eprintln!(
+        "Executed {} cycles across {} unique stack paths",
+        profile.total_cycles(),
+        profile.unique_stack_paths()
+    );
 
-    eprintln!("Executed {total_cycles} cycles across {} unique stack paths", samples.len());
-
-    if is_svg_path(&output) {
-        generate_svg(&samples, &output)?;
-    } else {
-        write_folded_stacks(&samples, &output)?;
-    }
+    profile.write_to_path(&output)?;
 
     Ok(())
 }
@@ -275,15 +361,17 @@ fn load_package(config: &DebuggerConfig) -> Result<Arc<miden_mast_package::Packa
 }
 
 fn build_stack_path(frames: &[CallFrame]) -> String {
+    build_stack_path_from_names(frames.iter().filter_map(|frame| frame.procedure("")))
+}
+
+fn build_stack_path_from_names<I, S>(frames: I) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
     let mut path = String::new();
     for frame in frames {
-        let Some(name) = frame.procedure("") else {
-            continue;
-        };
-        if !path.is_empty() {
-            path.push(';');
-        }
-        append_sanitized_frame(&mut path, &name);
+        append_frame(&mut path, frame.as_ref());
     }
 
     if path.is_empty() {
@@ -291,6 +379,13 @@ fn build_stack_path(frames: &[CallFrame]) -> String {
     } else {
         path
     }
+}
+
+fn append_frame(path: &mut String, name: &str) {
+    if !path.is_empty() {
+        path.push(';');
+    }
+    append_sanitized_frame(path, name);
 }
 
 fn append_sanitized_frame(path: &mut String, name: &str) {
@@ -339,4 +434,23 @@ fn generate_svg(samples: &Samples, path: &Path) -> Result<(), Report> {
 
     eprintln!("Wrote flame graph to {}", path.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FlamegraphProfile;
+
+    #[test]
+    fn record_stack_sanitizes_folded_stack_frames() {
+        let mut profile = FlamegraphProfile::default();
+
+        profile.record_stack(["root;proc", "child\nproc"], 3);
+        profile.record_stack(["root;proc", "child\nproc"], 2);
+        profile.record_stack(["ignored"], 0);
+
+        assert_eq!(profile.total_cycles(), 5);
+        assert_eq!(profile.unique_stack_paths(), 1);
+        assert_eq!(profile.samples().get("root:proc;child proc"), Some(&5));
+        assert!(!profile.samples().contains_key("ignored"));
+    }
 }

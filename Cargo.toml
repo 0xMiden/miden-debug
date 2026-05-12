@@ -86,9 +86,14 @@ required-features = ["tui"]
 name = "println_multiple_prints"
 required-features = ["tui"]
 
+[[test]]
+name = "flamegraph_profile"
+required-features = ["flamegraph"]
+
 [features]
 default = ["tui", "dap"]
-tui = ["std", "dep:crossterm", "dep:env_logger", "dep:inferno", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect", "miden-debug-engine/tui"]
+flamegraph = ["std", "dep:env_logger", "dep:inferno", "miden-debug-engine/tui"]
+tui = ["std", "flamegraph", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect", "miden-debug-engine/tui"]
 repl = ["std", "dep:env_logger", "dep:rustyline", "miden-debug-engine/tui"]
 dap = ["miden-debug-engine/dap"]
 std = ["clap/std", "clap/env", "compact_str/std", "miden-assembly-syntax/std", "miden-debug-engine/std"]

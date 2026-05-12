@@ -1,7 +1,7 @@
 pub use miden_debug_engine::{debug, debug_types, events, exec, felt, processor};
 
 mod config;
-#[cfg(feature = "tui")]
+#[cfg(feature = "flamegraph")]
 pub mod flamegraph;
 mod input;
 mod linker;

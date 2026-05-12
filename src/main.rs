@@ -1,11 +1,11 @@
 use std::env;
 
 use clap::Parser;
-#[cfg(feature = "tui")]
+#[cfg(feature = "flamegraph")]
 use clap::Subcommand;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report, WrapErr};
 use miden_debug::DebuggerConfig;
-#[cfg(feature = "tui")]
+#[cfg(feature = "flamegraph")]
 use miden_debug::flamegraph::FlamegraphArgs;
 #[cfg(feature = "repl")]
 use miden_debug::run_repl_with_log_level as run_repl;
@@ -18,7 +18,7 @@ use miden_debug::{State, run_with_state_and_log_level as run_with_state};
 #[command(author, version, about = "The interactive Miden debugger")]
 #[command(args_conflicts_with_subcommands = true)]
 struct Cli {
-    #[cfg(feature = "tui")]
+    #[cfg(feature = "flamegraph")]
     #[command(subcommand)]
     command: Option<Commands>,
 
@@ -26,7 +26,7 @@ struct Cli {
     config: DebuggerConfig,
 }
 
-#[cfg(feature = "tui")]
+#[cfg(feature = "flamegraph")]
 #[derive(Subcommand)]
 enum Commands {
     /// Generate a flame graph SVG from program execution cycle counts
@@ -61,7 +61,7 @@ pub fn main() -> Result<(), Report> {
     let logger = Box::new(logger);
     let cli = Cli::parse();
 
-    #[cfg(feature = "tui")]
+    #[cfg(feature = "flamegraph")]
     if let Some(command) = cli.command {
         return match command {
             Commands::Flamegraph(args) => {
@@ -78,8 +78,8 @@ pub fn main() -> Result<(), Report> {
 
 fn run_debugger(
     mut config: Box<DebuggerConfig>,
-    logger: Box<dyn log::Log>,
-    log_level: log::LevelFilter,
+    _logger: Box<dyn log::Log>,
+    _log_level: log::LevelFilter,
 ) -> Result<(), Report> {
     if config.working_dir.is_none() {
         let cwd = env::current_dir()
@@ -92,16 +92,16 @@ fn run_debugger(
     #[cfg(feature = "dap")]
     if let Some(addr) = config.dap_connect.as_ref() {
         let state = State::new_for_dap(addr)?;
-        return run_with_state(state, logger, log_level);
+        return run_with_state(state, _logger, _log_level);
     }
 
     #[cfg(feature = "repl")]
     if config.repl {
-        return run_repl(config, logger, log_level);
+        return run_repl(config, _logger, _log_level);
     }
 
     #[cfg(feature = "tui")]
-    return run(config, logger, log_level);
+    return run(config, _logger, _log_level);
 
     #[cfg(not(feature = "tui"))]
     Err(Report::msg(

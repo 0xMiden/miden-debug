@@ -8,21 +8,30 @@ use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile, linker::LinkLib
 
 /// Run a compiled Miden program with the Miden VM
 #[derive(Default, Debug)]
-#[cfg_attr(any(feature = "tui", feature = "repl"), derive(clap::Args))]
+#[cfg_attr(
+    any(feature = "tui", feature = "repl", feature = "flamegraph"),
+    derive(clap::Args)
+)]
 pub struct DebuggerConfig {
     /// Specify the path to a Miden program file to execute.
     ///
     /// Miden Assembly programs are emitted by the compiler with a `.masp` extension.
     ///
     /// You may use `-` as a file name to read a file from stdin.
-    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(value_name = "FILE"))]
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl", feature = "flamegraph"),
+        arg(value_name = "FILE")
+    )]
     pub input: Option<InputFile>,
     /// Specify the path to a file containing program inputs.
     ///
     /// Program inputs are stack and advice provider values which the program can
     /// access during execution. The inputs file is a TOML file which describes
     /// what the inputs are, or where to source them from.
-    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(long, value_name = "FILE"))]
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl", feature = "flamegraph"),
+        arg(long, value_name = "FILE")
+    )]
     pub inputs: Option<ExecutionConfig>,
     /// Arguments to place on the operand stack before calling the program entrypoint.
     ///
@@ -34,7 +43,7 @@ pub struct DebuggerConfig {
     ///
     /// NOTE: These arguments will override any stack values provided via --inputs
     #[cfg_attr(
-        any(feature = "tui", feature = "repl"),
+        any(feature = "tui", feature = "repl", feature = "flamegraph"),
         arg(last(true), value_name = "ARGV")
     )]
     pub args: Vec<Felt>,
@@ -42,7 +51,7 @@ pub struct DebuggerConfig {
     ///
     /// By default this will be the working directory the debugger is executed from
     #[cfg_attr(
-        feature = "tui",
+        any(feature = "tui", feature = "flamegraph"),
         arg(long, value_name = "DIR", help_heading = "Execution")
     )]
     pub working_dir: Option<PathBuf>,
@@ -50,7 +59,7 @@ pub struct DebuggerConfig {
     ///
     /// By default this is assumed to be `$(midenup show home)/toolchains/$(midenup show active-toolchain)
     #[cfg_attr(
-        feature = "tui",
+        any(feature = "tui", feature = "flamegraph"),
         arg(
             long,
             value_name = "DIR",
@@ -60,7 +69,7 @@ pub struct DebuggerConfig {
     )]
     pub sysroot: Option<PathBuf>,
     /// Whether, and how, to color terminal output
-    #[cfg_attr(any(feature = "tui", feature = "repl"), arg(
+    #[cfg_attr(any(feature = "tui", feature = "repl", feature = "flamegraph"), arg(
         long,
         value_enum,
         default_value_t = ColorChoice::Auto,
@@ -72,7 +81,7 @@ pub struct DebuggerConfig {
     /// Specify the function to call as the entrypoint for the program
     /// in the format `<module_name>::<function>`
     #[cfg_attr(
-        any(feature = "tui", feature = "repl"),
+        any(feature = "tui", feature = "repl", feature = "flamegraph"),
         arg(long, help_heading = "Execution")
     )]
     pub entrypoint: Option<String>,
@@ -82,13 +91,13 @@ pub struct DebuggerConfig {
     /// When this flag is set, the debugger connects to an existing remote session.
     #[cfg(feature = "dap")]
     #[cfg_attr(
-        feature = "tui",
+        any(feature = "tui", feature = "flamegraph"),
         arg(long, value_name = "ADDR", help_heading = "Execution")
     )]
     pub dap_connect: Option<String>,
     /// Specify one or more search paths for link libraries requested via `-l`
     #[cfg_attr(
-        feature = "tui",
+        any(feature = "tui", feature = "flamegraph"),
         arg(
             long = "search-path",
             short = 'L',
@@ -108,7 +117,7 @@ pub struct DebuggerConfig {
     ///
     /// See below for valid KINDs:
     #[cfg_attr(
-        feature = "tui",
+        any(feature = "tui", feature = "flamegraph"),
         arg(
             long = "link-library",
             short = 'l',
@@ -121,7 +130,7 @@ pub struct DebuggerConfig {
     pub link_libraries: Vec<LinkLibrary>,
     /// Use the REPL (text-mode) debugger instead of the TUI
     #[cfg_attr(
-        any(feature = "tui", feature = "repl"),
+        any(feature = "tui", feature = "repl", feature = "flamegraph"),
         arg(long, help_heading = "Output")
     )]
     pub repl: bool,
@@ -136,7 +145,10 @@ pub struct DebuggerConfig {
 /// string of the variant name to the corresponding variant. Any other string
 /// results in an error.
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(any(feature = "tui", feature = "repl"), derive(clap::ValueEnum))]
+#[cfg_attr(
+    any(feature = "tui", feature = "repl", feature = "flamegraph"),
+    derive(clap::ValueEnum)
+)]
 pub enum ColorChoice {
     /// Try very hard to emit colors. This includes emitting ANSI colors
     /// on Windows if the console API is unavailable.

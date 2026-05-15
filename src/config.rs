@@ -96,6 +96,22 @@ pub struct DebuggerConfig {
         arg(long, value_name = "ADDR", help_heading = "Execution")
     )]
     pub start_debug_adapter: Option<String>,
+    /// Source path prefixes used by the compiler's `-Ztrim-path-prefix` option.
+    ///
+    /// When debug info stores trimmed source paths, DAP clients may still send
+    /// absolute editor paths. These prefixes provide an explicit mapping between
+    /// the two forms.
+    #[cfg(feature = "dap")]
+    #[cfg_attr(
+        feature = "tui",
+        arg(
+            long = "source-path-prefix",
+            alias = "trim-path-prefix",
+            value_name = "PATH",
+            help_heading = "Debugging"
+        )
+    )]
+    pub source_path_prefixes: Vec<PathBuf>,
     /// Specify one or more search paths for link libraries requested via `-l`
     #[cfg_attr(
         feature = "tui",

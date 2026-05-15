@@ -5,8 +5,15 @@ use miden_assembly_syntax::{
     Library,
     diagnostics::{IntoDiagnostic, Report},
 };
-use miden_core::{program::Program, serde::Deserializable};
-use miden_processor::{DefaultHost, StackInputs};
+use miden_core::{
+    Word, events::EventId, mast::MastForest, operations::DebugOptions, program::Program,
+    serde::Deserializable,
+};
+use miden_debug_types::{Location, SourceFile, SourceManagerExt, SourceSpan};
+use miden_processor::{
+    DefaultDebugHandler, DefaultHost, FutureMaybeSend, Host, ProcessorState, StackInputs,
+    TraceError, advice::AdviceMutation, event::EventError,
+};
 
 use crate::{DapConfig, DapExecutor, DebuggerConfig, InputFile, exec::ExecutionConfig};
 
@@ -19,13 +26,15 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
         .start_debug_adapter
         .as_ref()
         .ok_or_else(|| Report::msg("missing --start-debug-adapter address"))?;
-    DapConfig::set_global(DapConfig::new(addr));
+    DapConfig::set_global(
+        DapConfig::new(addr).with_source_path_prefixes(config.source_path_prefixes.clone()),
+    );
 
     let source_manager = Arc::new(DefaultSourceManager::default());
     let inputs = execution_inputs(&config)?;
     let libs = load_libraries(&config, source_manager.clone())?;
     let program = load_program(&config, source_manager.clone(), &libs)?;
-    let mut host = DefaultHost::default().with_source_manager(source_manager);
+    let mut host = StandaloneDapHost::new(source_manager);
 
     for lib in libs {
         host.load_library(lib.mast_forest().clone()).map_err(|err| {
@@ -37,6 +46,79 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     futures::executor::block_on(executor.execute_async(&program, &mut host))
         .map(|_| ())
         .map_err(|err| Report::msg(format!("program execution failed: {err}")))
+}
+
+struct StandaloneDapHost {
+    inner: DefaultHost<DefaultDebugHandler, DefaultSourceManager>,
+    source_manager: Arc<DefaultSourceManager>,
+}
+
+impl StandaloneDapHost {
+    fn new(source_manager: Arc<DefaultSourceManager>) -> Self {
+        let inner = DefaultHost::default().with_source_manager(source_manager.clone());
+        Self {
+            inner,
+            source_manager,
+        }
+    }
+
+    fn load_library(
+        &mut self,
+        lib: Arc<MastForest>,
+    ) -> Result<(), miden_processor::ExecutionError> {
+        self.inner.load_library(lib)
+    }
+
+    fn ensure_source_file(&self, location: &Location) -> Option<Arc<SourceFile>> {
+        if let Some(file) = self.source_manager.get_by_uri(location.uri()) {
+            return Some(file);
+        }
+
+        let path = location
+            .uri()
+            .as_str()
+            .strip_prefix("file://")
+            .unwrap_or_else(|| location.uri().as_str());
+        self.source_manager.load_file(Path::new(path)).ok()
+    }
+}
+
+impl Host for StandaloneDapHost {
+    fn get_label_and_source_file(
+        &self,
+        location: &Location,
+    ) -> (SourceSpan, Option<Arc<SourceFile>>) {
+        let maybe_file = self.ensure_source_file(location);
+        let span = self.source_manager.location_to_span(location.clone()).unwrap_or_default();
+        (span, maybe_file)
+    }
+
+    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
+        self.inner.get_mast_forest(node_digest)
+    }
+
+    fn on_event(
+        &mut self,
+        process: &ProcessorState<'_>,
+    ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
+        self.inner.on_event(process)
+    }
+
+    fn on_debug(
+        &mut self,
+        process: &ProcessorState,
+        options: &DebugOptions,
+    ) -> Result<(), miden_processor::DebugError> {
+        self.inner.on_debug(process, options)
+    }
+
+    fn on_trace(&mut self, process: &ProcessorState, trace_id: u32) -> Result<(), TraceError> {
+        self.inner.on_trace(process, trace_id)
+    }
+
+    fn resolve_event(&self, event_id: EventId) -> Option<&miden_core::events::EventName> {
+        self.inner.resolve_event(event_id)
+    }
 }
 
 fn execution_inputs(config: &DebuggerConfig) -> Result<ExecutionConfig, Report> {

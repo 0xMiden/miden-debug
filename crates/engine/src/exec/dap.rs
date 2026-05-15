@@ -672,10 +672,8 @@ impl DapExecutor {
                         // `RestartArguments` envelope; `arguments.arguments.is_some()`
                         // means that envelope carries an explicit launch/attach payload.
                         // Only the latter signals "Phase 2: recompile from disk".
-                        let has_arguments = args
-                            .as_ref()
-                            .and_then(|a| a.arguments.as_ref())
-                            .is_some();
+                        let has_arguments =
+                            args.as_ref().and_then(|a| a.arguments.as_ref()).is_some();
                         server.respond(req.success(ResponseBody::Restart)).ok();
                         if has_arguments {
                             // Phase 2: terminate-and-reconnect for recompilation.

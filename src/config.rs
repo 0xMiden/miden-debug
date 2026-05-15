@@ -87,6 +87,15 @@ pub struct DebuggerConfig {
         arg(long, value_name = "ADDR", help_heading = "Execution")
     )]
     pub dap_connect: Option<String>,
+    /// Start a DAP debug server for the local program and wait for a client to connect.
+    ///
+    /// Specify the address to listen on (e.g. "127.0.0.1:4711").
+    #[cfg(feature = "dap")]
+    #[cfg_attr(
+        feature = "tui",
+        arg(long, value_name = "ADDR", help_heading = "Execution")
+    )]
+    pub start_debug_adapter: Option<String>,
     /// Specify one or more search paths for link libraries requested via `-l`
     #[cfg_attr(
         feature = "tui",

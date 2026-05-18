@@ -406,6 +406,12 @@ struct StoredFunctionBreakpoint {
     pattern: glob::Pattern,
 }
 
+struct ContinueBreakpoints<'a> {
+    source: &'a [StoredBreakpoint],
+    function: &'a [StoredFunctionBreakpoint],
+    source_path_prefixes: &'a [String],
+}
+
 // RESOLVE ASMOP LOCATION
 // ================================================================================================
 
@@ -1065,15 +1071,18 @@ impl DapExecutor {
                             }));
                         server.respond(resp).ok();
 
+                        let continue_breakpoints = ContinueBreakpoints {
+                            source: &breakpoints,
+                            function: &function_breakpoints,
+                            source_path_prefixes: &source_path_prefixes,
+                        };
                         match step_until_breakpoint(
                             &mut processor,
                             &mut wrapper,
                             &mut resume_ctx,
                             &mut cycle,
                             &mut current_asmop,
-                            &breakpoints,
-                            &function_breakpoints,
-                            &source_path_prefixes,
+                            &continue_breakpoints,
                             &mut debug_state,
                         ) {
                             StepResult::Stepped | StepResult::Breakpoint(_) => {
@@ -1895,9 +1904,7 @@ fn step_until_breakpoint<H: Host>(
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
     current_asmop: &mut Option<AssemblyOp>,
-    breakpoints: &[StoredBreakpoint],
-    function_breakpoints: &[StoredFunctionBreakpoint],
-    source_path_prefixes: &[String],
+    breakpoints: &ContinueBreakpoints<'_>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     loop {
@@ -1915,9 +1922,13 @@ fn step_until_breakpoint<H: Host>(
 
                     // Check line breakpoints
                     if let Some((ref path, line)) = resolved {
-                        for bp in breakpoints {
+                        for bp in breakpoints.source {
                             if bp.line == line
-                                && source_paths_match(path, &bp.path, source_path_prefixes)
+                                && source_paths_match(
+                                    path,
+                                    &bp.path,
+                                    breakpoints.source_path_prefixes,
+                                )
                             {
                                 update_top_frame(host, current_asmop.as_ref());
                                 return StepResult::Breakpoint(line);
@@ -1928,10 +1939,10 @@ fn step_until_breakpoint<H: Host>(
                     // Check function/pattern breakpoints — match against context name and
                     // source file path. Context names may have a leading `::` (absolute
                     // paths like `::prologue::foo`), so we also try matching without it.
-                    if !function_breakpoints.is_empty() {
+                    if !breakpoints.function.is_empty() {
                         let context_name = asmop.context_name();
                         let stripped_name = context_name.strip_prefix("::").unwrap_or(context_name);
-                        for fbp in function_breakpoints {
+                        for fbp in breakpoints.function {
                             // Match via glob pattern or suffix (e.g. "prologue::foo"
                             // matches "::$kernel::prologue::foo").
                             if fbp.pattern.matches(context_name)

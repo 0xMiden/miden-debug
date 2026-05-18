@@ -315,18 +315,17 @@ impl Page for Home {
                         if cycles_stepped > 0
                             && is_op_boundary
                             && matches!(&bp.ty, BreakpointType::NextLine)
-                        {
-                            if State::is_next_source_line(
+                            && State::is_next_source_line(
                                 start_proc.as_deref(),
                                 start_line_loc.as_ref(),
                                 proc.as_deref(),
                                 line_loc.as_ref(),
                                 &source_path_prefixes,
                                 minimum_source_line,
-                            ) {
-                                state.breakpoints_hit.push(core::mem::take(bp));
-                                return false;
-                            }
+                            )
+                        {
+                            state.breakpoints_hit.push(core::mem::take(bp));
+                            return false;
                         }
 
                         if has_internal_breakpoint && !bp.is_internal() {

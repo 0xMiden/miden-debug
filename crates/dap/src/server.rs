@@ -258,9 +258,7 @@ mod tests {
 
         assert!(matches!(
             req.command,
-            Command::Restart {
-                0: RestartArguments { arguments: None }
-            }
+            Command::Restart(None) | Command::Restart(Some(RestartArguments { arguments: None }))
         ));
 
         // Restarting a launch request
@@ -270,14 +268,12 @@ mod tests {
         );
         assert!(matches!(
             req.command,
-            Command::Restart {
-                0: RestartArguments {
-                    arguments: Some(AttachOrLaunchArguments {
-                        no_debug: Some(_),
-                        ..
-                    })
-                }
-            }
+            Command::Restart(Some(RestartArguments {
+                arguments: Some(AttachOrLaunchArguments {
+                    no_debug: Some(_),
+                    ..
+                })
+            }))
         ));
 
         // Restarting a launch or attach request
@@ -287,14 +283,12 @@ mod tests {
         );
         assert!(matches!(
             req.command,
-            Command::Restart {
-                0: RestartArguments {
-                    arguments: Some(AttachOrLaunchArguments {
-                        restart_data: Some(Value::Bool(true)),
-                        ..
-                    })
-                }
-            }
+            Command::Restart(Some(RestartArguments {
+                arguments: Some(AttachOrLaunchArguments {
+                    restart_data: Some(Value::Bool(true)),
+                    ..
+                })
+            }))
         ));
     }
 }

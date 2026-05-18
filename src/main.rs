@@ -52,6 +52,13 @@ pub fn main() -> Result<(), Report> {
         return run_with_state(state, logger, log_level);
     }
 
+    #[cfg(feature = "dap")]
+    if config.start_debug_adapter.is_some() {
+        log::set_boxed_logger(logger).ok();
+        log::set_max_level(log_level);
+        return miden_debug::run_dap_server(config);
+    }
+
     #[cfg(feature = "repl")]
     if config.repl {
         return run_repl(config, logger, log_level);

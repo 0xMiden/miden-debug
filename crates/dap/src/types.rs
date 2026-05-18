@@ -3,7 +3,7 @@ use std::collections::HashMap;
 #[cfg(feature = "integration_testing")]
 use fake::{Dummy, Fake, Faker};
 #[cfg(feature = "integration_testing")]
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -225,11 +225,11 @@ struct ValueFaker;
 
 #[cfg(feature = "integration_testing")]
 impl Dummy<ValueFaker> for CustomValue {
-    fn dummy_with_rng<R: Rng + ?Sized>(_: &ValueFaker, rng: &mut R) -> Self {
-        CustomValue(match rng.gen_range(0..=5) {
-            1 => Value::Bool(rng.r#gen()),
-            2 => Value::Number(serde_json::Number::from_f64(rng.r#gen()).unwrap()),
-            3 => Value::String(Faker.fake::<String>()),
+    fn dummy_with_rng<R: RngExt + ?Sized>(_: &ValueFaker, rng: &mut R) -> Self {
+        CustomValue(match rng.random_range(0..=5) {
+            1 => Value::Bool(rng.random()),
+            2 => Value::Number(serde_json::Number::from_f64(rng.random()).unwrap()),
+            3 => Value::String(Faker.fake_with_rng::<String, _>(rng)),
             _ => Value::Null,
         })
     }

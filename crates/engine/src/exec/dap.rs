@@ -20,8 +20,8 @@ use miden_core::{
     program::Program,
 };
 use miden_processor::{
-    ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend, Host,
-    ProcessorState, ResumeContext, StackInputs, StackOutputs, TraceError,
+    BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend,
+    Host, ProcessorState, ResumeContext, StackInputs, StackOutputs, TraceError,
     advice::{AdviceInputs, AdviceMutation},
     event::EventError,
     mast::MastForest,
@@ -125,23 +125,12 @@ impl<'a, H: Host> DapHostWrapper<'a, H> {
     }
 }
 
-impl<H: Host> Host for DapHostWrapper<'_, H> {
+impl<H: Host> BaseHost for DapHostWrapper<'_, H> {
     fn get_label_and_source_file(
         &self,
         location: &miden_debug_types::Location,
     ) -> (miden_debug_types::SourceSpan, Option<Arc<miden_debug_types::SourceFile>>) {
         self.inner.get_label_and_source_file(location)
-    }
-
-    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
-        self.inner.get_mast_forest(node_digest)
-    }
-
-    fn on_event(
-        &mut self,
-        process: &ProcessorState<'_>,
-    ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
-        self.inner.on_event(process)
     }
 
     fn on_debug(
@@ -178,6 +167,19 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
         event_id: miden_core::events::EventId,
     ) -> Option<&miden_core::events::EventName> {
         self.inner.resolve_event(event_id)
+    }
+}
+
+impl<H: Host> Host for DapHostWrapper<'_, H> {
+    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
+        self.inner.get_mast_forest(node_digest)
+    }
+
+    fn on_event(
+        &mut self,
+        process: &ProcessorState<'_>,
+    ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
+        self.inner.on_event(process)
     }
 }
 
@@ -229,7 +231,7 @@ fn read_memory_at_current_state(
 
         let felt = processor
             .memory()
-            .read_element(ctx, miden_processor::Felt::new(u64::from(expr.addr.addr)))
+            .read_element(ctx, miden_processor::Felt::new_unchecked(u64::from(expr.addr.addr)))
             .ok()
             .unwrap_or(miden_processor::Felt::ZERO);
         write_with_format_type!(output, expr, felt.as_canonical_u64());
@@ -246,7 +248,7 @@ fn read_memory_at_current_state(
 
         let word = processor
             .memory()
-            .read_word(ctx, miden_processor::Felt::new(u64::from(expr.addr.addr)), cycle)
+            .read_word(ctx, miden_processor::Felt::new_unchecked(u64::from(expr.addr.addr)), cycle)
             .ok()
             .unwrap_or_default();
 
@@ -276,7 +278,7 @@ fn read_memory_at_current_state(
             })?;
         let felt = processor
             .memory()
-            .read_element(ctx, miden_processor::Felt::new(u64::from(addr)))
+            .read_element(ctx, miden_processor::Felt::new_unchecked(u64::from(addr)))
             .ok()
             .unwrap_or_default();
         elems.push(felt);
@@ -650,7 +652,7 @@ fn resolve_debug_var_value(
     let read_mem = |addr: u32| -> Option<miden_processor::Felt> {
         processor
             .memory()
-            .read_element(context, miden_processor::Felt::new(u64::from(addr)))
+            .read_element(context, miden_processor::Felt::new_unchecked(u64::from(addr)))
             .ok()
     };
 
@@ -910,7 +912,9 @@ impl DapExecutor {
         loop {
             let mut processor = FastProcessor::new(stack_inputs)
                 .with_advice(advice_inputs.clone())
-                .with_options(options);
+                .expect("advice inputs should fit advice map limits")
+                .with_options(options)
+                .expect("execution options should be compatible with advice inputs");
 
             let resume_ctx = processor.get_initial_resume_context(program)?;
             let mut wrapper = DapHostWrapper::new(host);
@@ -1432,7 +1436,8 @@ impl DapExecutor {
                                     }
                                     Some(_) => None,
                                     None => Some(
-                                        "No executable Miden operation is mapped to this source file."
+                                        "No executable Miden operation is mapped to this source \
+                                         file."
                                             .into(),
                                     ),
                                 };
@@ -1632,7 +1637,7 @@ impl DapExecutor {
                     stack: StackOutputs::new(&[]).expect("empty stack outputs"),
                     advice: Default::default(),
                     memory: Default::default(),
-                    final_pc_transcript: PrecompileTranscript::default(),
+                    final_precompile_transcript: PrecompileTranscript::default(),
                 });
             }
 
@@ -1666,12 +1671,12 @@ impl DapExecutor {
             let stack = StackOutputs::new(&stack_top)
                 .unwrap_or_else(|_| StackOutputs::new(&[]).expect("empty stack outputs"));
 
-            let (advice, memory, final_pc_transcript) = processor.into_parts();
+            let (advice, memory, final_precompile_transcript) = processor.into_parts();
             return Ok(ExecutionOutput {
                 stack,
                 advice,
                 memory,
-                final_pc_transcript,
+                final_precompile_transcript,
             });
         } // end outer restart loop
     }

@@ -23,14 +23,14 @@ pub trait ToMidenRepr {
         let mut felts = SmallVec::<[RawFelt; 4]>::with_capacity(num_felts);
         let (chunks, remainder) = bytes.as_chunks::<4>();
         for chunk in chunks {
-            felts.push(RawFelt::new(u32::from_ne_bytes(*chunk) as u64));
+            felts.push(RawFelt::new_unchecked(u32::from_ne_bytes(*chunk) as u64));
         }
         if !remainder.is_empty() {
             let mut chunk = [0u8; 4];
             for (i, byte) in remainder.iter().enumerate() {
                 chunk[i] = *byte;
             }
-            felts.push(RawFelt::new(u32::from_ne_bytes(chunk) as u64));
+            felts.push(RawFelt::new_unchecked(u32::from_ne_bytes(chunk) as u64));
         }
         felts
     }
@@ -143,11 +143,11 @@ impl ToMidenRepr for bool {
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
-        smallvec![RawFelt::new(*self as u64)]
+        smallvec![RawFelt::new_unchecked(*self as u64)]
     }
 
     fn push_to_operand_stack(&self, stack: &mut Vec<RawFelt>) {
-        stack.push(RawFelt::new(*self as u64));
+        stack.push(RawFelt::new_unchecked(*self as u64));
     }
 }
 
@@ -188,11 +188,11 @@ impl ToMidenRepr for u8 {
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
-        smallvec![RawFelt::new(*self as u64)]
+        smallvec![RawFelt::new_unchecked(*self as u64)]
     }
 
     fn push_to_operand_stack(&self, stack: &mut Vec<RawFelt>) {
-        stack.push(RawFelt::new(*self as u64));
+        stack.push(RawFelt::new_unchecked(*self as u64));
     }
 }
 
@@ -222,11 +222,11 @@ impl ToMidenRepr for i8 {
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
-        smallvec![RawFelt::new(*self as u8 as u64)]
+        smallvec![RawFelt::new_unchecked(*self as u8 as u64)]
     }
 
     fn push_to_operand_stack(&self, stack: &mut Vec<RawFelt>) {
-        stack.push(RawFelt::new(*self as u8 as u64));
+        stack.push(RawFelt::new_unchecked(*self as u8 as u64));
     }
 }
 
@@ -256,11 +256,11 @@ impl ToMidenRepr for u16 {
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
-        smallvec![RawFelt::new(*self as u64)]
+        smallvec![RawFelt::new_unchecked(*self as u64)]
     }
 
     fn push_to_operand_stack(&self, stack: &mut Vec<RawFelt>) {
-        stack.push(RawFelt::new(*self as u64));
+        stack.push(RawFelt::new_unchecked(*self as u64));
     }
 }
 
@@ -290,11 +290,11 @@ impl ToMidenRepr for i16 {
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
-        smallvec![RawFelt::new(*self as u16 as u64)]
+        smallvec![RawFelt::new_unchecked(*self as u16 as u64)]
     }
 
     fn push_to_operand_stack(&self, stack: &mut Vec<RawFelt>) {
-        stack.push(RawFelt::new(*self as u16 as u64));
+        stack.push(RawFelt::new_unchecked(*self as u16 as u64));
     }
 }
 
@@ -324,11 +324,11 @@ impl ToMidenRepr for u32 {
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
-        smallvec![RawFelt::new(*self as u64)]
+        smallvec![RawFelt::new_unchecked(*self as u64)]
     }
 
     fn push_to_operand_stack(&self, stack: &mut Vec<RawFelt>) {
-        stack.push(RawFelt::new(*self as u64));
+        stack.push(RawFelt::new_unchecked(*self as u64));
     }
 }
 
@@ -358,11 +358,11 @@ impl ToMidenRepr for i32 {
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
-        smallvec![RawFelt::new(*self as u32 as u64)]
+        smallvec![RawFelt::new_unchecked(*self as u32 as u64)]
     }
 
     fn push_to_operand_stack(&self, stack: &mut Vec<RawFelt>) {
-        stack.push(RawFelt::new(*self as u32 as u64));
+        stack.push(RawFelt::new_unchecked(*self as u32 as u64));
     }
 }
 
@@ -394,7 +394,7 @@ impl ToMidenRepr for u64 {
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
         let lo = (*self as u32) as u64;
         let hi = *self >> 32;
-        smallvec![RawFelt::new(lo), RawFelt::new(hi)]
+        smallvec![RawFelt::new_unchecked(lo), RawFelt::new_unchecked(hi)]
     }
 }
 
@@ -450,10 +450,10 @@ impl ToMidenRepr for u128 {
     }
 
     fn to_felts(&self) -> SmallVec<[RawFelt; 4]> {
-        let lo_lo = RawFelt::new((*self as u32) as u64);
-        let lo_hi = RawFelt::new(((*self >> 32) as u32) as u64);
-        let hi_lo = RawFelt::new(((*self >> 64) as u32) as u64);
-        let hi_hi = RawFelt::new(((*self >> 96) as u32) as u64);
+        let lo_lo = RawFelt::new_unchecked((*self as u32) as u64);
+        let lo_hi = RawFelt::new_unchecked(((*self >> 32) as u32) as u64);
+        let hi_lo = RawFelt::new_unchecked(((*self >> 64) as u32) as u64);
+        let hi_hi = RawFelt::new_unchecked(((*self >> 96) as u32) as u64);
         smallvec![lo_lo, lo_hi, hi_lo, hi_hi]
     }
 }
@@ -654,16 +654,16 @@ pub fn bytes_to_words(bytes: &[u8]) -> Vec<[RawFelt; 4]> {
     let (chunks, remainder) = buf.as_chunks::<4>();
     for chunk in chunks {
         words.push([
-            RawFelt::new(chunk[3] as u64),
-            RawFelt::new(chunk[2] as u64),
-            RawFelt::new(chunk[1] as u64),
-            RawFelt::new(chunk[0] as u64),
+            RawFelt::new_unchecked(chunk[3] as u64),
+            RawFelt::new_unchecked(chunk[2] as u64),
+            RawFelt::new_unchecked(chunk[1] as u64),
+            RawFelt::new_unchecked(chunk[0] as u64),
         ]);
     }
     if !remainder.is_empty() {
         let mut word = [RawFelt::ZERO; 4];
         for (i, n) in remainder.iter().enumerate() {
-            word[i] = RawFelt::new(*n as u64);
+            word[i] = RawFelt::new_unchecked(*n as u64);
         }
         word.reverse();
         words.push(word);
@@ -678,7 +678,7 @@ pub struct Felt(pub RawFelt);
 impl Felt {
     #[inline]
     pub fn new(value: u64) -> Self {
-        Self(RawFelt::new(value))
+        Self(RawFelt::new_unchecked(value))
     }
 }
 
@@ -693,7 +693,7 @@ impl<'de> Deserialize<'de> for Felt {
                     "invalid field element value: exceeds the field modulus",
                 ))
             } else {
-                Ok(Felt(RawFelt::new(n)))
+                Ok(Felt(RawFelt::new_unchecked(n)))
             }
         })
     }
@@ -740,7 +740,7 @@ impl core::str::FromStr for Felt {
         if value >= RawFelt::ORDER_U64 {
             Err("invalid field element value: exceeds the field modulus".to_string())
         } else {
-            Ok(Felt(RawFelt::new(value)))
+            Ok(Felt(RawFelt::new_unchecked(value)))
         }
     }
 }
@@ -753,55 +753,55 @@ impl From<Felt> for miden_processor::Felt {
 
 impl From<bool> for Felt {
     fn from(b: bool) -> Self {
-        Self(RawFelt::new(b as u64))
+        Self(RawFelt::new_unchecked(b as u64))
     }
 }
 
 impl From<u8> for Felt {
     fn from(t: u8) -> Self {
-        Self(RawFelt::new(t as u64))
+        Self(RawFelt::new_unchecked(t as u64))
     }
 }
 
 impl From<i8> for Felt {
     fn from(t: i8) -> Self {
-        Self(RawFelt::new(t as u8 as u64))
+        Self(RawFelt::new_unchecked(t as u8 as u64))
     }
 }
 
 impl From<i16> for Felt {
     fn from(t: i16) -> Self {
-        Self(RawFelt::new(t as u16 as u64))
+        Self(RawFelt::new_unchecked(t as u16 as u64))
     }
 }
 
 impl From<u16> for Felt {
     fn from(t: u16) -> Self {
-        Self(RawFelt::new(t as u64))
+        Self(RawFelt::new_unchecked(t as u64))
     }
 }
 
 impl From<i32> for Felt {
     fn from(t: i32) -> Self {
-        Self(RawFelt::new(t as u32 as u64))
+        Self(RawFelt::new_unchecked(t as u32 as u64))
     }
 }
 
 impl From<u32> for Felt {
     fn from(t: u32) -> Self {
-        Self(RawFelt::new(t as u64))
+        Self(RawFelt::new_unchecked(t as u64))
     }
 }
 
 impl From<u64> for Felt {
     fn from(t: u64) -> Self {
-        Self(RawFelt::new(t))
+        Self(RawFelt::new_unchecked(t))
     }
 }
 
 impl From<i64> for Felt {
     fn from(t: i64) -> Self {
-        Self(RawFelt::new(t as u64))
+        Self(RawFelt::new_unchecked(t as u64))
     }
 }
 
@@ -867,7 +867,7 @@ impl Arbitrary for Felt {
     type Strategy = BoxedStrategy<Self>;
 
     fn arbitrary_with(_args: Self::Parameters) -> Self::Strategy {
-        (0u64..RawFelt::ORDER_U64).prop_map(|v| Felt(RawFelt::new(v))).boxed()
+        (0u64..RawFelt::ORDER_U64).prop_map(|v| Felt(RawFelt::new_unchecked(v))).boxed()
     }
 }
 

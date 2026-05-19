@@ -178,7 +178,9 @@ impl Executor {
 
         let mut processor = FastProcessor::new(self.stack)
             .with_advice(self.advice)
+            .expect("advice inputs should fit advice map limits")
             .with_options(self.options)
+            .expect("execution options should be compatible with advice inputs")
             .with_debugging(true)
             .with_tracing(true);
 
@@ -244,7 +246,9 @@ impl Executor {
 
         let mut processor = FastProcessor::new(self.stack)
             .with_advice(self.advice)
+            .expect("advice inputs should fit advice map limits")
             .with_options(self.options)
+            .expect("execution options should be compatible with advice inputs")
             .with_debugging(true)
             .with_tracing(true);
 

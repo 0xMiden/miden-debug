@@ -549,7 +549,7 @@ fn format_bp_type(ty: &BreakpointType) -> String {
         BreakpointType::Finish => "function return".into(),
         BreakpointType::File(pat) => pat.as_str().to_string(),
         BreakpointType::Line { pattern, line } => format!("{}:{}", pattern.as_str(), line),
-        BreakpointType::Opcode(op) => format!("opcode {:?}", op),
+        BreakpointType::Opcode(matcher) => format!("opcode {matcher}"),
         BreakpointType::Called(pat) => format!("call {}", pat.as_str()),
         BreakpointType::Trace(event) => format!("trace event {event:?}"),
     }

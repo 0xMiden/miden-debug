@@ -31,7 +31,7 @@
 //!
 //! Our dummy server is going to read its input from a text file and write the output to stdout.
 //!
-//! ```no_run
+//! ```rust,no_run
 //! use std::fs::File;
 //! use std::io::{BufReader, BufWriter};
 //!

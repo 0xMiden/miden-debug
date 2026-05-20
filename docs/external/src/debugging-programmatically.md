@@ -105,7 +105,7 @@ use miden_debug::{Executor, BreakpointType};
 
 let source_manager = Arc::new(DefaultSourceManager::default());
 let program_package = Package::deserialize_from_file("path/to/program.masp").map(Arc::new).unwrap();
-let exec = Executor::for_package(program_package.clone(), args).unwrap();
+let exec = Executor::for_package(&program_package, args).unwrap();
 
 let program = program_package.unwrap_program();
 let mut debug_exec = exec.into_debug(&program, source_manager.clone());
@@ -143,6 +143,39 @@ assert!(stack.len() <= 16);
 ```
 
 We will continue to expand on the set of useful APIs for examining program state in upcoming releases.
+
+## Generating flamegraphs programmatically
+
+The flamegraph support is also exposed as a Rust API, so tests can profile a
+program without shelling out to the `miden-debug flamegraph` command. Enable the
+`flamegraph` feature on `miden-debug`, execute a program with a `DebugExecutor`,
+and collect a `FlamegraphProfile` from it:
+
+```rust
+use std::sync::Arc;
+use miden_debug::{
+    Executor,
+    debug_types::DefaultSourceManager,
+    flamegraph::FlamegraphProfile,
+};
+
+let source_manager = Arc::new(DefaultSourceManager::default());
+let program_package = Package::deserialize_from_file("path/to/program.masp").map(Arc::new).unwrap();
+let exec = Executor::for_package(&program_package, args).unwrap();
+
+let program = program_package.unwrap_program();
+let mut debug_exec = exec.into_debug(&program, source_manager);
+
+let profile = FlamegraphProfile::collect(&mut debug_exec).expect("program execution failed");
+assert!(profile.total_cycles() > 0);
+
+profile.write_svg("target/miden-flamegraph.svg").expect("failed to write flamegraph");
+```
+
+If you are integrating with another executor, you can also build a profile from
+already resolved stack names by calling `FlamegraphProfile::record_stack` or
+`FlamegraphProfile::record_stack_path`, then write the result as either SVG or
+folded stack text.
 
 ## Wrapping up
 

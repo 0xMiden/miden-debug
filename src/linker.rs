@@ -175,7 +175,7 @@ impl LinkLibrary {
     }
 }
 
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "flamegraph"))]
 impl clap::builder::ValueParserFactory for LinkLibrary {
     type Parser = LinkLibraryParser;
 
@@ -184,12 +184,12 @@ impl clap::builder::ValueParserFactory for LinkLibrary {
     }
 }
 
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "flamegraph"))]
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct LinkLibraryParser;
 
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "flamegraph"))]
 impl clap::builder::TypedValueParser for LinkLibraryParser {
     type Value = LinkLibrary;
 

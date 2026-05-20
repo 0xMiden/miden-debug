@@ -11,7 +11,7 @@ use miden_core::{
 };
 use miden_debug_types::{Location, SourceFile, SourceManagerExt, SourceSpan};
 use miden_processor::{
-    DefaultDebugHandler, DefaultHost, FutureMaybeSend, Host, ProcessorState, StackInputs,
+    BaseHost, DefaultDebugHandler, DefaultHost, FutureMaybeSend, Host, ProcessorState, StackInputs,
     TraceError, advice::AdviceMutation, event::EventError,
 };
 
@@ -83,7 +83,7 @@ impl StandaloneDapHost {
     }
 }
 
-impl Host for StandaloneDapHost {
+impl BaseHost for StandaloneDapHost {
     fn get_label_and_source_file(
         &self,
         location: &Location,
@@ -91,17 +91,6 @@ impl Host for StandaloneDapHost {
         let maybe_file = self.ensure_source_file(location);
         let span = self.source_manager.location_to_span(location.clone()).unwrap_or_default();
         (span, maybe_file)
-    }
-
-    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
-        self.inner.get_mast_forest(node_digest)
-    }
-
-    fn on_event(
-        &mut self,
-        process: &ProcessorState<'_>,
-    ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
-        self.inner.on_event(process)
     }
 
     fn on_debug(
@@ -118,6 +107,19 @@ impl Host for StandaloneDapHost {
 
     fn resolve_event(&self, event_id: EventId) -> Option<&miden_core::events::EventName> {
         self.inner.resolve_event(event_id)
+    }
+}
+
+impl Host for StandaloneDapHost {
+    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
+        self.inner.get_mast_forest(node_digest)
+    }
+
+    fn on_event(
+        &mut self,
+        process: &ProcessorState<'_>,
+    ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
+        self.inner.on_event(process)
     }
 }
 

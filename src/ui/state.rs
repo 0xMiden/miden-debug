@@ -725,7 +725,9 @@ impl State {
         let context = executor.current_context;
         let memory = executor.processor.memory();
         let read_element = |addr: u32| -> Option<Felt> {
-            memory.read_element(context, Felt::new(addr as u64)).ok()
+            memory
+                .read_element(context, Felt::new(addr as u64).expect("value exceeds field modulus"))
+                .ok()
         };
         let mut output = String::new();
         if expr.count > 1 {
@@ -746,7 +748,11 @@ impl State {
                 return Err("read failed: type 'word' must be aligned to a word boundary".into());
             }
             let word = memory
-                .read_word(context, Felt::new(expr.addr.addr as u64), cycle)
+                .read_word(
+                    context,
+                    Felt::new(expr.addr.addr as u64).expect("value exceeds field modulus"),
+                    cycle,
+                )
                 .unwrap_or_default();
             output.push('[');
             for (i, elem) in word.iter().enumerate() {
@@ -840,7 +846,11 @@ impl State {
 
         // Use live processor state, not the pre-recorded trace, for current-cycle values.
         let read_mem = |addr: u32| -> Option<Felt> {
-            executor.processor.memory().read_element(context, Felt::new(addr as u64)).ok()
+            executor
+                .processor
+                .memory()
+                .read_element(context, Felt::new(addr as u64).expect("value exceeds field modulus"))
+                .ok()
         };
 
         let current_source = if show_all {
@@ -1066,7 +1076,12 @@ fn convert_ui_state(
         })
         .collect();
 
-    let current_stack = snapshot.current_stack.iter().copied().map(Felt::new).collect();
+    let current_stack = snapshot
+        .current_stack
+        .iter()
+        .copied()
+        .map(|v| Felt::new(v).expect("value exceeds field modulus"))
+        .collect();
 
     RemoteSnapshot {
         callstack: CallStack::from_remote_frames(call_frames),

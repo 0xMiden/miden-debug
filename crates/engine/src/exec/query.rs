@@ -2,9 +2,8 @@ use miden_core::{Felt, Word};
 use miden_processor::{ContextId, MemoryError, ProcessorState, trace::RowIndex};
 use smallvec::SmallVec;
 
-use crate::{FromMidenRepr, NativePtr};
-
 use super::trace::MemoryReadError;
+use crate::{FromMidenRepr, NativePtr};
 
 pub trait DebugQuery {
     fn state(&self) -> ProcessorState<'_>;

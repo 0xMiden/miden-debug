@@ -234,8 +234,12 @@ mod tests {
         .unwrap();
 
         let file = ExecutionConfig::parse_str(&text).unwrap();
-        let expected_inputs =
-            StackInputs::new(&[RawFelt::new(1), RawFelt::new(2), RawFelt::new(3)]).unwrap();
+        let expected_inputs = StackInputs::new(&[
+            RawFelt::new(1).expect("value exceeds field modulus"),
+            RawFelt::new(2).expect("value exceeds field modulus"),
+            RawFelt::new(3).expect("value exceeds field modulus"),
+        ])
+        .unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert!(file.advice_inputs.stack.is_empty());
         assert!(file.options.enable_tracing());
@@ -266,16 +270,33 @@ mod tests {
         )
         .unwrap();
         let file = ExecutionConfig::parse_str(&text).unwrap_or_else(|err| panic!("{err}"));
-        let expected_inputs =
-            StackInputs::new(&[RawFelt::new(1), RawFelt::new(2), RawFelt::new(3)]).unwrap();
+        let expected_inputs = StackInputs::new(&[
+            RawFelt::new(1).expect("value exceeds field modulus"),
+            RawFelt::new(2).expect("value exceeds field modulus"),
+            RawFelt::new(3).expect("value exceeds field modulus"),
+        ])
+        .unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert_eq!(
             file.advice_inputs.stack,
-            &[RawFelt::new(1), RawFelt::new(2), RawFelt::new(3), RawFelt::new(4)]
+            &[
+                RawFelt::new(1).expect("value exceeds field modulus"),
+                RawFelt::new(2).expect("value exceeds field modulus"),
+                RawFelt::new(3).expect("value exceeds field modulus"),
+                RawFelt::new(4).expect("value exceeds field modulus")
+            ]
         );
         assert_eq!(
             file.advice_inputs.map.get(&digest).map(|value| value.as_ref()),
-            Some([RawFelt::new(1), RawFelt::new(2), RawFelt::new(3), RawFelt::new(4)].as_slice())
+            Some(
+                [
+                    RawFelt::new(1).expect("value exceeds field modulus"),
+                    RawFelt::new(2).expect("value exceeds field modulus"),
+                    RawFelt::new(3).expect("value exceeds field modulus"),
+                    RawFelt::new(4).expect("value exceeds field modulus")
+                ]
+                .as_slice()
+            )
         );
         assert!(file.options.enable_tracing());
         assert!(file.options.enable_debugging());

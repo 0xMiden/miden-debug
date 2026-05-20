@@ -92,7 +92,11 @@ impl ExecutionTrace {
     ) -> Option<Word> {
         const ZERO: Word = Word::new([Felt::ZERO; 4]);
 
-        match self.processor.memory().read_word(ctx, Felt::new(addr as u64), clk) {
+        match self.processor.memory().read_word(
+            ctx,
+            Felt::new(addr as u64).expect("value exceeds field modulus"),
+            clk,
+        ) {
             Ok(word) => Some(word),
             Err(_) => Some(ZERO),
         }
@@ -106,7 +110,10 @@ impl ExecutionTrace {
         ctx: ContextId,
         _clk: RowIndex,
     ) -> Option<Felt> {
-        self.processor.memory().read_element(ctx, Felt::new(addr as u64)).ok()
+        self.processor
+            .memory()
+            .read_element(ctx, Felt::new(addr as u64).expect("value exceeds field modulus"))
+            .ok()
     }
 
     /// Read a raw byte vector from `addr`, under `ctx`, at cycle `clk`, sufficient to hold a value

@@ -925,11 +925,9 @@ impl DapExecutor {
         // diverge from a pristine fresh session. Phase 2 (terminate-and-reconnect)
         // solves this by creating a completely fresh host.
         loop {
-            let mut processor = FastProcessor::new(stack_inputs)
-                .with_advice(advice_inputs.clone())
-                .expect("advice inputs should fit advice map limits")
-                .with_options(options)
-                .expect("execution options should be compatible with advice inputs");
+            let mut processor =
+                FastProcessor::new_with_options(stack_inputs, advice_inputs.clone(), options)
+                    .expect("advice inputs should fit advice map limits");
 
             let resume_ctx = processor.get_initial_resume_context(program)?;
             let mut wrapper = DapHostWrapper::new(host);

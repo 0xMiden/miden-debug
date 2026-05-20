@@ -176,11 +176,8 @@ impl Executor {
         let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
             Rc::new(Default::default());
 
-        let mut processor = FastProcessor::new(self.stack)
-            .with_advice(self.advice)
+        let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
             .expect("advice inputs should fit advice map limits")
-            .with_options(self.options)
-            .expect("execution options should be compatible with advice inputs")
             .with_debugging(true)
             .with_tracing(true);
 
@@ -244,11 +241,8 @@ impl Executor {
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
         register_builtin_trace_handlers(&mut host, Rc::clone(&trace_events));
 
-        let mut processor = FastProcessor::new(self.stack)
-            .with_advice(self.advice)
+        let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
             .expect("advice inputs should fit advice map limits")
-            .with_options(self.options)
-            .expect("execution options should be compatible with advice inputs")
             .with_debugging(true)
             .with_tracing(true);
 

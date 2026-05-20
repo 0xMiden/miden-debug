@@ -164,11 +164,9 @@ impl DiagnosticExecutor {
         async move {
             // Enable debugging and tracing for richer diagnostics.
             let options = self.options.with_debugging(true).with_tracing(true);
-            let processor = FastProcessor::new(self.stack_inputs)
-                .with_advice(self.advice_inputs)
-                .expect("advice inputs should fit advice map limits")
-                .with_options(options)
-                .expect("execution options should be compatible with advice inputs");
+            let processor =
+                FastProcessor::new_with_options(self.stack_inputs, self.advice_inputs, options)
+                    .expect("advice inputs should fit advice map limits");
 
             let mut wrapper = DiagnosticHostWrapper::new(host);
 

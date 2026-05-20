@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.7.1...miden-debug-engine-v0.8.0) - 2026-05-20
+
+### Added
+
+- *(dap)* support standalone debug adapter launch
+- *(dap)* handle Command::Attach for VS Code DAP clients
+- extend memory queries to DebugExecutor
+- re-export crates whose types appear in our public api
+- expose some basic helpers from DebugExecutor
+
+### Fixed
+
+- *(dap)* preserve events while waiting for responses
+- fix clippy
+- *(dap)* track source variables accurately
+- *(dap)* re-emit Initialized after attach/launch for clients that miss the first one
+- *(dap)* announce thread 1 before initial Stopped event
+- *(dap)* support clients that skip configuration
+
+### Other
+
+- address PR comment
+- address PR comments
+- bump miden-vm to 0.23 / miden-crypto to 0.25
+- simplify opcode breakpoints
+
 ## [0.7.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.7.0...miden-debug-engine-v0.7.1) - 2026-05-06
 
 ### Fixed

@@ -6,6 +6,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.7.1...miden-debug-v0.8.0) - 2026-05-20
+
+### Added
+
+- *(dap)* support standalone debug adapter launch
+- extend memory queries to DebugExecutor
+- re-export crates whose types appear in our public api
+
+### Fixed
+
+- fix clippy
+- *(dap)* track source variables accurately
+
+### Other
+
+- 0.8.0
+- merge next into feature/flamegraph
+- address PR comments
+- bump miden-vm to 0.23 / miden-crypto to 0.25
+- simplify opcode breakpoints
+- describe how to use debugger programmatically
+
 ## [0.7.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.7.0...miden-debug-v0.7.1) - 2026-05-06
 
 ### Fixed

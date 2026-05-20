@@ -26,7 +26,7 @@ use miden_processor::{
 
 use super::{
     DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent,
-    trace::read_memory_bytes, trace_event::TRACE_PRINT_LN,
+    query::read_memory_bytes, trace_event::TRACE_PRINT_LN,
 };
 use crate::{
     debug::{CallStack, DebugVarTracker, NativePtr},
@@ -176,9 +176,8 @@ impl Executor {
         let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
             Rc::new(Default::default());
 
-        let mut processor = FastProcessor::new(self.stack)
-            .with_advice(self.advice)
-            .with_options(self.options)
+        let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
+            .expect("advice inputs should fit advice map limits")
             .with_debugging(true)
             .with_tracing(true);
 
@@ -242,9 +241,8 @@ impl Executor {
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
         register_builtin_trace_handlers(&mut host, Rc::clone(&trace_events));
 
-        let mut processor = FastProcessor::new(self.stack)
-            .with_advice(self.advice)
-            .with_options(self.options)
+        let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
+            .expect("advice inputs should fit advice map limits")
             .with_debugging(true)
             .with_tracing(true);
 

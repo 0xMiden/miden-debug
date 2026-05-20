@@ -15,8 +15,11 @@ use miden_processor::{
 
 use super::{DebuggerHost, ExecutionTrace, TraceMonitor};
 use crate::{
-    Breakpoint, BreakpointType,
-    debug::{CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo},
+    Breakpoint, BreakpointType, OperationMatcher,
+    debug::{
+        CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo,
+        snapshot_transient_debug_values,
+    },
 };
 
 /// Resolve a future that is expected to complete immediately (synchronous host methods).
@@ -79,6 +82,30 @@ pub struct DebugExecutor {
     pub cycle: usize,
     /// Whether or not execution has terminated
     pub stopped: bool,
+}
+
+impl super::query::DebugQuery for DebugExecutor {
+    #[inline]
+    fn state(&self) -> miden_processor::ProcessorState<'_> {
+        self.processor.state()
+    }
+
+    fn current_context(&self) -> ContextId {
+        self.current_context
+    }
+
+    fn current_clock(&self) -> RowIndex {
+        self.processor.state().clock()
+    }
+}
+
+impl DebugExecutor {
+    /// Get the current operand stack as a slice - the top of the stack is the last item in the slice
+    ///
+    /// This returns the entire stack, not just the top 16 elements
+    pub fn stack(&self) -> &[Felt] {
+        self.processor.stack()
+    }
 }
 
 /// Extract the current operation and assembly info from the continuation stack
@@ -209,7 +236,7 @@ impl DebugExecutor {
             .and_then(|nid| resume_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
 
         // Look up debug vars from MAST forest for the current operation
-        let debug_var_infos: Vec<_> = if let (Some(nid), Some(idx)) = (node_id, op_idx) {
+        let mut debug_var_infos: Vec<_> = if let (Some(nid), Some(idx)) = (node_id, op_idx) {
             let forest = resume_ctx.current_forest();
             forest
                 .debug_vars_for_operation(nid, idx)
@@ -219,6 +246,8 @@ impl DebugExecutor {
         } else {
             vec![]
         };
+        let pre_step_stack = self.processor.state().get_stack_state();
+        snapshot_transient_debug_values(&mut debug_var_infos, &pre_step_stack);
 
         // Execute one step
         match poll_immediately(self.processor.step(&mut self.host, resume_ctx)) {
@@ -351,7 +380,7 @@ impl DebugExecutor {
 
             if is_op_boundary
                 && let Some(asmop) = self.current_asmop.as_ref()
-                && matches!(breakpoint.ty, BreakpointType::AsmOpcode(asm_opcode) if asmop.op() == asm_opcode)
+                && matches!(&breakpoint.ty, BreakpointType::Opcode(OperationMatcher::Asm(expected)) if expected == asmop.op())
             {
                 return Ok(());
             }
@@ -392,8 +421,6 @@ impl DebugExecutor {
     /// Consume the [DebugExecutor], converting it into an [ExecutionTrace] at the current cycle.
     pub fn into_execution_trace(self) -> ExecutionTrace {
         ExecutionTrace {
-            root_context: self.root_context,
-            last_cycle: RowIndex::from(self.cycle as u32),
             processor: self.processor,
             outputs: self.stack_outputs,
         }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use log::Level;
 use miden_assembly::DefaultSourceManager;
-use miden_debug::TRACE_PRINT_LN;
+use miden_debug::{DebugQuery, TRACE_PRINT_LN};
 
 #[test]
 fn trace_println_uninitialized_memory_logs_warning_and_continues_execution() {

@@ -822,8 +822,12 @@ pub enum Command {
     /// If the capability is missing or has the value false, a typical client emulates restart by
     /// terminating the debug adapter first and then launching it anew.
     ///
+    /// `arguments` is wrapped in `Option` because clients vary in how they encode the absence of
+    /// extra restart data: VS Code omits the field, Zed sends `"arguments": null`, and the spec
+    /// allows both. Serde's adjacently-tagged enum needs the `Option` to accept `null` here.
+    ///
     /// Specification: [Restart request](https://microsoft.github.io/debug-adapter-protocol/specification#Requests_Restart)
-    Restart(RestartArguments),
+    Restart(Option<RestartArguments>),
     /// The request restarts execution of the specified stackframe.
     /// The debug adapter first sends the response and then a `stopped` event (with reason `restart`)
     /// after the restart has completed.

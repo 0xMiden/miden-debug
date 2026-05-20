@@ -95,6 +95,13 @@ fn run_debugger(
         return run_with_state(state, _logger, _log_level);
     }
 
+    #[cfg(feature = "dap")]
+    if config.start_debug_adapter.is_some() {
+        log::set_boxed_logger(_logger).ok();
+        log::set_max_level(_log_level);
+        return miden_debug::run_dap_server(config);
+    }
+
     #[cfg(feature = "repl")]
     if config.repl {
         return run_repl(config, _logger, _log_level);

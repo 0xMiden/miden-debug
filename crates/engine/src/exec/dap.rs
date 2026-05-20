@@ -1,6 +1,10 @@
 use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
     io::{BufReader, BufWriter},
     net::TcpListener,
+    path::PathBuf,
+    rc::Rc,
     sync::{
         Arc, OnceLock,
         atomic::{AtomicBool, Ordering},
@@ -10,13 +14,14 @@ use std::{
 use dap::prelude::*;
 use miden_core::{
     Word,
-    operations::{AssemblyOp, DebugOptions},
+    mast::{MastNode, MastNodeId},
+    operations::{AssemblyOp, DebugOptions, DebugVarInfo, DebugVarLocation},
     precompile::PrecompileTranscript,
     program::Program,
 };
 use miden_processor::{
-    ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend, Host,
-    ProcessorState, ResumeContext, StackInputs, StackOutputs, TraceError,
+    BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend,
+    Host, ProcessorState, ResumeContext, StackInputs, StackOutputs, TraceError,
     advice::{AdviceInputs, AdviceMutation},
     event::EventError,
     mast::MastForest,
@@ -24,7 +29,10 @@ use miden_processor::{
 };
 
 use super::{TraceEvent, state::extract_current_op};
-use crate::debug::{FormatType, ReadMemoryExpr};
+use crate::debug::{
+    DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, resolve_variable_value,
+    snapshot_transient_debug_values,
+};
 
 // DAP CONFIG
 // ================================================================================================
@@ -36,6 +44,10 @@ static DAP_CONFIG: OnceLock<DapConfig> = OnceLock::new();
 pub struct DapConfig {
     /// The address to listen on, e.g. "127.0.0.1:4711".
     pub listen_addr: String,
+    /// Source path prefixes passed from the compiler/debug plugin. If debug info
+    /// stores paths after `-Ztrim-path-prefix`, clients may still send absolute
+    /// editor paths; these prefixes describe that explicit mapping.
+    source_path_prefixes: Vec<String>,
     /// Shared flag: set by the server when a Phase 2 restart (terminate-and-reconnect) is
     /// requested, read by the caller to decide whether to recompile and re-enter.
     restart_requested: Arc<AtomicBool>,
@@ -45,8 +57,18 @@ impl DapConfig {
     pub fn new(listen_addr: impl Into<String>) -> Self {
         Self {
             listen_addr: listen_addr.into(),
+            source_path_prefixes: Vec::new(),
             restart_requested: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    pub fn with_source_path_prefixes(mut self, prefixes: Vec<PathBuf>) -> Self {
+        self.source_path_prefixes = prefixes
+            .into_iter()
+            .map(|prefix| normalize_source_path(&prefix.to_string_lossy()))
+            .filter(|prefix| !prefix.is_empty())
+            .collect();
+        self
     }
 
     /// Returns `true` if the server has signalled a Phase 2 restart.
@@ -103,23 +125,12 @@ impl<'a, H: Host> DapHostWrapper<'a, H> {
     }
 }
 
-impl<H: Host> Host for DapHostWrapper<'_, H> {
+impl<H: Host> BaseHost for DapHostWrapper<'_, H> {
     fn get_label_and_source_file(
         &self,
         location: &miden_debug_types::Location,
     ) -> (miden_debug_types::SourceSpan, Option<Arc<miden_debug_types::SourceFile>>) {
         self.inner.get_label_and_source_file(location)
-    }
-
-    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
-        self.inner.get_mast_forest(node_digest)
-    }
-
-    fn on_event(
-        &mut self,
-        process: &ProcessorState<'_>,
-    ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
-        self.inner.on_event(process)
     }
 
     fn on_debug(
@@ -156,6 +167,19 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
         event_id: miden_core::events::EventId,
     ) -> Option<&miden_core::events::EventName> {
         self.inner.resolve_event(event_id)
+    }
+}
+
+impl<H: Host> Host for DapHostWrapper<'_, H> {
+    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
+        self.inner.get_mast_forest(node_digest)
+    }
+
+    fn on_event(
+        &mut self,
+        process: &ProcessorState<'_>,
+    ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
+        self.inner.on_event(process)
     }
 }
 
@@ -207,7 +231,11 @@ fn read_memory_at_current_state(
 
         let felt = processor
             .memory()
-            .read_element(ctx, miden_processor::Felt::new(u64::from(expr.addr.addr)))
+            .read_element(
+                ctx,
+                miden_processor::Felt::new(u64::from(expr.addr.addr))
+                    .expect("value exceeds field modulus"),
+            )
             .ok()
             .unwrap_or(miden_processor::Felt::ZERO);
         write_with_format_type!(output, expr, felt.as_canonical_u64());
@@ -224,7 +252,12 @@ fn read_memory_at_current_state(
 
         let word = processor
             .memory()
-            .read_word(ctx, miden_processor::Felt::new(u64::from(expr.addr.addr)), cycle)
+            .read_word(
+                ctx,
+                miden_processor::Felt::new(u64::from(expr.addr.addr))
+                    .expect("value exceeds field modulus"),
+                cycle,
+            )
             .ok()
             .unwrap_or_default();
 
@@ -254,7 +287,10 @@ fn read_memory_at_current_state(
             })?;
         let felt = processor
             .memory()
-            .read_element(ctx, miden_processor::Felt::new(u64::from(addr)))
+            .read_element(
+                ctx,
+                miden_processor::Felt::new(u64::from(addr)).expect("value exceeds field modulus"),
+            )
             .ok()
             .unwrap_or_default();
         elems.push(felt);
@@ -384,6 +420,12 @@ struct StoredFunctionBreakpoint {
     pattern: glob::Pattern,
 }
 
+struct ContinueBreakpoints<'a> {
+    source: &'a [StoredBreakpoint],
+    function: &'a [StoredFunctionBreakpoint],
+    source_path_prefixes: &'a [String],
+}
+
 // RESOLVE ASMOP LOCATION
 // ================================================================================================
 
@@ -396,6 +438,329 @@ fn resolve_asmop_location<H: Host>(asmop: &AssemblyOp, host: &H) -> Option<(Stri
     let path = file_line_col.uri.as_ref().to_string();
     let line = file_line_col.line.to_u32() as i64;
     Some((path, line))
+}
+
+fn normalize_source_path(path: &str) -> String {
+    let path = path.trim();
+    let path = path.strip_prefix("file://").unwrap_or(path);
+    let path = path.replace('\\', "/");
+
+    let is_absolute = path.starts_with('/');
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.last().is_some_and(|last| *last != "..") {
+                    parts.pop();
+                } else {
+                    parts.push(part);
+                }
+            }
+            _ => parts.push(part),
+        }
+    }
+
+    let normalized = parts.join("/");
+    if is_absolute && !normalized.is_empty() {
+        format!("/{normalized}")
+    } else {
+        normalized
+    }
+}
+
+fn strip_source_prefix(path: &str, prefix: &str) -> Option<String> {
+    let path = path.trim_start_matches('/');
+    let prefix = prefix.trim_start_matches('/').trim_end_matches('/');
+    path.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(ToOwned::to_owned)
+}
+
+fn source_paths_match(left: &str, right: &str, trim_prefixes: &[String]) -> bool {
+    let left = normalize_source_path(left);
+    let right = normalize_source_path(right);
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+
+    if left == right {
+        return true;
+    }
+
+    for prefix in trim_prefixes {
+        if strip_source_prefix(&left, prefix).is_some_and(|stripped| stripped == right) {
+            return true;
+        }
+        if strip_source_prefix(&right, prefix).is_some_and(|stripped| stripped == left) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn breakable_source_lines<H: Host>(
+    forest: &MastForest,
+    host: &H,
+    source_path: &str,
+    trim_prefixes: &[String],
+) -> BTreeSet<i64> {
+    let mut lines = BTreeSet::new();
+
+    for (node_idx, node) in forest.nodes().iter().enumerate() {
+        let MastNode::Block(block) = node else {
+            continue;
+        };
+
+        let node_id = MastNodeId::new_unchecked(node_idx as u32);
+        for op_idx in 0..block.num_operations() as usize {
+            let Some(asmop) = forest.get_assembly_op(node_id, Some(op_idx)) else {
+                continue;
+            };
+            let Some((path, line)) = resolve_asmop_location(asmop, host) else {
+                continue;
+            };
+            if source_paths_match(&path, source_path, trim_prefixes) {
+                lines.insert(line);
+            }
+        }
+    }
+
+    lines
+}
+
+fn minimum_source_line_for_proc<H: Host>(
+    forest: &MastForest,
+    host: &H,
+    procedure: &str,
+    source_path: &str,
+    trim_prefixes: &[String],
+) -> Option<i64> {
+    let mut min_line: Option<i64> = None;
+
+    for (node_idx, node) in forest.nodes().iter().enumerate() {
+        let MastNode::Block(block) = node else {
+            continue;
+        };
+
+        let node_id = MastNodeId::new_unchecked(node_idx as u32);
+        for op_idx in 0..block.num_operations() as usize {
+            let Some(asmop) = forest.get_assembly_op(node_id, Some(op_idx)) else {
+                continue;
+            };
+            if asmop.context_name() != procedure {
+                continue;
+            }
+            let Some((path, line)) = resolve_asmop_location(asmop, host) else {
+                continue;
+            };
+            if line > 1 && source_paths_match(&path, source_path, trim_prefixes) {
+                min_line = Some(min_line.map_or(line, |current| current.min(line)));
+            }
+        }
+    }
+
+    min_line
+}
+
+fn resolve_breakpoint_line(lines: &BTreeSet<i64>, requested_line: i64) -> Option<i64> {
+    if lines.contains(&requested_line) {
+        return Some(requested_line);
+    }
+
+    lines
+        .range(requested_line..)
+        .next()
+        .copied()
+        .or_else(|| lines.range(..requested_line).next_back().copied())
+}
+
+fn debug_var_infos_for_context(ctx: &ResumeContext) -> Vec<DebugVarInfo> {
+    let (_op, node_id, op_idx, _control) = extract_current_op(ctx);
+    let Some(node_id) = node_id else {
+        return Vec::new();
+    };
+    let Some(op_idx) = op_idx else {
+        return Vec::new();
+    };
+
+    let forest = ctx.current_forest();
+    forest
+        .debug_vars_for_operation(node_id, op_idx)
+        .iter()
+        .filter_map(|var_id| forest.debug_var(*var_id).cloned())
+        .collect()
+}
+
+fn record_debug_vars(
+    debug_state: &mut DapDebugVarState,
+    cycle: usize,
+    debug_var_infos: Vec<DebugVarInfo>,
+) {
+    let clk = RowIndex::from(cycle as u32);
+    debug_state.debug_vars.record_events(clk, debug_var_infos);
+    debug_state.debug_vars.update_to_cycle(clk);
+}
+
+fn is_compiler_generated_name(name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix("local") else {
+        return false;
+    };
+    !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn is_visible_source_var<H: Host>(
+    var: &DebugVarSnapshot,
+    current_asmop: Option<&AssemblyOp>,
+    host: &DapHostWrapper<'_, H>,
+    source_path_prefixes: &[String],
+    show_all: bool,
+) -> bool {
+    if show_all {
+        return true;
+    }
+
+    let name = var.info.name();
+    if is_compiler_generated_name(name) {
+        return false;
+    }
+
+    let Some(current) = current_asmop.and_then(|asmop| resolve_asmop_location(asmop, host)) else {
+        return true;
+    };
+
+    let Some(var_loc) = var.info.location() else {
+        return true;
+    };
+
+    source_var_location_is_visible(
+        var_loc.uri.as_str(),
+        i64::from(var_loc.line.to_u32()),
+        &current.0,
+        current.1,
+        source_path_prefixes,
+    )
+}
+
+fn source_var_location_is_visible(
+    var_path: &str,
+    var_line: i64,
+    current_path: &str,
+    current_line: i64,
+    source_path_prefixes: &[String],
+) -> bool {
+    source_paths_match(var_path, current_path, source_path_prefixes) && var_line < current_line
+}
+
+fn resolve_debug_var_value(
+    processor: &mut FastProcessor,
+    location: &DebugVarLocation,
+) -> Option<miden_processor::Felt> {
+    let state = processor.state();
+    let stack = state.get_stack_state();
+    let context = state.ctx();
+
+    let read_mem = |addr: u32| -> Option<miden_processor::Felt> {
+        processor
+            .memory()
+            .read_element(
+                context,
+                miden_processor::Felt::new(u64::from(addr)).expect("value exceeds field modulus"),
+            )
+            .ok()
+    };
+
+    resolve_variable_value(location, &stack, read_mem, |offset| {
+        let fmp_addr = miden_core::FMP_ADDR.as_canonical_u64() as u32;
+        let fmp = read_mem(fmp_addr)?;
+        let addr = (fmp.as_canonical_u64() as i64 + i64::from(offset)) as u32;
+        read_mem(addr)
+    })
+}
+
+fn debug_var_to_dap_variable(
+    processor: &mut FastProcessor,
+    var: &DebugVarSnapshot,
+) -> types::Variable {
+    let name = var.info.name().to_string();
+    let location = var.info.value_location();
+    let value = resolve_debug_var_value(processor, location)
+        .map(|felt| felt.as_canonical_u64().to_string())
+        .unwrap_or_else(|| location.to_string());
+
+    types::Variable {
+        name,
+        value,
+        type_field: Some("Felt".into()),
+        variables_reference: 0,
+        ..Default::default()
+    }
+}
+
+fn debug_variables<H: Host>(
+    processor: &mut FastProcessor,
+    host: &DapHostWrapper<'_, H>,
+    current_asmop: Option<&AssemblyOp>,
+    debug_state: &DapDebugVarState,
+    source_path_prefixes: &[String],
+    show_all: bool,
+) -> Vec<types::Variable> {
+    debug_state
+        .debug_vars
+        .current_variables()
+        .filter(|var| {
+            is_visible_source_var(var, current_asmop, host, source_path_prefixes, show_all)
+        })
+        .map(|var| debug_var_to_dap_variable(processor, var))
+        .collect()
+}
+
+fn format_debug_variables<H: Host>(
+    processor: &mut FastProcessor,
+    host: &DapHostWrapper<'_, H>,
+    current_asmop: Option<&AssemblyOp>,
+    debug_state: &DapDebugVarState,
+    source_path_prefixes: &[String],
+    show_all: bool,
+) -> String {
+    let variables = debug_variables(
+        processor,
+        host,
+        current_asmop,
+        debug_state,
+        source_path_prefixes,
+        show_all,
+    );
+
+    if variables.is_empty() {
+        if show_all {
+            "No debug variables tracked".into()
+        } else {
+            "No source-level variables (use 'vars all' to show compiler locals)".into()
+        }
+    } else {
+        variables
+            .into_iter()
+            .map(|var| format!("{}={}", var.name, var.value))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn evaluate_debug_variable<H: Host>(
+    processor: &mut FastProcessor,
+    host: &DapHostWrapper<'_, H>,
+    current_asmop: Option<&AssemblyOp>,
+    debug_state: &DapDebugVarState,
+    source_path_prefixes: &[String],
+    expression: &str,
+) -> Option<types::Variable> {
+    let var = debug_state.debug_vars.get_variable(expression)?;
+    if !is_visible_source_var(var, current_asmop, host, source_path_prefixes, false) {
+        return None;
+    }
+    Some(debug_var_to_dap_variable(processor, var))
 }
 
 /// Update the top frame on the host's frame stack with the current asmop's name and location.
@@ -445,6 +810,19 @@ pub struct DapExecutor {
 /// Variables reference IDs for scopes.
 const SCOPE_STACK: i64 = 1;
 const SCOPE_MEMORY: i64 = 2;
+const SCOPE_LOCALS: i64 = 3;
+
+struct DapDebugVarState {
+    debug_vars: DebugVarTracker,
+}
+
+impl DapDebugVarState {
+    fn new() -> Self {
+        Self {
+            debug_vars: DebugVarTracker::new(Rc::new(RefCell::new(BTreeMap::new()))),
+        }
+    }
+}
 
 impl DapExecutor {
     pub fn new(
@@ -531,7 +909,13 @@ impl DapExecutor {
         let mut breakpoints: Vec<StoredBreakpoint> = Vec::new();
         let mut function_breakpoints: Vec<StoredFunctionBreakpoint> = Vec::new();
         let mut is_restart = false;
+        // VS Code's flow waits for `configurationDone` before stopping the VM at
+        // the entry point; Zed's flow never sends `configurationDone`. Track
+        // whether the entry stop has already been announced so it fires
+        // exactly once regardless of which client we're talking to.
+        let mut entry_announced = false;
         let restart_flag = self.config.restart_requested.clone();
+        let source_path_prefixes = self.config.source_path_prefixes.clone();
 
         // Outer restart loop — on restart, the DapHostWrapper borrow is dropped,
         // a fresh FastProcessor is created, and the inner event loop re-enters.
@@ -541,9 +925,9 @@ impl DapExecutor {
         // diverge from a pristine fresh session. Phase 2 (terminate-and-reconnect)
         // solves this by creating a completely fresh host.
         loop {
-            let mut processor = FastProcessor::new(stack_inputs)
-                .with_advice(advice_inputs.clone())
-                .with_options(options);
+            let mut processor =
+                FastProcessor::new_with_options(stack_inputs, advice_inputs.clone(), options)
+                    .expect("advice inputs should fit advice map limits");
 
             let resume_ctx = processor.get_initial_resume_context(program)?;
             let mut wrapper = DapHostWrapper::new(host);
@@ -551,6 +935,7 @@ impl DapExecutor {
             let mut resume_ctx = Some(resume_ctx);
             let mut cycle: usize = 0;
             let mut current_asmop: Option<AssemblyOp> = None;
+            let mut debug_state = DapDebugVarState::new();
 
             // Extract initial asmop and populate the root frame.
             if let Some(ctx) = resume_ctx.as_ref() {
@@ -603,6 +988,7 @@ impl DapExecutor {
                             supports_stepping_granularity: Some(true),
                             supports_restart_request: Some(true),
                             supports_function_breakpoints: Some(true),
+                            supports_evaluate_for_hovers: Some(true),
                             ..Default::default()
                         };
                         let resp = req.success(ResponseBody::Initialize(caps));
@@ -612,35 +998,63 @@ impl DapExecutor {
 
                     Command::Launch(_) => {
                         server.respond(req.success(ResponseBody::Launch)).ok();
+                        // Re-emit Initialized — some clients only listen for it after
+                        // launch/attach has been acknowledged. VS Code tolerates the
+                        // duplicate (it ignores Initialized after the first one).
+                        server.send_event(Event::Initialized).ok();
+                        announce_entry_stop(
+                            &mut server,
+                            &mut processor,
+                            &wrapper,
+                            current_asmop.as_ref(),
+                            cycle,
+                            &mut entry_announced,
+                        );
+                    }
+
+                    // VS Code's default flow issues `attach` when launch.json uses
+                    // `request: "attach"`. The server is already bound to a TCP port and
+                    // running against a compiled script, so there is nothing to do beyond
+                    // acknowledging the request — mirror the `Launch` handling.
+                    Command::Attach(_) => {
+                        server.respond(req.success(ResponseBody::Attach)).ok();
+                        // See the Launch arm — re-emit Initialized for clients that
+                        // miss the first one.
+                        server.send_event(Event::Initialized).ok();
+                        // Zed never sends `configurationDone`, so announce the entry
+                        // stop here as well. The `entry_announced` guard makes this
+                        // a no-op when `configurationDone` later fires (VS Code path).
+                        announce_entry_stop(
+                            &mut server,
+                            &mut processor,
+                            &wrapper,
+                            current_asmop.as_ref(),
+                            cycle,
+                            &mut entry_announced,
+                        );
                     }
 
                     Command::ConfigurationDone => {
                         if let Ok(resp) = req.ack() {
                             server.respond(resp).ok();
                         }
-                        // Push initial UI state snapshot, then pause at entry point.
-                        send_ui_state_snapshot(
+                        announce_entry_stop(
                             &mut server,
                             &mut processor,
                             &wrapper,
                             current_asmop.as_ref(),
                             cycle,
+                            &mut entry_announced,
                         );
-                        server
-                            .send_event(Event::Stopped(events::StoppedEventBody {
-                                reason: types::StoppedEventReason::Entry,
-                                description: Some("Paused at program entry".into()),
-                                thread_id: Some(1),
-                                preserve_focus_hint: None,
-                                text: None,
-                                all_threads_stopped: Some(true),
-                                hit_breakpoint_ids: None,
-                            }))
-                            .ok();
                     }
 
                     Command::Restart(ref args) => {
-                        let has_arguments = args.arguments.is_some();
+                        // `args.is_some()` means the client sent a non-null
+                        // `RestartArguments` envelope; `arguments.arguments.is_some()`
+                        // means that envelope carries an explicit launch/attach payload.
+                        // Only the latter signals "Phase 2: recompile from disk".
+                        let has_arguments =
+                            args.as_ref().and_then(|a| a.arguments.as_ref()).is_some();
                         server.respond(req.success(ResponseBody::Restart)).ok();
                         if has_arguments {
                             // Phase 2: terminate-and-reconnect for recompilation.
@@ -674,14 +1088,19 @@ impl DapExecutor {
                             }));
                         server.respond(resp).ok();
 
+                        let continue_breakpoints = ContinueBreakpoints {
+                            source: &breakpoints,
+                            function: &function_breakpoints,
+                            source_path_prefixes: &source_path_prefixes,
+                        };
                         match step_until_breakpoint(
                             &mut processor,
                             &mut wrapper,
                             &mut resume_ctx,
                             &mut cycle,
                             &mut current_asmop,
-                            &breakpoints,
-                            &function_breakpoints,
+                            &continue_breakpoints,
+                            &mut debug_state,
                         ) {
                             StepResult::Stepped | StepResult::Breakpoint(_) => {
                                 send_ui_state_snapshot(
@@ -713,17 +1132,36 @@ impl DapExecutor {
                         }
                     }
 
-                    Command::Next(_) => {
+                    Command::Next(ref args) => {
+                        let is_instruction_step = matches!(
+                            args.granularity,
+                            Some(types::SteppingGranularity::Instruction)
+                        );
                         let resp = req.success(ResponseBody::Next);
                         server.respond(resp).ok();
 
-                        match step_over(
-                            &mut processor,
-                            &mut wrapper,
-                            &mut resume_ctx,
-                            &mut cycle,
-                            &mut current_asmop,
-                        ) {
+                        let step_result = if is_instruction_step {
+                            step_over(
+                                &mut processor,
+                                &mut wrapper,
+                                &mut resume_ctx,
+                                &mut cycle,
+                                &mut current_asmop,
+                                &mut debug_state,
+                            )
+                        } else {
+                            step_next_line(
+                                &mut processor,
+                                &mut wrapper,
+                                &mut resume_ctx,
+                                &mut cycle,
+                                &mut current_asmop,
+                                &source_path_prefixes,
+                                &mut debug_state,
+                            )
+                        };
+
+                        match step_result {
                             StepResult::Stepped | StepResult::Breakpoint(_) => {
                                 if resume_ctx.is_none() {
                                     server.send_event(Event::Terminated(None)).ok();
@@ -758,6 +1196,7 @@ impl DapExecutor {
                             &mut resume_ctx,
                             &mut cycle,
                             &mut current_asmop,
+                            &mut debug_state,
                         ) {
                             StepResult::Stepped | StepResult::Breakpoint(_) => {
                                 if resume_ctx.is_none() {
@@ -793,6 +1232,7 @@ impl DapExecutor {
                             &mut resume_ctx,
                             &mut cycle,
                             &mut current_asmop,
+                            &mut debug_state,
                         ) {
                             StepResult::Stepped | StepResult::Breakpoint(_) => {
                                 if resume_ctx.is_none() {
@@ -897,6 +1337,24 @@ impl DapExecutor {
                         let resp = req.success(ResponseBody::Scopes(responses::ScopesResponse {
                             scopes: vec![
                                 types::Scope {
+                                    name: "Local Variables".into(),
+                                    variables_reference: SCOPE_LOCALS,
+                                    presentation_hint: Some(types::ScopePresentationhint::Locals),
+                                    named_variables: Some(
+                                        debug_variables(
+                                            &mut processor,
+                                            &wrapper,
+                                            current_asmop.as_ref(),
+                                            &debug_state,
+                                            &source_path_prefixes,
+                                            false,
+                                        )
+                                        .len() as i64,
+                                    ),
+                                    expensive: false,
+                                    ..Default::default()
+                                },
+                                types::Scope {
                                     name: "Operand Stack".into(),
                                     variables_reference: SCOPE_STACK,
                                     expensive: false,
@@ -915,6 +1373,14 @@ impl DapExecutor {
 
                     Command::Variables(ref args) => {
                         let variables = match args.variables_reference {
+                            SCOPE_LOCALS => debug_variables(
+                                &mut processor,
+                                &wrapper,
+                                current_asmop.as_ref(),
+                                &debug_state,
+                                &source_path_prefixes,
+                                false,
+                            ),
                             SCOPE_STACK => {
                                 let state = processor.state();
                                 let stack = state.get_stack_state();
@@ -960,18 +1426,46 @@ impl DapExecutor {
                     // --- Breakpoints ---
                     Command::SetBreakpoints(ref args) => {
                         let source_path = args.source.path.clone().unwrap_or_default();
-                        breakpoints.retain(|bp| bp.path != source_path);
+                        breakpoints.retain(|bp| {
+                            !source_paths_match(&bp.path, &source_path, &source_path_prefixes)
+                        });
+                        let breakable_lines = breakable_source_lines(
+                            program.mast_forest(),
+                            &wrapper,
+                            &source_path,
+                            &source_path_prefixes,
+                        );
 
                         let mut confirmed = Vec::new();
                         if let Some(bps) = &args.breakpoints {
                             for sbp in bps {
-                                breakpoints.push(StoredBreakpoint {
-                                    path: source_path.clone(),
-                                    line: sbp.line,
-                                });
+                                let resolved_line =
+                                    resolve_breakpoint_line(&breakable_lines, sbp.line);
+                                let verified = resolved_line.is_some();
+                                let actual_line = resolved_line.unwrap_or(sbp.line);
+                                let message = match resolved_line {
+                                    Some(line) if line != sbp.line => {
+                                        Some(format!("Moved to executable line {line}."))
+                                    }
+                                    Some(_) => None,
+                                    None => Some(
+                                        "No executable Miden operation is mapped to this source \
+                                         file."
+                                            .into(),
+                                    ),
+                                };
+
+                                if verified {
+                                    breakpoints.push(StoredBreakpoint {
+                                        path: source_path.clone(),
+                                        line: actual_line,
+                                    });
+                                }
+
                                 confirmed.push(types::Breakpoint {
-                                    verified: true,
-                                    line: Some(sbp.line),
+                                    verified,
+                                    message,
+                                    line: Some(actual_line),
                                     source: Some(types::Source {
                                         path: Some(source_path.clone()),
                                         ..Default::default()
@@ -1070,8 +1564,77 @@ impl DapExecutor {
                         }
                     }
 
-                    Command::Evaluate(ref _args) => {
-                        server.respond(req.error("Unsupported expression")).ok();
+                    Command::Evaluate(ref args)
+                        if args.expression == "vars" || args.expression == ":vars" =>
+                    {
+                        let result = format_debug_variables(
+                            &mut processor,
+                            &wrapper,
+                            current_asmop.as_ref(),
+                            &debug_state,
+                            &source_path_prefixes,
+                            false,
+                        );
+                        let resp =
+                            req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
+                                result,
+                                type_field: Some("string".into()),
+                                presentation_hint: None,
+                                variables_reference: 0,
+                                named_variables: None,
+                                indexed_variables: None,
+                                memory_reference: None,
+                            }));
+                        server.respond(resp).ok();
+                    }
+
+                    Command::Evaluate(ref args)
+                        if args.expression == "vars all" || args.expression == ":vars all" =>
+                    {
+                        let result = format_debug_variables(
+                            &mut processor,
+                            &wrapper,
+                            current_asmop.as_ref(),
+                            &debug_state,
+                            &source_path_prefixes,
+                            true,
+                        );
+                        let resp =
+                            req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
+                                result,
+                                type_field: Some("string".into()),
+                                presentation_hint: None,
+                                variables_reference: 0,
+                                named_variables: None,
+                                indexed_variables: None,
+                                memory_reference: None,
+                            }));
+                        server.respond(resp).ok();
+                    }
+
+                    Command::Evaluate(ref args) => {
+                        if let Some(variable) = evaluate_debug_variable(
+                            &mut processor,
+                            &wrapper,
+                            current_asmop.as_ref(),
+                            &debug_state,
+                            &source_path_prefixes,
+                            args.expression.as_str(),
+                        ) {
+                            let resp =
+                                req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
+                                    result: variable.value,
+                                    type_field: variable.type_field,
+                                    presentation_hint: None,
+                                    variables_reference: 0,
+                                    named_variables: None,
+                                    indexed_variables: None,
+                                    memory_reference: None,
+                                }));
+                            server.respond(resp).ok();
+                        } else {
+                            server.respond(req.error("Unsupported expression")).ok();
+                        }
                     }
 
                     // --- Unhandled ---
@@ -1087,7 +1650,7 @@ impl DapExecutor {
                     stack: StackOutputs::new(&[]).expect("empty stack outputs"),
                     advice: Default::default(),
                     memory: Default::default(),
-                    final_pc_transcript: PrecompileTranscript::default(),
+                    final_precompile_transcript: PrecompileTranscript::default(),
                 });
             }
 
@@ -1121,12 +1684,12 @@ impl DapExecutor {
             let stack = StackOutputs::new(&stack_top)
                 .unwrap_or_else(|_| StackOutputs::new(&[]).expect("empty stack outputs"));
 
-            let (advice, memory, final_pc_transcript) = processor.into_parts();
+            let (advice, memory, final_precompile_transcript) = processor.into_parts();
             return Ok(ExecutionOutput {
                 stack,
                 advice,
                 memory,
-                final_pc_transcript,
+                final_precompile_transcript,
             });
         } // end outer restart loop
     }
@@ -1135,6 +1698,68 @@ impl DapExecutor {
 // STEPPING HELPERS
 // ================================================================================================
 
+fn advance_one<H: Host>(
+    processor: &mut FastProcessor,
+    host: &mut DapHostWrapper<'_, H>,
+    ctx: ResumeContext,
+    cycle: &mut usize,
+    current_asmop: &mut Option<AssemblyOp>,
+    debug_state: &mut DapDebugVarState,
+) -> Result<Option<ResumeContext>, ExecutionError> {
+    let (_op, node_id, op_idx, _control) = extract_current_op(&ctx);
+    let executed_asmop =
+        node_id.and_then(|nid| ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
+    let mut debug_var_infos = debug_var_infos_for_context(&ctx);
+    let pre_step_stack = processor.state().get_stack_state();
+    snapshot_transient_debug_values(&mut debug_var_infos, &pre_step_stack);
+    match poll_immediately(processor.step(host, ctx)) {
+        Ok(Some(new_ctx)) => {
+            *cycle += 1;
+            record_debug_vars(debug_state, *cycle, debug_var_infos);
+            *current_asmop = executed_asmop;
+            Ok(Some(new_ctx))
+        }
+        Ok(None) => {
+            *cycle += 1;
+            *current_asmop = None;
+            Ok(None)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+fn is_next_source_line(
+    start_proc: Option<&str>,
+    start_loc: Option<&(String, i64)>,
+    current_proc: Option<&str>,
+    current_loc: Option<&(String, i64)>,
+    source_path_prefixes: &[String],
+    minimum_source_line: Option<i64>,
+) -> bool {
+    let same_proc = match (start_proc, current_proc) {
+        (Some(start), Some(current)) => start == current,
+        (Some(_), None) => false,
+        _ => true,
+    };
+    if !same_proc {
+        return false;
+    }
+
+    if let (Some(minimum_source_line), Some(current)) = (minimum_source_line, current_loc)
+        && current.1 < minimum_source_line
+    {
+        return false;
+    }
+
+    match (start_loc, current_loc) {
+        (Some(start), Some(current)) => {
+            source_paths_match(&start.0, &current.0, source_path_prefixes) && start.1 != current.1
+        }
+        (None, Some(_)) => true,
+        _ => false,
+    }
+}
+
 /// Execute a single VM step.
 fn step_one<H: Host>(
     processor: &mut FastProcessor,
@@ -1142,27 +1767,20 @@ fn step_one<H: Host>(
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
     current_asmop: &mut Option<AssemblyOp>,
+    debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let ctx = match resume_ctx.take() {
         Some(ctx) => ctx,
         None => return StepResult::Terminated,
     };
 
-    match poll_immediately(processor.step(host, ctx)) {
+    match advance_one(processor, host, ctx, cycle, current_asmop, debug_state) {
         Ok(Some(new_ctx)) => {
-            *cycle += 1;
-            let (_op, node_id, op_idx, _control) = extract_current_op(&new_ctx);
-            *current_asmop = node_id
-                .and_then(|nid| new_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
             *resume_ctx = Some(new_ctx);
             update_top_frame(host, current_asmop.as_ref());
             StepResult::Stepped
         }
-        Ok(None) => {
-            *cycle += 1;
-            *current_asmop = None;
-            StepResult::Terminated
-        }
+        Ok(None) => StepResult::Terminated,
         Err(e) => StepResult::Error(e),
     }
 }
@@ -1174,6 +1792,7 @@ fn step_over<H: Host>(
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
     current_asmop: &mut Option<AssemblyOp>,
+    debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let original_asmop = current_asmop.clone();
 
@@ -1183,12 +1802,8 @@ fn step_over<H: Host>(
             None => return StepResult::Terminated,
         };
 
-        match poll_immediately(processor.step(host, ctx)) {
+        match advance_one(processor, host, ctx, cycle, current_asmop, debug_state) {
             Ok(Some(new_ctx)) => {
-                *cycle += 1;
-                let (_op, node_id, op_idx, _control) = extract_current_op(&new_ctx);
-                *current_asmop = node_id
-                    .and_then(|nid| new_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
                 *resume_ctx = Some(new_ctx);
 
                 if *current_asmop != original_asmop {
@@ -1196,11 +1811,73 @@ fn step_over<H: Host>(
                     return StepResult::Stepped;
                 }
             }
-            Ok(None) => {
-                *cycle += 1;
-                *current_asmop = None;
-                return StepResult::Terminated;
+            Ok(None) => return StepResult::Terminated,
+            Err(e) => return StepResult::Error(e),
+        }
+    }
+}
+
+/// Step over source lines: advance until the current source line changes.
+fn step_next_line<H: Host>(
+    processor: &mut FastProcessor,
+    host: &mut DapHostWrapper<'_, H>,
+    resume_ctx: &mut Option<ResumeContext>,
+    cycle: &mut usize,
+    current_asmop: &mut Option<AssemblyOp>,
+    source_path_prefixes: &[String],
+    debug_state: &mut DapDebugVarState,
+) -> StepResult {
+    let original_asmop = current_asmop.clone();
+    let start_proc = original_asmop.as_ref().map(|asmop| asmop.context_name().to_string());
+    let start_loc = original_asmop.as_ref().and_then(|asmop| resolve_asmop_location(asmop, host));
+    let minimum_source_line = if let (Some(ctx), Some(proc), Some((source_path, _line))) =
+        (resume_ctx.as_ref(), start_proc.as_deref(), start_loc.as_ref())
+    {
+        minimum_source_line_for_proc(
+            ctx.current_forest(),
+            host,
+            proc,
+            source_path,
+            source_path_prefixes,
+        )
+    } else {
+        None
+    };
+
+    loop {
+        let ctx = match resume_ctx.take() {
+            Some(ctx) => ctx,
+            None => return StepResult::Terminated,
+        };
+
+        match advance_one(processor, host, ctx, cycle, current_asmop, debug_state) {
+            Ok(Some(new_ctx)) => {
+                *resume_ctx = Some(new_ctx);
+
+                let current_proc =
+                    current_asmop.as_ref().map(|asmop| asmop.context_name().to_string());
+                let current_loc =
+                    current_asmop.as_ref().and_then(|asmop| resolve_asmop_location(asmop, host));
+                let has_source_context = start_loc.is_some() || current_loc.is_some();
+                let reached_next = if has_source_context {
+                    is_next_source_line(
+                        start_proc.as_deref(),
+                        start_loc.as_ref(),
+                        current_proc.as_deref(),
+                        current_loc.as_ref(),
+                        source_path_prefixes,
+                        minimum_source_line,
+                    )
+                } else {
+                    *current_asmop != original_asmop
+                };
+
+                if reached_next {
+                    update_top_frame(host, current_asmop.as_ref());
+                    return StepResult::Stepped;
+                }
             }
+            Ok(None) => return StepResult::Terminated,
             Err(e) => return StepResult::Error(e),
         }
     }
@@ -1213,6 +1890,7 @@ fn step_out<H: Host>(
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
     current_asmop: &mut Option<AssemblyOp>,
+    debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let target_depth = host.call_depth.saturating_sub(1);
 
@@ -1222,12 +1900,8 @@ fn step_out<H: Host>(
             None => return StepResult::Terminated,
         };
 
-        match poll_immediately(processor.step(host, ctx)) {
+        match advance_one(processor, host, ctx, cycle, current_asmop, debug_state) {
             Ok(Some(new_ctx)) => {
-                *cycle += 1;
-                let (_op, node_id, op_idx, _control) = extract_current_op(&new_ctx);
-                *current_asmop = node_id
-                    .and_then(|nid| new_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
                 *resume_ctx = Some(new_ctx);
 
                 if host.call_depth <= target_depth {
@@ -1235,11 +1909,7 @@ fn step_out<H: Host>(
                     return StepResult::Stepped;
                 }
             }
-            Ok(None) => {
-                *cycle += 1;
-                *current_asmop = None;
-                return StepResult::Terminated;
-            }
+            Ok(None) => return StepResult::Terminated,
             Err(e) => return StepResult::Error(e),
         }
     }
@@ -1252,8 +1922,8 @@ fn step_until_breakpoint<H: Host>(
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
     current_asmop: &mut Option<AssemblyOp>,
-    breakpoints: &[StoredBreakpoint],
-    function_breakpoints: &[StoredFunctionBreakpoint],
+    breakpoints: &ContinueBreakpoints<'_>,
+    debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     loop {
         let ctx = match resume_ctx.take() {
@@ -1261,12 +1931,8 @@ fn step_until_breakpoint<H: Host>(
             None => return StepResult::Terminated,
         };
 
-        match poll_immediately(processor.step(host, ctx)) {
+        match advance_one(processor, host, ctx, cycle, current_asmop, debug_state) {
             Ok(Some(new_ctx)) => {
-                *cycle += 1;
-                let (_op, node_id, op_idx, _control) = extract_current_op(&new_ctx);
-                *current_asmop = node_id
-                    .and_then(|nid| new_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
                 *resume_ctx = Some(new_ctx);
 
                 if let Some(asmop) = current_asmop.as_ref() {
@@ -1274,9 +1940,13 @@ fn step_until_breakpoint<H: Host>(
 
                     // Check line breakpoints
                     if let Some((ref path, line)) = resolved {
-                        for bp in breakpoints {
+                        for bp in breakpoints.source {
                             if bp.line == line
-                                && (path.ends_with(&bp.path) || bp.path.ends_with(path))
+                                && source_paths_match(
+                                    path,
+                                    &bp.path,
+                                    breakpoints.source_path_prefixes,
+                                )
                             {
                                 update_top_frame(host, current_asmop.as_ref());
                                 return StepResult::Breakpoint(line);
@@ -1287,10 +1957,10 @@ fn step_until_breakpoint<H: Host>(
                     // Check function/pattern breakpoints — match against context name and
                     // source file path. Context names may have a leading `::` (absolute
                     // paths like `::prologue::foo`), so we also try matching without it.
-                    if !function_breakpoints.is_empty() {
+                    if !breakpoints.function.is_empty() {
                         let context_name = asmop.context_name();
                         let stripped_name = context_name.strip_prefix("::").unwrap_or(context_name);
-                        for fbp in function_breakpoints {
+                        for fbp in breakpoints.function {
                             // Match via glob pattern or suffix (e.g. "prologue::foo"
                             // matches "::$kernel::prologue::foo").
                             if fbp.pattern.matches(context_name)
@@ -1312,11 +1982,7 @@ fn step_until_breakpoint<H: Host>(
                     }
                 }
             }
-            Ok(None) => {
-                *cycle += 1;
-                *current_asmop = None;
-                return StepResult::Terminated;
-            }
+            Ok(None) => return StepResult::Terminated,
             Err(e) => return StepResult::Error(e),
         }
     }
@@ -1339,6 +2005,47 @@ fn send_ui_state_snapshot<R: std::io::Read, W: std::io::Write, H: Host>(
     if let Ok(json) = serde_json::to_value(&ui_state) {
         server.send_event(Event::MidenUiState(json)).ok();
     }
+}
+
+/// Announce the entry-point stop to the DAP client (UI snapshot + `Stopped(entry)`),
+/// flipping `already_announced` so subsequent calls become no-ops.
+///
+/// Called from both `Attach`/`Launch` (so clients like Zed that skip
+/// `configurationDone` still see the initial stop) and from `ConfigurationDone`
+/// (the VS Code path).
+fn announce_entry_stop<R: std::io::Read, W: std::io::Write, H: Host>(
+    server: &mut Server<R, W>,
+    processor: &mut FastProcessor,
+    host: &DapHostWrapper<'_, H>,
+    current_asmop: Option<&AssemblyOp>,
+    cycle: usize,
+    already_announced: &mut bool,
+) {
+    if *already_announced {
+        return;
+    }
+    *already_announced = true;
+    // Some DAP clients (Zed) only react to `stopped` events for thread IDs they
+    // already know about; explicitly announce thread 1 as started before the
+    // initial stop. VS Code tolerates the extra event.
+    server
+        .send_event(Event::Thread(events::ThreadEventBody {
+            reason: types::ThreadEventReason::Started,
+            thread_id: 1,
+        }))
+        .ok();
+    send_ui_state_snapshot(server, processor, host, current_asmop, cycle);
+    server
+        .send_event(Event::Stopped(events::StoppedEventBody {
+            reason: types::StoppedEventReason::Entry,
+            description: Some("Paused at program entry".into()),
+            thread_id: Some(1),
+            preserve_focus_hint: None,
+            text: None,
+            all_threads_stopped: Some(true),
+            hit_breakpoint_ids: None,
+        }))
+        .ok();
 }
 
 /// Send a "stopped(step)" event to the DAP client.
@@ -1367,4 +2074,80 @@ enum StepResult {
     Terminated,
     /// An execution error occurred.
     Error(ExecutionError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_paths_match_only_uses_declared_trim_prefixes() {
+        let trim_prefixes = vec!["/workspace/compiler/examples/fibonacci".into()];
+
+        assert!(source_paths_match(
+            "/workspace/compiler/examples/fibonacci/src/lib.rs",
+            "src/lib.rs",
+            &trim_prefixes,
+        ));
+        assert!(source_paths_match(
+            "file:///workspace/compiler/examples/fibonacci/src/lib.rs",
+            "/workspace/compiler/examples/fibonacci/src/lib.rs",
+            &[],
+        ));
+        assert!(!source_paths_match(
+            "/workspace/compiler/examples/fibonacci/src/lib.rs",
+            "src/lib.rs",
+            &[],
+        ));
+        assert!(!source_paths_match(
+            "/workspace/compiler/examples/fibonacci/src/lib.rs",
+            "other/src/lib.rs",
+            &trim_prefixes,
+        ));
+    }
+
+    #[test]
+    fn resolve_breakpoint_line_moves_to_next_executable_line() {
+        let lines = BTreeSet::from([39, 40, 41]);
+
+        assert_eq!(resolve_breakpoint_line(&lines, 38), Some(39));
+        assert_eq!(resolve_breakpoint_line(&lines, 40), Some(40));
+        assert_eq!(resolve_breakpoint_line(&lines, 99), Some(41));
+        assert_eq!(resolve_breakpoint_line(&BTreeSet::new(), 38), None);
+    }
+
+    #[test]
+    fn source_var_is_visible_after_its_declaration_line() {
+        let prefixes = Vec::new();
+        let path = "/tmp/src/lib.rs";
+
+        assert!(!source_var_location_is_visible(path, 40, path, 39, &prefixes));
+        assert!(!source_var_location_is_visible(path, 40, path, 40, &prefixes));
+        assert!(source_var_location_is_visible(path, 40, path, 41, &prefixes));
+    }
+
+    #[test]
+    fn next_source_line_ignores_pre_body_mappings() {
+        let prefixes = Vec::new();
+        let start = ("/tmp/src/lib.rs".to_string(), 39);
+        let pre_body = ("/tmp/src/lib.rs".to_string(), 1);
+        let body = ("/tmp/src/lib.rs".to_string(), 40);
+
+        assert!(!is_next_source_line(
+            Some("entrypoint"),
+            Some(&start),
+            Some("entrypoint"),
+            Some(&pre_body),
+            &prefixes,
+            Some(39),
+        ));
+        assert!(is_next_source_line(
+            Some("entrypoint"),
+            Some(&start),
+            Some("entrypoint"),
+            Some(&body),
+            &prefixes,
+            Some(39),
+        ));
+    }
 }

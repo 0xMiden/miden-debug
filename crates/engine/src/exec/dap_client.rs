@@ -5,6 +5,7 @@
 //! same types for requests, responses, and events.
 
 use std::{
+    collections::VecDeque,
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpStream,
 };
@@ -45,6 +46,7 @@ enum DapMessage {
 pub struct DapClient {
     reader: BufReader<TcpStream>,
     writer: BufWriter<TcpStream>,
+    pending_events: VecDeque<Event>,
     seq: i64,
 }
 
@@ -60,6 +62,7 @@ impl DapClient {
         Ok(Self {
             reader,
             writer,
+            pending_events: VecDeque::new(),
             seq: 0,
         })
     }
@@ -236,6 +239,7 @@ impl DapClient {
                     return Ok(Self {
                         reader,
                         writer,
+                        pending_events: VecDeque::new(),
                         seq: 0,
                     });
                 }
@@ -333,7 +337,16 @@ impl DapClient {
         }
     }
 
-    /// Wait for a response to a specific command, discarding events along the way.
+    /// Read the next message, replaying events buffered while waiting for responses first.
+    fn next_message(&mut self) -> Result<DapMessage, String> {
+        if let Some(event) = self.pending_events.pop_front() {
+            return Ok(DapMessage::Event(event));
+        }
+
+        self.read_message()
+    }
+
+    /// Wait for a response to a specific command, preserving events seen along the way.
     fn wait_for_response(&mut self, _command: &str) -> Result<Response, String> {
         loop {
             match self.read_message()? {
@@ -348,8 +361,11 @@ impl DapClient {
                     }
                     return Ok(resp);
                 }
-                DapMessage::Event(_) => {
-                    // Skip events while waiting for response
+                DapMessage::Event(event) => {
+                    // The adapter may emit meaningful state events before the response
+                    // we are waiting for. Preserve them so the following wait_for_stopped
+                    // call can consume the stop/UI-state pair instead of hanging.
+                    self.pending_events.push_back(event);
                     continue;
                 }
             }
@@ -364,7 +380,7 @@ impl DapClient {
     fn wait_for_stopped(&mut self) -> Result<DapStopReason, String> {
         let mut snapshot: Option<DapUiState> = None;
         loop {
-            match self.read_message()? {
+            match self.next_message()? {
                 DapMessage::Event(Event::Stopped(_)) => {
                     let snapshot = snapshot
                         .expect("server must emit miden/uiState before stopped; this is a bug");

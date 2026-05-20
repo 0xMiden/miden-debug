@@ -11,8 +11,8 @@ use miden_core::{
 };
 use miden_debug_types::{Location, SourceFile, SourceSpan};
 use miden_processor::{
-    ExecutionError, FutureMaybeSend, Host, MastForestStore, MemMastForestStore, ProcessorState,
-    TraceError,
+    BaseHost, ExecutionError, FutureMaybeSend, Host, MastForestStore, MemMastForestStore,
+    ProcessorState, TraceError,
     advice::AdviceMutation,
     event::{EventError, EventHandler, EventHandlerRegistry},
     mast::MastForest,
@@ -105,7 +105,7 @@ where
     }
 }
 
-impl<S> Host for DebuggerHost<S>
+impl<S> BaseHost for DebuggerHost<S>
 where
     S: SourceManager + ?Sized,
 {
@@ -118,6 +118,25 @@ where
         (span, maybe_file)
     }
 
+    fn on_trace(&mut self, process: &ProcessorState<'_>, trace_id: u32) -> Result<(), TraceError> {
+        let event = TraceEvent::from(trace_id);
+        if let Some(handlers) = self.tracing_callbacks.get_mut(&trace_id) {
+            for handler in handlers.iter_mut() {
+                handler(process, event);
+            }
+        }
+        Ok(())
+    }
+
+    fn resolve_event(&self, event_id: EventId) -> Option<&EventName> {
+        self.event_handlers.resolve_event(event_id)
+    }
+}
+
+impl<S> Host for DebuggerHost<S>
+where
+    S: SourceManager + ?Sized,
+{
     fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
         std::future::ready(self.store.get(node_digest))
     }
@@ -144,19 +163,5 @@ where
             Err(err) => Err(err),
         };
         std::future::ready(result)
-    }
-
-    fn on_trace(&mut self, process: &ProcessorState<'_>, trace_id: u32) -> Result<(), TraceError> {
-        let event = TraceEvent::from(trace_id);
-        if let Some(handlers) = self.tracing_callbacks.get_mut(&trace_id) {
-            for handler in handlers.iter_mut() {
-                handler(process, event);
-            }
-        }
-        Ok(())
-    }
-
-    fn resolve_event(&self, event_id: EventId) -> Option<&EventName> {
-        self.event_handlers.resolve_event(event_id)
     }
 }

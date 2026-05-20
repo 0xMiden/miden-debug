@@ -1,6 +1,8 @@
 pub use miden_debug_engine::{debug, debug_types, events, exec, felt, processor};
 
 mod config;
+#[cfg(feature = "dap")]
+mod dap_server;
 #[cfg(feature = "flamegraph")]
 pub mod flamegraph;
 mod input;
@@ -14,6 +16,8 @@ mod ui;
 #[cfg(feature = "repl")]
 mod repl;
 
+#[cfg(feature = "dap")]
+pub use self::dap_server::run as run_dap_server;
 #[cfg(feature = "repl")]
 pub use self::repl::{run as run_repl, run_with_log_level as run_repl_with_log_level};
 #[cfg(feature = "tui")]

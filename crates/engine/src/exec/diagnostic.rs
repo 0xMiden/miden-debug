@@ -2,8 +2,8 @@ use std::{sync::Arc, vec::Vec};
 
 use miden_core::{Word, operations::DebugOptions, program::Program};
 use miden_processor::{
-    ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, Felt, FutureMaybeSend, Host,
-    ProcessorState, StackInputs, TraceError,
+    BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, Felt,
+    FutureMaybeSend, Host, ProcessorState, StackInputs, TraceError,
     advice::{AdviceInputs, AdviceMutation},
     event::EventError,
     mast::MastForest,
@@ -62,24 +62,12 @@ impl<'a, H: Host> DiagnosticHostWrapper<'a, H> {
     }
 }
 
-impl<H: Host> Host for DiagnosticHostWrapper<'_, H> {
+impl<H: Host> BaseHost for DiagnosticHostWrapper<'_, H> {
     fn get_label_and_source_file(
         &self,
         location: &miden_debug_types::Location,
     ) -> (miden_debug_types::SourceSpan, Option<Arc<miden_debug_types::SourceFile>>) {
         self.inner.get_label_and_source_file(location)
-    }
-
-    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
-        self.inner.get_mast_forest(node_digest)
-    }
-
-    fn on_event(
-        &mut self,
-        process: &ProcessorState<'_>,
-    ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
-        self.capture_state(process);
-        self.inner.on_event(process)
     }
 
     fn on_debug(
@@ -108,6 +96,20 @@ impl<H: Host> Host for DiagnosticHostWrapper<'_, H> {
         event_id: miden_core::events::EventId,
     ) -> Option<&miden_core::events::EventName> {
         self.inner.resolve_event(event_id)
+    }
+}
+
+impl<H: Host> Host for DiagnosticHostWrapper<'_, H> {
+    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
+        self.inner.get_mast_forest(node_digest)
+    }
+
+    fn on_event(
+        &mut self,
+        process: &ProcessorState<'_>,
+    ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
+        self.capture_state(process);
+        self.inner.on_event(process)
     }
 }
 
@@ -162,9 +164,9 @@ impl DiagnosticExecutor {
         async move {
             // Enable debugging and tracing for richer diagnostics.
             let options = self.options.with_debugging(true).with_tracing(true);
-            let processor = FastProcessor::new(self.stack_inputs)
-                .with_advice(self.advice_inputs)
-                .with_options(options);
+            let processor =
+                FastProcessor::new_with_options(self.stack_inputs, self.advice_inputs, options)
+                    .expect("advice inputs should fit advice map limits");
 
             let mut wrapper = DiagnosticHostWrapper::new(host);
 

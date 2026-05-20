@@ -217,6 +217,11 @@ impl ReplSession {
         let start_asmop = self.state.executor().current_asmop.clone();
         let start_proc = self.state.current_procedure();
         let start_line_loc = self.state.current_display_location();
+        let source_path_prefixes = self.state.source_path_prefixes();
+        let minimum_source_line =
+            start_proc.as_deref().zip(start_line_loc.as_ref()).and_then(|(proc, loc)| {
+                self.state.minimum_source_line_for_proc(proc, loc.source_file.uri().as_str())
+            });
         let mut previous_proc = self.state.current_procedure();
         let mut pending_called_breakpoints = Vec::new();
         let mut breakpoints: Vec<Breakpoint> = core::mem::take(&mut self.state.breakpoints);
@@ -255,6 +260,7 @@ impl ReplSession {
             // Check breakpoints
             let current_cycle = self.state.executor().cycle;
             let cycles_stepped = current_cycle - start_cycle;
+            let has_internal_breakpoint = breakpoints.iter().any(|bp| bp.is_internal());
 
             breakpoints.retain_mut(|bp| {
                 if let Some(n) = bp.cycles_to_skip(current_cycle) {
@@ -283,21 +289,21 @@ impl ReplSession {
                     && is_op_boundary
                     && matches!(&bp.ty, BreakpointType::NextLine)
                 {
-                    let has_source_context = start_line_loc.is_some() || line_loc.is_some();
-                    let reached_next = if has_source_context {
-                        State::is_next_source_line(
-                            start_proc.as_deref(),
-                            start_line_loc.as_ref(),
-                            proc.as_deref(),
-                            line_loc.as_ref(),
-                        )
-                    } else {
-                        self.state.executor().current_asmop != start_asmop
-                    };
-                    if reached_next {
+                    if State::is_next_source_line(
+                        start_proc.as_deref(),
+                        start_line_loc.as_ref(),
+                        proc.as_deref(),
+                        line_loc.as_ref(),
+                        &source_path_prefixes,
+                        minimum_source_line,
+                    ) {
                         self.state.breakpoints_hit.push(core::mem::take(bp));
                         return false;
                     }
+                }
+
+                if has_internal_breakpoint && !bp.is_internal() {
+                    return true;
                 }
 
                 if let Some(loc) = loc.as_ref()

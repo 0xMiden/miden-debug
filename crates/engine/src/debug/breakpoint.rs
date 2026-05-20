@@ -269,6 +269,7 @@ impl core::fmt::Display for OperationMatcher {
 
 impl FromStr for OperationMatcher {
     type Err = String;
+
     fn from_str(name: &str) -> Result<Self, Self::Err> {
         use miden_core::operations::Operation::*;
         let opcode_parts = name

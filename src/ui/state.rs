@@ -1,8 +1,19 @@
-use std::{collections::VecDeque, rc::Rc, sync::Arc};
+use std::{
+    collections::VecDeque,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+};
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
-use miden_core::{program::Program, serde::Deserializable};
+use miden_core::{
+    mast::{MastNode, MastNodeId},
+    operations::AssemblyOp,
+    program::Program,
+    serde::Deserializable,
+};
+use miden_debug_types::{Location, SourceManagerExt, SourceSpan};
 use miden_processor::{
     Felt, StackInputs,
     advice::{AdviceInputs, AdviceMutation},
@@ -504,16 +515,19 @@ impl State {
             .callstack
             .current_frame()
             .and_then(|frame| frame.recent().back())
-            .and_then(|detail| detail.resolve(&*self.source_manager))
-            .cloned()
+            .and_then(|detail| self.resolve_op_location(detail.location()?))
     }
 
     pub fn current_display_location(&self) -> Option<ResolvedLocation> {
-        self.executor()
-            .callstack
-            .current_frame()
-            .and_then(|frame| frame.last_resolved(&*self.source_manager))
-            .cloned()
+        let frame = self.executor().callstack.current_frame()?;
+        for detail in frame.recent().iter().rev() {
+            if let Some(location) = detail.location()
+                && let Some(resolved) = self.resolve_op_location(location)
+            {
+                return Some(resolved);
+            }
+        }
+        None
     }
 
     pub fn is_next_source_line(
@@ -521,6 +535,8 @@ impl State {
         start_loc: Option<&ResolvedLocation>,
         current_proc: Option<&str>,
         current_loc: Option<&ResolvedLocation>,
+        source_path_prefixes: &[String],
+        minimum_source_line: Option<u32>,
     ) -> bool {
         let same_proc = match (start_proc, current_proc) {
             (Some(start), Some(current)) => start == current,
@@ -531,14 +547,127 @@ impl State {
             return false;
         }
 
+        if let (Some(minimum_source_line), Some(current)) = (minimum_source_line, current_loc)
+            && current.line < minimum_source_line
+        {
+            return false;
+        }
+
         match (start_loc, current_loc) {
             (Some(start), Some(current)) => {
-                start.source_file.uri().as_str() == current.source_file.uri().as_str()
-                    && start.line != current.line
+                source_paths_match(
+                    start.source_file.uri().as_str(),
+                    current.source_file.uri().as_str(),
+                    source_path_prefixes,
+                ) && start.line != current.line
             }
             (None, Some(_)) => true,
             _ => false,
         }
+    }
+
+    pub(crate) fn minimum_source_line_for_proc(
+        &self,
+        procedure: &str,
+        source_path: &str,
+    ) -> Option<u32> {
+        let forest = self.executor().resume_ctx.as_ref()?.current_forest();
+        let source_path_prefixes = self.source_path_prefixes();
+        let mut min_line = None;
+
+        for (node_idx, node) in forest.nodes().iter().enumerate() {
+            let MastNode::Block(block) = node else {
+                continue;
+            };
+
+            let node_id = MastNodeId::new_unchecked(node_idx as u32);
+            for op_idx in 0..block.num_operations() as usize {
+                let Some(asmop) = forest.get_assembly_op(node_id, Some(op_idx)) else {
+                    continue;
+                };
+                if asmop.context_name() != procedure {
+                    continue;
+                }
+                let Some((path, line)) = self.resolve_asmop_location(asmop) else {
+                    continue;
+                };
+                if line > 1 && source_paths_match(&path, source_path, &source_path_prefixes) {
+                    min_line = Some(min_line.map_or(line, |current: u32| current.min(line)));
+                }
+            }
+        }
+
+        min_line
+    }
+
+    pub(crate) fn source_path_prefixes(&self) -> Vec<String> {
+        #[cfg(feature = "dap")]
+        {
+            let mut prefixes = self
+                .config
+                .source_path_prefixes
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            if let Ok(cwd) = std::env::current_dir() {
+                let cwd = cwd.to_string_lossy().into_owned();
+                if !prefixes
+                    .iter()
+                    .any(|prefix| normalize_source_path(prefix) == normalize_source_path(&cwd))
+                {
+                    prefixes.push(cwd);
+                }
+            }
+            prefixes
+        }
+
+        #[cfg(not(feature = "dap"))]
+        {
+            Vec::new()
+        }
+    }
+
+    fn resolve_op_location(&self, loc: &Location) -> Option<ResolvedLocation> {
+        let source_file = self.load_source_file_for_uri(loc.uri())?;
+        let span = SourceSpan::new(source_file.id(), loc.start..loc.end);
+        let file_line_col = source_file.location(span);
+        Some(ResolvedLocation {
+            source_file,
+            line: file_line_col.line.to_u32(),
+            col: file_line_col.column.to_u32(),
+            span,
+        })
+    }
+
+    fn resolve_asmop_location(&self, asmop: &AssemblyOp) -> Option<(String, u32)> {
+        let resolved = self.resolve_op_location(asmop.location()?)?;
+        Some((resolved.source_file.uri().as_str().to_string(), resolved.line))
+    }
+
+    fn load_source_file_for_uri(
+        &self,
+        uri: &miden_debug_types::Uri,
+    ) -> Option<Arc<miden_debug_types::SourceFile>> {
+        let uri_str = uri.as_str();
+        let normalized_uri = uri_str.strip_prefix("file://").unwrap_or(uri_str);
+        let path = Path::new(normalized_uri);
+        if path.exists() {
+            return self.source_manager.load_file(path).ok();
+        }
+
+        if let Some(source_file) = self.source_manager.get_by_uri(uri) {
+            return Some(source_file);
+        }
+
+        for candidate in source_path_candidates(normalized_uri, &self.source_path_prefixes()) {
+            if candidate.exists()
+                && let Ok(source_file) = self.source_manager.load_file(&candidate)
+            {
+                return Some(source_file);
+            }
+        }
+
+        None
     }
 
     pub fn execution_failed(&self) -> Option<&miden_processor::ExecutionError> {
@@ -596,7 +725,9 @@ impl State {
         let context = executor.current_context;
         let memory = executor.processor.memory();
         let read_element = |addr: u32| -> Option<Felt> {
-            memory.read_element(context, Felt::new(addr as u64)).ok()
+            memory
+                .read_element(context, Felt::new(addr as u64).expect("value exceeds field modulus"))
+                .ok()
         };
         let mut output = String::new();
         if expr.count > 1 {
@@ -617,7 +748,11 @@ impl State {
                 return Err("read failed: type 'word' must be aligned to a word boundary".into());
             }
             let word = memory
-                .read_word(context, Felt::new(expr.addr.addr as u64), cycle)
+                .read_word(
+                    context,
+                    Felt::new(expr.addr.addr as u64).expect("value exceeds field modulus"),
+                    cycle,
+                )
                 .unwrap_or_default();
             output.push('[');
             for (i, elem) in word.iter().enumerate() {
@@ -705,17 +840,17 @@ impl State {
         let executor = self.executor();
         let debug_vars = &executor.debug_vars;
 
-        if !debug_vars.has_variables() {
-            return "No debug variables tracked".to_string();
-        }
-
         let mut output = String::new();
         let stack = executor.current_stack.clone();
         let context = executor.current_context;
 
         // Use live processor state, not the pre-recorded trace, for current-cycle values.
         let read_mem = |addr: u32| -> Option<Felt> {
-            executor.processor.memory().read_element(context, Felt::new(addr as u64)).ok()
+            executor
+                .processor
+                .memory()
+                .read_element(context, Felt::new(addr as u64).expect("value exceeds field modulus"))
+                .ok()
         };
 
         let current_source = if show_all {
@@ -723,6 +858,11 @@ impl State {
         } else {
             self.current_display_location()
         };
+        let source_path_prefixes = self.source_path_prefixes();
+
+        if !debug_vars.has_variables() {
+            return "No debug variables tracked".to_string();
+        }
 
         for var_snapshot in debug_vars.current_variables() {
             let name = var_snapshot.info.name();
@@ -733,8 +873,13 @@ impl State {
 
             if let (Some(current), Some(var_loc)) =
                 (current_source.as_ref(), var_snapshot.info.location())
-                && (var_loc.uri.as_str() != current.source_file.uri().as_str()
-                    || var_loc.line.to_u32() > current.line)
+                && !source_var_location_is_visible(
+                    var_loc.uri.as_str(),
+                    var_loc.line.to_u32(),
+                    current.source_file.uri().as_str(),
+                    current.line,
+                    &source_path_prefixes,
+                )
             {
                 continue;
             }
@@ -776,6 +921,88 @@ impl State {
 fn is_compiler_generated_name(name: &str) -> bool {
     name.strip_prefix("local")
         .is_some_and(|suffix| !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()))
+}
+
+fn source_var_location_is_visible(
+    var_path: &str,
+    var_line: u32,
+    current_path: &str,
+    current_line: u32,
+    source_path_prefixes: &[String],
+) -> bool {
+    source_paths_match(var_path, current_path, source_path_prefixes) && var_line < current_line
+}
+
+fn normalize_source_path(path: &str) -> String {
+    let path = path.trim();
+    let path = path.strip_prefix("file://").unwrap_or(path);
+    let path = path.replace('\\', "/");
+
+    let is_absolute = path.starts_with('/');
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                if parts.last().is_some_and(|last| *last != "..") {
+                    parts.pop();
+                } else {
+                    parts.push(part);
+                }
+            }
+            _ => parts.push(part),
+        }
+    }
+
+    let normalized = parts.join("/");
+    if is_absolute && !normalized.is_empty() {
+        format!("/{normalized}")
+    } else {
+        normalized
+    }
+}
+
+fn strip_source_prefix(path: &str, prefix: &str) -> Option<String> {
+    let path = path.trim_start_matches('/');
+    let prefix = prefix.trim_start_matches('/').trim_end_matches('/');
+    path.strip_prefix(prefix)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(ToOwned::to_owned)
+}
+
+fn source_paths_match(left: &str, right: &str, trim_prefixes: &[String]) -> bool {
+    let left = normalize_source_path(left);
+    let right = normalize_source_path(right);
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+
+    if left == right {
+        return true;
+    }
+
+    for prefix in trim_prefixes {
+        if strip_source_prefix(&left, prefix).is_some_and(|stripped| stripped == right) {
+            return true;
+        }
+        if strip_source_prefix(&right, prefix).is_some_and(|stripped| stripped == left) {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn source_path_candidates(uri: &str, source_path_prefixes: &[String]) -> Vec<PathBuf> {
+    let normalized = normalize_source_path(uri);
+    if normalized.is_empty() || Path::new(&normalized).is_absolute() {
+        return Vec::new();
+    }
+
+    source_path_prefixes
+        .iter()
+        .map(|prefix| Path::new(prefix).join(&normalized))
+        .collect()
 }
 
 // DAP CLIENT MODE
@@ -849,7 +1076,12 @@ fn convert_ui_state(
         })
         .collect();
 
-    let current_stack = snapshot.current_stack.iter().copied().map(Felt::new).collect();
+    let current_stack = snapshot
+        .current_stack
+        .iter()
+        .copied()
+        .map(|v| Felt::new(v).expect("value exceeds field modulus"))
+        .collect();
 
     RemoteSnapshot {
         callstack: CallStack::from_remote_frames(call_frames),

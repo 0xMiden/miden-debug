@@ -136,23 +136,18 @@ pub struct FlamegraphArgs {
     /// Specify the path to a Miden program file to execute.
     #[arg(value_name = "FILE")]
     pub input: InputFile,
-
     /// Write the generated flame graph SVG or folded stack text to this path.
     #[arg(short, long, default_value = "flamegraph.svg")]
     pub output: PathBuf,
-
     /// Specify the path to a file containing program inputs.
     #[arg(long, value_name = "FILE")]
     pub inputs: Option<ExecutionConfig>,
-
     /// Arguments to place on the operand stack before calling the program entrypoint.
     #[arg(last(true), value_name = "ARGV")]
     pub args: Vec<Felt>,
-
     /// The working directory for execution.
     #[arg(long, value_name = "DIR", help_heading = "Execution")]
     pub working_dir: Option<PathBuf>,
-
     /// The path to the root directory of the current Miden toolchain.
     #[arg(
         long,
@@ -161,11 +156,9 @@ pub struct FlamegraphArgs {
         help_heading = "Linker"
     )]
     pub sysroot: Option<PathBuf>,
-
     /// Specify the function to call as the entrypoint for the program.
     #[arg(long, help_heading = "Execution")]
     pub entrypoint: Option<String>,
-
     /// Specify one or more search paths for link libraries requested via `-l`.
     #[arg(
         long = "search-path",
@@ -174,7 +167,6 @@ pub struct FlamegraphArgs {
         help_heading = "Linker"
     )]
     pub search_path: Vec<PathBuf>,
-
     /// Link compiled projects to the specified library NAME.
     #[arg(
         long = "link-library",
@@ -185,6 +177,22 @@ pub struct FlamegraphArgs {
         help_heading = "Linker"
     )]
     pub link_libraries: Vec<LinkLibrary>,
+    /// Source path prefixes used by the compiler's `-Zremap-path-prefix` option.
+    ///
+    /// When debug info stores trimmed source paths, DAP clients may still send
+    /// absolute editor paths. These prefixes provide an explicit mapping between
+    /// the two forms.
+    #[cfg(feature = "dap")]
+    #[cfg_attr(
+        feature = "tui",
+        arg(
+            long = "source-path-prefix",
+            alias = "trim-path-prefix",
+            value_name = "PATH",
+            help_heading = "Debugging"
+        )
+    )]
+    pub source_path_prefixes: Vec<PathBuf>,
 }
 
 impl FlamegraphArgs {
@@ -199,6 +207,10 @@ impl FlamegraphArgs {
             entrypoint: self.entrypoint,
             #[cfg(feature = "dap")]
             dap_connect: None,
+            #[cfg(feature = "dap")]
+            start_debug_adapter: None,
+            #[cfg(feature = "dap")]
+            source_path_prefixes: self.source_path_prefixes,
             search_path: self.search_path,
             link_libraries: self.link_libraries,
             repl: false,

@@ -1,7 +1,7 @@
 [package]
 name = "miden-debug-engine"
 description = "Core debugger engine for miden-debug"
-version = "0.8.0"
+version = "0.7.1"
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true

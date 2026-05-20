@@ -211,24 +211,27 @@ fn resolve_expression_value(
                 values.push(stack.get(index as usize).copied()?);
             }
             DebugExpressionOp::ConstU64(value) => {
-                values.push(Felt::new_unchecked(value));
+                values.push(Felt::new(value).expect("value exceeds field modulus"));
             }
             DebugExpressionOp::ConstS64(value) => {
-                values.push(Felt::new_unchecked(value as u64));
+                values.push(Felt::new(value as u64).expect("value exceeds field modulus"));
             }
             DebugExpressionOp::PlusUConst(value) => {
                 let lhs = values.pop()?;
-                values.push(Felt::new_unchecked(lhs.as_canonical_u64().wrapping_add(value)));
+                values.push(
+                    Felt::new(lhs.as_canonical_u64().wrapping_add(value))
+                        .expect("value exceeds field modulus"),
+                );
             }
             DebugExpressionOp::Minus => {
                 let rhs = values.pop()?.as_canonical_u64();
                 let lhs = values.pop()?.as_canonical_u64();
-                values.push(Felt::new_unchecked(lhs.wrapping_sub(rhs)));
+                values.push(Felt::new(lhs.wrapping_sub(rhs)).expect("value exceeds field modulus"));
             }
             DebugExpressionOp::Plus => {
                 let rhs = values.pop()?.as_canonical_u64();
                 let lhs = values.pop()?.as_canonical_u64();
-                values.push(Felt::new_unchecked(lhs.wrapping_add(rhs)));
+                values.push(Felt::new(lhs.wrapping_add(rhs)).expect("value exceeds field modulus"));
             }
             DebugExpressionOp::Deref => {
                 let addr = u32::try_from(values.pop()?.as_canonical_u64()).ok()?;
@@ -247,7 +250,7 @@ fn resolve_expression_value(
                 )?);
             }
             DebugExpressionOp::Address(address) => {
-                values.push(Felt::new_unchecked(address));
+                values.push(Felt::new(address).expect("value exceeds field modulus"));
             }
             DebugExpressionOp::WasmGlobal(_)
             | DebugExpressionOp::Piece
@@ -353,11 +356,11 @@ mod tests {
         let x_snapshot = tracker.get_variable("x").unwrap();
         let value = resolve_variable_value(
             x_snapshot.info.value_location(),
-            &[Felt::new_unchecked(42)],
+            &[Felt::new(42).expect("value exceeds field modulus")],
             |_| None,
             |_| None,
         );
-        assert_eq!(value, Some(Felt::new_unchecked(42)));
+        assert_eq!(value, Some(Felt::new(42).expect("value exceeds field modulus")));
     }
 
     #[test]
@@ -367,9 +370,15 @@ mod tests {
             DebugVarInfo::new("b", DebugVarLocation::Local(-1)),
         ];
 
-        snapshot_transient_debug_values(&mut infos, &[Felt::new_unchecked(7)]);
+        snapshot_transient_debug_values(
+            &mut infos,
+            &[Felt::new(7).expect("value exceeds field modulus")],
+        );
 
-        assert_eq!(infos[0].value_location(), &DebugVarLocation::Const(Felt::new_unchecked(7)));
+        assert_eq!(
+            infos[0].value_location(),
+            &DebugVarLocation::Const(Felt::new(7).expect("value exceeds field modulus"))
+        );
         assert_eq!(infos[1].value_location(), &DebugVarLocation::Local(-1));
     }
 
@@ -384,11 +393,13 @@ mod tests {
                 byte_offset: 28,
             },
             &[],
-            |addr| (addr == 262_139).then_some(Felt::new_unchecked(13)),
-            |offset| (offset == -7).then_some(Felt::new_unchecked(1_048_528)),
+            |addr| (addr == 262_139).then_some(Felt::new(13).expect("value exceeds field modulus")),
+            |offset| {
+                (offset == -7).then_some(Felt::new(1_048_528).expect("value exceeds field modulus"))
+            },
         );
 
-        assert_eq!(value, Some(Felt::new_unchecked(13)));
+        assert_eq!(value, Some(Felt::new(13).expect("value exceeds field modulus")));
     }
 
     #[test]
@@ -399,7 +410,10 @@ mod tests {
             let mut events = events.borrow_mut();
             events.insert(
                 RowIndex::from(1),
-                vec![DebugVarInfo::new("x", DebugVarLocation::Const(Felt::new_unchecked(1)))],
+                vec![DebugVarInfo::new(
+                    "x",
+                    DebugVarLocation::Const(Felt::new(1).expect("value exceeds field modulus")),
+                )],
             );
             events.insert(
                 RowIndex::from(2),
@@ -430,7 +444,7 @@ mod tests {
             |_| None,
         );
 
-        assert_eq!(value, Some(Felt::new_unchecked(7)));
+        assert_eq!(value, Some(Felt::new(7).expect("value exceeds field modulus")));
     }
 
     #[test]
@@ -442,10 +456,10 @@ mod tests {
             &DebugVarLocation::Expression(expression),
             &[],
             |_| None,
-            |offset| (offset == 0).then_some(Felt::new_unchecked(11)),
+            |offset| (offset == 0).then_some(Felt::new(11).expect("value exceeds field modulus")),
         );
 
-        assert_eq!(value, Some(Felt::new_unchecked(11)));
+        assert_eq!(value, Some(Felt::new(11).expect("value exceeds field modulus")));
     }
 
     enum TestExpressionOp {

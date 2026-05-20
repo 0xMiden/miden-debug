@@ -231,7 +231,11 @@ fn read_memory_at_current_state(
 
         let felt = processor
             .memory()
-            .read_element(ctx, miden_processor::Felt::new_unchecked(u64::from(expr.addr.addr)))
+            .read_element(
+                ctx,
+                miden_processor::Felt::new(u64::from(expr.addr.addr))
+                    .expect("value exceeds field modulus"),
+            )
             .ok()
             .unwrap_or(miden_processor::Felt::ZERO);
         write_with_format_type!(output, expr, felt.as_canonical_u64());
@@ -248,7 +252,12 @@ fn read_memory_at_current_state(
 
         let word = processor
             .memory()
-            .read_word(ctx, miden_processor::Felt::new_unchecked(u64::from(expr.addr.addr)), cycle)
+            .read_word(
+                ctx,
+                miden_processor::Felt::new(u64::from(expr.addr.addr))
+                    .expect("value exceeds field modulus"),
+                cycle,
+            )
             .ok()
             .unwrap_or_default();
 
@@ -278,7 +287,10 @@ fn read_memory_at_current_state(
             })?;
         let felt = processor
             .memory()
-            .read_element(ctx, miden_processor::Felt::new_unchecked(u64::from(addr)))
+            .read_element(
+                ctx,
+                miden_processor::Felt::new(u64::from(addr)).expect("value exceeds field modulus"),
+            )
             .ok()
             .unwrap_or_default();
         elems.push(felt);
@@ -652,7 +664,10 @@ fn resolve_debug_var_value(
     let read_mem = |addr: u32| -> Option<miden_processor::Felt> {
         processor
             .memory()
-            .read_element(context, miden_processor::Felt::new_unchecked(u64::from(addr)))
+            .read_element(
+                context,
+                miden_processor::Felt::new(u64::from(addr)).expect("value exceeds field modulus"),
+            )
             .ok()
     };
 

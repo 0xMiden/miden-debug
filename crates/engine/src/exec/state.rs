@@ -5,7 +5,7 @@ use std::{
 
 use miden_assembly::SourceManager;
 use miden_core::{
-    mast::{MastNode, MastNodeId},
+    mast::{MastForest, MastNode, MastNodeId},
     operations::AssemblyOp,
 };
 use miden_processor::{
@@ -181,26 +181,7 @@ impl DebugExecutor {
             return false;
         };
 
-        let forest = resume_ctx.current_forest();
-        for (node_idx, node) in forest.nodes().iter().enumerate() {
-            let MastNode::Block(block) = node else {
-                continue;
-            };
-            let node_id = MastNodeId::new_unchecked(node_idx as u32);
-            for op_idx in 0..block.num_operations() as usize {
-                if forest.debug_vars_for_operation(node_id, op_idx).is_empty() {
-                    continue;
-                }
-                if forest
-                    .get_assembly_op(node_id, Some(op_idx))
-                    .is_some_and(|op| op.context_name() == procedure)
-                {
-                    return true;
-                }
-            }
-        }
-
-        false
+        forest_procedure_has_debug_vars(resume_ctx.current_forest(), procedure)
     }
 
     pub fn register_trace_monitor_for(&mut self, monitor: TraceMonitor, event: super::TraceEvent) {
@@ -425,6 +406,35 @@ impl DebugExecutor {
             outputs: self.stack_outputs,
         }
     }
+}
+
+pub(crate) fn forest_procedure_has_debug_vars(forest: &MastForest, procedure: &str) -> bool {
+    forest_operation_matches(forest, |node_id, op_idx, asmop| {
+        asmop.context_name() == procedure
+            && !forest.debug_vars_for_operation(node_id, op_idx).is_empty()
+    })
+}
+
+fn forest_operation_matches(
+    forest: &MastForest,
+    mut matches: impl FnMut(MastNodeId, usize, &AssemblyOp) -> bool,
+) -> bool {
+    for (node_idx, node) in forest.nodes().iter().enumerate() {
+        let MastNode::Block(block) = node else {
+            continue;
+        };
+        let node_id = MastNodeId::new_unchecked(node_idx as u32);
+        for op_idx in 0..block.num_operations() as usize {
+            if forest
+                .get_assembly_op(node_id, Some(op_idx))
+                .is_some_and(|asmop| matches(node_id, op_idx, asmop))
+            {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 #[cfg(test)]

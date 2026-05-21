@@ -362,8 +362,7 @@ impl Page for Home {
                             let pending = pending_called_breakpoints.contains(&bp.id);
                             let entered_matching_proc = !was_matched && !matched_at_start;
                             if entered_matching_proc
-                                && state.executor().procedure_has_debug_vars(proc)
-                                && state.executor().last_debug_var_count == 0
+                                && state.should_defer_called_breakpoint(proc, line_loc.as_ref())
                             {
                                 if !pending {
                                     pending_called_breakpoints.push(bp.id);
@@ -372,7 +371,8 @@ impl Page for Home {
                             }
 
                             if entered_matching_proc
-                                || (pending && state.executor().last_debug_var_count > 0)
+                                || (pending
+                                    && state.deferred_called_breakpoint_is_ready(line_loc.as_ref()))
                             {
                                 pending_called_breakpoints.retain(|id| *id != bp.id);
                                 let retained = !bp.is_one_shot();

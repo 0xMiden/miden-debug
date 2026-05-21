@@ -433,11 +433,26 @@ struct ContinueBreakpoints<'a> {
 fn resolve_asmop_location<H: Host>(asmop: &AssemblyOp, host: &H) -> Option<(String, i64)> {
     let location = asmop.location()?;
     let (span, source_file) = host.get_label_and_source_file(location);
-    let source_file = source_file?;
-    let file_line_col = source_file.location(span);
-    let path = file_line_col.uri.as_ref().to_string();
-    let line = file_line_col.line.to_u32() as i64;
-    Some((path, line))
+    if let Some(source_file) = source_file {
+        let file_line_col = source_file.location(span);
+        let path = file_line_col.uri.as_ref().to_string();
+        let line = file_line_col.line.to_u32() as i64;
+        return Some((path, line));
+    }
+
+    crate::debug::resolve_location_from_filesystem(location)
+        .map(|(path, line)| (path.display().to_string(), line as i64))
+}
+
+fn should_defer_function_breakpoint(resolved: Option<&(String, i64)>, context_name: &str) -> bool {
+    !is_internal_procedure(context_name)
+        && resolved.is_none_or(|(path, _)| {
+            crate::debug::is_internal_source_uri(&miden_debug_types::Uri::new(path))
+        })
+}
+
+fn is_internal_procedure(context_name: &str) -> bool {
+    context_name.contains("::intrinsics::")
 }
 
 fn normalize_source_path(path: &str) -> String {
@@ -1968,6 +1983,10 @@ fn step_until_breakpoint<H: Host>(
                                 || context_name.ends_with(&fbp.name)
                                 || stripped_name.ends_with(&fbp.name)
                             {
+                                if should_defer_function_breakpoint(resolved.as_ref(), context_name)
+                                {
+                                    continue;
+                                }
                                 update_top_frame(host, current_asmop.as_ref());
                                 let line = resolved.as_ref().map_or(0, |(_, l)| *l);
                                 return StepResult::Breakpoint(line);

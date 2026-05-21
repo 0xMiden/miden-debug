@@ -10,7 +10,8 @@ pub use self::{
     native_ptr::NativePtr,
     stacktrace::{
         CallFrame, CallStack, ControlFlowOp, CurrentFrame, OpDetail, ResolvedLocation, StackTrace,
-        StepInfo,
+        StepInfo, is_internal_source_uri, resolve_location_from_filesystem,
+        resolve_source_file_for_location, resolve_source_path,
     },
     variables::{
         DebugVarSnapshot, DebugVarTracker, resolve_variable_value, snapshot_transient_debug_values,

@@ -670,6 +670,26 @@ impl State {
         None
     }
 
+    pub fn should_defer_called_breakpoint(
+        &self,
+        proc: &str,
+        current_loc: Option<&ResolvedLocation>,
+    ) -> bool {
+        let executor = self.executor();
+        (!is_internal_procedure(proc)
+            && current_loc
+                .is_none_or(|loc| crate::debug::is_internal_source_uri(loc.source_file.uri())))
+            || (executor.procedure_has_debug_vars(proc) && executor.last_debug_var_count == 0)
+    }
+
+    pub fn deferred_called_breakpoint_is_ready(
+        &self,
+        current_loc: Option<&ResolvedLocation>,
+    ) -> bool {
+        current_loc.is_some_and(|loc| !crate::debug::is_internal_source_uri(loc.source_file.uri()))
+            || self.executor().last_debug_var_count > 0
+    }
+
     pub fn execution_failed(&self) -> Option<&miden_processor::ExecutionError> {
         match &self.session {
             SessionState::Local(local) => local.execution_failed.as_ref(),
@@ -916,6 +936,10 @@ impl State {
     }
 }
 
+fn is_internal_procedure(proc: &str) -> bool {
+    proc.contains("::intrinsics::")
+}
+
 /// Returns true if the variable name looks compiler-generated (e.g. "local0", "local12").
 /// Source-level variables have DWARF-derived names like "a", "sum", "_info".
 fn is_compiler_generated_name(name: &str) -> bool {
@@ -1098,11 +1122,12 @@ fn resolve_remote_frame(
 ) -> Option<crate::debug::ResolvedLocation> {
     use std::path::Path;
 
-    use miden_debug_types::{SourceManagerExt, SourceSpan};
+    use miden_debug_types::{SourceManagerExt, SourceSpan, Uri};
 
     let path_str = frame.source_path.as_ref()?;
-    let path = Path::new(path_str);
-    let source_file = source_manager.load_file(path).ok()?;
+    let path = crate::debug::resolve_source_path(&Uri::new(path_str))
+        .unwrap_or_else(|| Path::new(path_str).to_path_buf());
+    let source_file = source_manager.load_file(&path).ok()?;
     let line = frame.line.max(1) as u32;
     let col = frame.column.max(1) as u32;
 

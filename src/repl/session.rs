@@ -336,8 +336,7 @@ impl ReplSession {
                     let entered_matching_proc = !was_matched && !matched_at_start;
 
                     if entered_matching_proc
-                        && self.state.executor().procedure_has_debug_vars(proc)
-                        && self.state.executor().last_debug_var_count == 0
+                        && self.state.should_defer_called_breakpoint(proc, line_loc.as_ref())
                     {
                         if !pending {
                             pending_called_breakpoints.push(bp.id);
@@ -346,7 +345,8 @@ impl ReplSession {
                     }
 
                     if entered_matching_proc
-                        || (pending && self.state.executor().last_debug_var_count > 0)
+                        || (pending
+                            && self.state.deferred_called_breakpoint_is_ready(line_loc.as_ref()))
                     {
                         pending_called_breakpoints.retain(|id| *id != bp.id);
                         let retained = !bp.is_one_shot();

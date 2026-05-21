@@ -3,13 +3,13 @@ use std::{
     cell::{OnceCell, RefCell},
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
-    path::Path,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
 };
 
 use miden_core::operations::AssemblyOp;
-use miden_debug_types::{Location, SourceFile, SourceManager, SourceManagerExt, SourceSpan};
+use miden_debug_types::{Location, SourceFile, SourceManager, SourceManagerExt, SourceSpan, Uri};
 use miden_processor::{ContextId, operation::Operation, trace::RowIndex};
 
 use crate::exec::TraceEvent;
@@ -445,12 +445,7 @@ impl OpDetail {
                 ..
             } => resolved
                 .get_or_init(|| {
-                    let path = Path::new(loc.uri().as_str());
-                    let source_file = if path.exists() {
-                        source_manager.load_file(path).ok()?
-                    } else {
-                        source_manager.get_by_uri(loc.uri())?
-                    };
+                    let source_file = resolve_source_file_for_location(source_manager, loc)?;
                     let span = SourceSpan::new(source_file.id(), loc.start..loc.end);
                     let file_line_col = source_file.location(span);
                     Some(ResolvedLocation {
@@ -464,6 +459,59 @@ impl OpDetail {
             _ => None,
         }
     }
+}
+
+/// Resolve a source file for `location`.
+///
+/// Compiled packages may contain remapped paths such as `src/lib.rs`, while sources loaded by the
+/// VM host may be keyed by an absolute path, or may not be loaded yet at all. Prefer the source
+/// manager's existing URI table, then fall back to loading the file from disk.
+pub fn resolve_source_file_for_location(
+    source_manager: &dyn SourceManager,
+    location: &Location,
+) -> Option<Arc<SourceFile>> {
+    source_manager.get_by_uri(location.uri()).or_else(|| {
+        resolve_source_path(location.uri()).and_then(|path| source_manager.load_file(&path).ok())
+    })
+}
+
+/// Resolve a source URI to an existing local filesystem path.
+///
+/// Non-file URI schemes are left to the source manager. Relative paths are resolved against the
+/// debugger process' current directory, which DAP clients set to the launch `cwd`.
+pub fn resolve_source_path(uri: &Uri) -> Option<PathBuf> {
+    let path = match uri.scheme() {
+        None | Some("file") => Path::new(uri.path()),
+        Some(_) => return None,
+    };
+
+    existing_path(path).or_else(|| {
+        if path.is_relative() {
+            std::env::current_dir().ok().and_then(|cwd| existing_path(&cwd.join(path)))
+        } else {
+            None
+        }
+    })
+}
+
+/// Resolve a source location directly from the filesystem, returning the resolved path and line.
+pub fn resolve_location_from_filesystem(location: &Location) -> Option<(PathBuf, u32)> {
+    let path = resolve_source_path(location.uri())?;
+    let bytes = std::fs::read(&path).ok()?;
+    let start = location.start.to_usize().min(bytes.len());
+    let line = bytes[..start].iter().filter(|byte| **byte == b'\n').count() as u32 + 1;
+    Some((path, line))
+}
+
+/// Returns true for source paths emitted by compiler/runtime internals rather than user code.
+pub fn is_internal_source_uri(uri: &Uri) -> bool {
+    let path = uri.path().replace('\\', "/");
+    path.contains("/codegen/masm/intrinsics/") || path.contains("/rustlib/src/rust/library/")
+}
+
+fn existing_path(path: &Path) -> Option<PathBuf> {
+    path.exists()
+        .then(|| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
 }
 
 #[derive(Debug, Clone)]
@@ -585,4 +633,48 @@ fn demangle(name: &str) -> String {
     rustc_demangle::demangle_stream(&mut input, &mut demangled, /* include_hash= */ false)
         .expect("failed to write demangled identifier");
     String::from_utf8(demangled).expect("demangled identifier contains invalid utf-8")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{cell::OnceCell, fs, path::PathBuf};
+
+    use miden_assembly::DefaultSourceManager;
+    use miden_debug_types::{ByteIndex, Location, Uri};
+
+    use super::*;
+
+    #[test]
+    fn resolves_relative_source_locations_from_filesystem() {
+        let path = test_source_path("relative");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "fn main() {\n    let x = 1;\n}\n").unwrap();
+
+        let start = "fn main() {\n    ".len() as u32;
+        let location = Location::new(
+            Uri::from(path.display().to_string()),
+            ByteIndex::new(start),
+            ByteIndex::new(start + 5),
+        );
+        let detail = OpDetail::Full {
+            op: Operation::Noop,
+            location: Some(location),
+            resolved: OnceCell::new(),
+        };
+        let source_manager = DefaultSourceManager::default();
+
+        let resolved = detail.resolve(&source_manager).expect("source should resolve");
+        assert_eq!(resolved.line, 2);
+        assert!(resolved.source_file.uri().as_str().ends_with("src/lib.rs"));
+
+        fs::remove_dir_all(path.parent().unwrap().parent().unwrap()).ok();
+    }
+
+    fn test_source_path(test_name: &str) -> PathBuf {
+        PathBuf::from("target")
+            .join("debugger-source-tests")
+            .join(format!("{}-{}", test_name, std::process::id()))
+            .join("src")
+            .join("lib.rs")
+    }
 }

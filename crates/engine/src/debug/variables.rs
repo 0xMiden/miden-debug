@@ -143,19 +143,61 @@ pub fn resolve_variable_value(
     get_memory: impl Fn(u32) -> Option<Felt>,
     get_local: impl Fn(i16) -> Option<Felt>,
 ) -> Option<Felt> {
+    resolve_variable_values(location, 1, stack, get_memory, get_local)?.pop()
+}
+
+/// Resolve one or more consecutive felts for a debug variable.
+pub fn resolve_variable_values(
+    location: &DebugVarLocation,
+    count: usize,
+    stack: &[Felt],
+    get_memory: impl Fn(u32) -> Option<Felt>,
+    get_local: impl Fn(i16) -> Option<Felt>,
+) -> Option<Vec<Felt>> {
+    if count == 0 {
+        return Some(Vec::new());
+    }
+
     match location {
-        DebugVarLocation::Stack(pos) => stack.get(*pos as usize).copied(),
-        DebugVarLocation::Memory(addr) => get_memory(*addr),
-        DebugVarLocation::Const(felt) => Some(*felt),
-        DebugVarLocation::Local(offset) => get_local(*offset),
+        DebugVarLocation::Stack(pos) => {
+            let start = *pos as usize;
+            let end = start.checked_add(count)?;
+            Some(stack.get(start..end)?.to_vec())
+        }
+        DebugVarLocation::Memory(addr) => resolve_consecutive_memory(*addr, count, &get_memory),
+        DebugVarLocation::Const(felt) => (count == 1).then_some(vec![*felt]),
+        DebugVarLocation::Local(offset) => {
+            let mut values = Vec::with_capacity(count);
+            for index in 0..count {
+                let index = i16::try_from(index).ok()?;
+                values.push(get_local(offset.checked_add(index)?)?);
+            }
+            Some(values)
+        }
         DebugVarLocation::ResolvedFrameBase { base, byte_offset } => {
-            resolve_frame_base_value(*base, *byte_offset, &get_memory, &get_local)
+            resolve_frame_base_values(*base, *byte_offset, count, &get_memory, &get_local)
         }
-        DebugVarLocation::Expression(expression) => {
-            resolve_expression_value(expression.operations(), stack, &get_memory, &get_local)
-        }
+        DebugVarLocation::Expression(expression) => (count == 1)
+            .then(|| {
+                resolve_expression_value(expression.operations(), stack, &get_memory, &get_local)
+            })
+            .flatten()
+            .map(|value| vec![value]),
         DebugVarLocation::Unavailable => None,
     }
+}
+
+fn resolve_consecutive_memory(
+    start_addr: u32,
+    count: usize,
+    get_memory: &impl Fn(u32) -> Option<Felt>,
+) -> Option<Vec<Felt>> {
+    let mut values = Vec::with_capacity(count);
+    for index in 0..count {
+        let addr = start_addr.checked_add(u32::try_from(index).ok()?)?;
+        values.push(get_memory(addr)?);
+    }
+    Some(values)
 }
 
 fn resolve_expression_value(
@@ -220,8 +262,18 @@ fn resolve_frame_base_value(
     get_memory: &impl Fn(u32) -> Option<Felt>,
     get_local: &impl Fn(i16) -> Option<Felt>,
 ) -> Option<Felt> {
+    resolve_frame_base_values(base, byte_offset, 1, get_memory, get_local)?.pop()
+}
+
+fn resolve_frame_base_values(
+    base: DebugFrameBase,
+    byte_offset: i64,
+    count: usize,
+    get_memory: &impl Fn(u32) -> Option<Felt>,
+    get_local: &impl Fn(i16) -> Option<Felt>,
+) -> Option<Vec<Felt>> {
     let byte_address = resolve_frame_base_address(base, byte_offset, get_memory, get_local)?;
-    resolve_byte_address(byte_address, get_memory)
+    resolve_byte_address_values(byte_address, count, get_memory)
 }
 
 fn resolve_frame_base_address(
@@ -241,11 +293,19 @@ fn resolve_byte_address(
     byte_address: u64,
     get_memory: &impl Fn(u32) -> Option<Felt>,
 ) -> Option<Felt> {
+    resolve_byte_address_values(byte_address, 1, get_memory)?.pop()
+}
+
+fn resolve_byte_address_values(
+    byte_address: u64,
+    count: usize,
+    get_memory: &impl Fn(u32) -> Option<Felt>,
+) -> Option<Vec<Felt>> {
     if !byte_address.is_multiple_of(4) {
         return None;
     }
     let elem_addr = u32::try_from(byte_address / 4).ok()?;
-    get_memory(elem_addr)
+    resolve_consecutive_memory(elem_addr, count, get_memory)
 }
 
 #[cfg(test)]
@@ -405,6 +465,23 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn resolves_consecutive_memory_values() {
+        let values = resolve_variable_values(
+            &DebugVarLocation::Memory(10),
+            2,
+            &[],
+            |address| match address {
+                10 => Some(Felt::new(1).unwrap()),
+                11 => Some(Felt::new(2).unwrap()),
+                _ => None,
+            },
+            |_| None,
+        );
+
+        assert_eq!(values, Some(vec![Felt::new(1).unwrap(), Felt::new(2).unwrap()]));
     }
 
     #[test]

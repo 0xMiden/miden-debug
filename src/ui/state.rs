@@ -18,7 +18,7 @@ use crate::{
     config::DebuggerConfig,
     debug::{
         Breakpoint, BreakpointType, OperationMatcher, ReadMemoryExpr, ResolvedLocation,
-        resolve_variable_value,
+        felts_for_type, format_value, resolve_variable_value, resolve_variable_values,
     },
     exec::{DebugExecutor, ExecutionConfig, Executor},
 };
@@ -75,6 +75,7 @@ pub struct DebugVariableSource {
 pub struct DebugVariableValue {
     pub name: String,
     pub value: Option<Felt>,
+    pub display_value: Option<String>,
     pub location: String,
     pub source: Option<DebugVariableSource>,
 }
@@ -1117,14 +1118,25 @@ impl State {
             }
 
             let location = var_snapshot.info.value_location();
-
-            let value = resolve_variable_value(location, &stack, read_mem, |offset| {
+            let resolve_local = |offset: i16| {
                 // Read FMP from live memory, then compute address as FMP + offset
                 let fmp_addr = miden_core::FMP_ADDR.as_canonical_u64() as u32;
                 let fmp = read_mem(fmp_addr)?;
                 let addr = (fmp.as_canonical_u64() as i64 + offset as i64) as u32;
                 read_mem(addr)
-            });
+            };
+
+            let display_value = if let Some(ty) = var_snapshot.info.ty()
+                && let Some(count) = felts_for_type(ty)
+                && let Some(values) =
+                    resolve_variable_values(location, count, &stack, read_mem, resolve_local)
+            {
+                format_value(ty, &values)
+            } else {
+                None
+            };
+
+            let value = resolve_variable_value(location, &stack, read_mem, resolve_local);
 
             let source = var_snapshot.info.location().and_then(|loc| {
                 let loc = self.resolve_op_location(loc)?;
@@ -1138,6 +1150,7 @@ impl State {
             variables.push(DebugVariableValue {
                 name: name.to_string(),
                 value,
+                display_value,
                 location: location.to_string(),
                 source,
             });
@@ -1165,6 +1178,11 @@ impl State {
             for variable in variables {
                 if !output.is_empty() {
                     output.push_str(", ");
+                }
+
+                if let Some(value) = variable.display_value {
+                    write!(&mut output, "{}={value}", variable.name).unwrap();
+                    continue;
                 }
 
                 match variable.value {

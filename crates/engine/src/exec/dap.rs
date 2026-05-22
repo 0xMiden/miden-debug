@@ -33,8 +33,8 @@ use super::{
 };
 use crate::{
     debug::{
-        DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, resolve_variable_value,
-        snapshot_transient_debug_values,
+        DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, felts_for_type, format_type,
+        format_value, resolve_variable_values, snapshot_transient_debug_values,
     },
     exec::state::CurrentCycleInfo,
 };
@@ -861,6 +861,14 @@ fn resolve_debug_var_value(
     processor: &mut FastProcessor,
     location: &DebugVarLocation,
 ) -> Option<miden_processor::Felt> {
+    resolve_debug_var_values(processor, location, 1)?.pop()
+}
+
+fn resolve_debug_var_values(
+    processor: &mut FastProcessor,
+    location: &DebugVarLocation,
+    count: usize,
+) -> Option<Vec<miden_processor::Felt>> {
     let state = processor.state();
     let stack = state.get_stack_state();
     let context = state.ctx();
@@ -875,12 +883,14 @@ fn resolve_debug_var_value(
             .ok()
     };
 
-    resolve_variable_value(location, &stack, read_mem, |offset| {
+    let resolve_local = |offset| {
         let fmp_addr = miden_core::FMP_ADDR.as_canonical_u64() as u32;
         let fmp = read_mem(fmp_addr)?;
         let addr = (fmp.as_canonical_u64() as i64 + i64::from(offset)) as u32;
         read_mem(addr)
-    })
+    };
+
+    resolve_variable_values(location, count, &stack, read_mem, resolve_local)
 }
 
 fn debug_var_to_dap_variable(
@@ -888,18 +898,41 @@ fn debug_var_to_dap_variable(
     var: &DebugVarSnapshot,
 ) -> types::Variable {
     let name = var.info.name().to_string();
-    let location = var.info.value_location();
-    let value = resolve_debug_var_value(processor, location)
-        .map(|felt| felt.as_canonical_u64().to_string())
-        .unwrap_or_else(|| location.to_string());
+    let (value, type_field) = format_debug_var_value(processor, var);
 
     types::Variable {
         name,
         value,
-        type_field: Some("Felt".into()),
+        type_field,
         variables_reference: 0,
         ..Default::default()
     }
+}
+
+fn format_debug_var_value(
+    processor: &mut FastProcessor,
+    var: &DebugVarSnapshot,
+) -> (String, Option<String>) {
+    let location = var.info.value_location();
+
+    if let Some(ty) = var.info.ty() {
+        let type_field = Some(format_type(ty));
+        if let Some(count) = felts_for_type(ty)
+            && let Some(values) = resolve_debug_var_values(processor, location, count)
+            && let Some(value) = format_value(ty, &values)
+        {
+            return (value, type_field);
+        }
+        if let Some(felt) = resolve_debug_var_value(processor, location) {
+            return (felt.as_canonical_u64().to_string(), type_field);
+        }
+        return (location.to_string(), type_field);
+    }
+
+    let value = resolve_debug_var_value(processor, location)
+        .map(|felt| felt.as_canonical_u64().to_string())
+        .unwrap_or_else(|| location.to_string());
+    (value, Some("Felt".into()))
 }
 
 fn debug_variables<H: Host>(
@@ -1126,7 +1159,6 @@ impl DapExecutor {
             config,
             ..
         } = self;
-
         // Bind TCP listener with SO_REUSEADDR to allow rebinding during Phase 2 restarts.
         let listener = match Self::bind_listener(&config.listen_addr) {
             Ok(listener) => listener,

@@ -1,3 +1,4 @@
+mod abi_types;
 mod breakpoint;
 mod memory;
 mod native_ptr;
@@ -5,6 +6,7 @@ mod stacktrace;
 mod variables;
 
 pub use self::{
+    abi_types::{felts_for_type, format_type, format_value},
     breakpoint::{Breakpoint, BreakpointType, OperationMatcher},
     memory::{FormatType, MemoryMode, ReadMemoryExpr},
     native_ptr::NativePtr,
@@ -14,6 +16,7 @@ pub use self::{
         resolve_source_file_for_location, resolve_source_path,
     },
     variables::{
-        DebugVarSnapshot, DebugVarTracker, resolve_variable_value, snapshot_transient_debug_values,
+        DebugVarSnapshot, DebugVarTracker, resolve_variable_value, resolve_variable_values,
+        snapshot_transient_debug_values,
     },
 };

@@ -259,4 +259,19 @@ end
 
         assert_eq!(trace.read_from_rust_memory::<u64>(12), Some(0x0807_0605_0403_0201));
     }
+
+    #[test]
+    fn debug_query_reads_uninitialized_rust_memory_as_zero() {
+        let trace = execute_trace(
+            r#"
+begin
+    push.67305985
+    push.3
+    mem_store
+end
+"#,
+        );
+
+        assert_eq!(trace.read_from_rust_memory::<u64>(12), Some(0x0000_0000_0403_0201));
+    }
 }

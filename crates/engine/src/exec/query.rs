@@ -50,7 +50,7 @@ pub trait DebugQuery {
         let size = <T as FromMidenRepr>::size_in_felts();
         let mut felts = SmallVec::<[_; 4]>::with_capacity(size);
         for index in 0..(size as u32) {
-            felts.push(self.read_memory_element(ptr.addr + index)?);
+            felts.push(self.read_memory_element(ptr.addr + index).unwrap_or_default());
         }
         Some(T::from_felts(&felts))
     }

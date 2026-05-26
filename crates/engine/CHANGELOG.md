@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.8.0...miden-debug-engine-v0.8.1) - 2026-05-26
+
+### Fixed
+
+- read unwritten rust memory as zero
+- `read_from_rust_memory`
+- resolve relative source paths from debugger
+
 ## [0.8.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.7.1...miden-debug-engine-v0.8.0) - 2026-05-20
 
 ### Added

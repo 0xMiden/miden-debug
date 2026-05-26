@@ -49,8 +49,8 @@ pub trait DebugQuery {
         assert_eq!(ptr.offset, 0, "support for unaligned reads is not yet implemented");
         let size = <T as FromMidenRepr>::size_in_felts();
         let mut felts = SmallVec::<[_; 4]>::with_capacity(size);
-        for _ in 0..(size as u32) {
-            felts.push(self.read_memory_element(addr)?);
+        for index in 0..(size as u32) {
+            felts.push(self.read_memory_element(ptr.addr + index)?);
         }
         Some(T::from_felts(&felts))
     }

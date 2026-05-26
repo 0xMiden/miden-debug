@@ -168,7 +168,7 @@ mod tests {
     use miden_processor::{ContextId, trace::RowIndex};
 
     use super::ExecutionTrace;
-    use crate::{Executor, debug::NativePtr, felt::ToMidenRepr};
+    use crate::{Executor, debug::NativePtr, exec::DebugQuery, felt::ToMidenRepr};
 
     fn empty_trace() -> ExecutionTrace {
         ExecutionTrace {
@@ -239,5 +239,39 @@ end
 
         assert_eq!(u16_bytes, vec![0x34, 0x12]);
         assert_eq!(u64_bytes, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn debug_query_reads_rust_memory_from_byte_address() {
+        let trace = execute_trace(
+            r#"
+begin
+    push.67305985
+    push.3
+    mem_store
+
+    push.134678021
+    push.4
+    mem_store
+end
+"#,
+        );
+
+        assert_eq!(trace.read_from_rust_memory::<u64>(12), Some(0x0807_0605_0403_0201));
+    }
+
+    #[test]
+    fn debug_query_reads_uninitialized_rust_memory_as_zero() {
+        let trace = execute_trace(
+            r#"
+begin
+    push.67305985
+    push.3
+    mem_store
+end
+"#,
+        );
+
+        assert_eq!(trace.read_from_rust_memory::<u64>(12), Some(0x0000_0000_0403_0201));
     }
 }

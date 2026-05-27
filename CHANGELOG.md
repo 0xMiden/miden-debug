@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.8.0...miden-debug-v0.8.1) - 2026-05-26
+
+### Fixed
+
+- resolve relative source paths from debugger
+
+### Other
+
+- update deps
+
 ## [0.8.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.7.1...miden-debug-v0.8.0) - 2026-05-20
 
 ### Added

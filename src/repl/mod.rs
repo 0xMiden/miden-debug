@@ -1,9 +1,12 @@
 mod commands;
+mod engine;
+mod script;
 mod session;
 
 use log::LevelFilter;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 
+pub use self::{engine::ReplEngine, script::run_script};
 use self::session::ReplSession;
 use crate::config::DebuggerConfig;
 

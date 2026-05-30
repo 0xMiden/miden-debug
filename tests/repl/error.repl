@@ -1,0 +1,16 @@
+# Demonstrate that the harness can assert on failing executions too.
+#
+# This program leaves 17 elements on the stack (the result plus the 16 padding
+# zeros), which the VM rejects at program end. The debugger surfaces the error
+# and the prompt switches to the ERR state.
+begin
+    push.3
+    push.4
+    add
+end
+---
+continue
+# CHECK: Program terminated with error: stack should have at most 16 elements
+stack
+# CHECK: ERR
+# CHECK: [0] 7

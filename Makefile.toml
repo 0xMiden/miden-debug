@@ -301,6 +301,22 @@ args = [
     "${@}",
 ]
 
+[tasks.test-repl]
+category = "Test"
+description = "Runs the scriptable REPL test harness (requires the `repl` feature)"
+command = "cargo"
+args = [
+    "nextest",
+    "run",
+    "--features",
+    "repl",
+    "--test",
+    "repl_harness",
+    "@@remove-empty(CARGO_MAKE_CARGO_VERBOSE_FLAGS)",
+    "@@split(CARGO_MAKE_CARGO_BUILD_TEST_FLAGS, )",
+    "${@}",
+]
+
 [tasks.clippy]
 description = "Runs clippy on the workspace"
 category = "Development"

@@ -90,6 +90,10 @@ required-features = ["tui"]
 name = "flamegraph_profile"
 required-features = ["flamegraph"]
 
+[[test]]
+name = "repl_harness"
+required-features = ["repl"]
+
 [features]
 default = ["tui", "dap"]
 flamegraph = ["std", "dep:env_logger", "dep:inferno", "miden-debug-engine/tui"]

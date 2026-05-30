@@ -19,7 +19,9 @@ mod repl;
 #[cfg(feature = "dap")]
 pub use self::dap_server::run as run_dap_server;
 #[cfg(feature = "repl")]
-pub use self::repl::{run as run_repl, run_with_log_level as run_repl_with_log_level};
+pub use self::repl::{
+    ReplEngine, run as run_repl, run_script, run_with_log_level as run_repl_with_log_level,
+};
 #[cfg(feature = "tui")]
 pub use self::ui::{
     DebugMode, State, run, run_with_log_level, run_with_state, run_with_state_and_log_level,

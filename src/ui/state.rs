@@ -324,6 +324,37 @@ impl State {
         ))
     }
 
+    /// Create a debugger state by assembling inline Miden Assembly source.
+    ///
+    /// Unlike [`State::new`], which loads a compiled package from disk, this
+    /// builds a program directly from a MASM source string. It is intended for
+    /// the scriptable REPL test harness, where small programs are embedded in
+    /// test files rather than shipped as `.masp` packages.
+    ///
+    /// `args` are pushed onto the operand stack before execution, with the
+    /// first element ending up on top of the stack (matching the CLI `-- a b`
+    /// ordering).
+    #[cfg(feature = "repl")]
+    pub fn from_masm_source(source: &str, args: Vec<Felt>) -> Result<Self, Report> {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let program = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program(source)?;
+        // Mirror `State::new`: CLI/test args model sequential pushes, but the
+        // executor expects the top-of-stack element first.
+        let args = args.into_iter().rev().collect::<Vec<_>>();
+        let executor = Executor::new(args).into_debug(&program, source_manager.clone());
+
+        Ok(Self::new_local(
+            source_manager,
+            Box::new(DebuggerConfig::default()),
+            DebugMode::Program,
+            LocalState {
+                executor,
+                execution_failed: None,
+            },
+        ))
+    }
+
     /// Create a new debugger state for transaction debugging.
     ///
     /// This uses pre-recorded event mutations to replay host events during

@@ -1,0 +1,29 @@
+# Exercise a cycle breakpoint and the STOP / END execution states.
+#
+# Computes (10 + 20) * 5 = 150. The trailing `add` folds the result into a
+# padding zero so the program ends with <= 16 stack elements.
+begin
+    push.10
+    push.20
+    add
+    push.5
+    mul
+    add
+end
+---
+break at 3
+# CHECK: Breakpoint 0 set: at cycle 3
+breakpoints
+# CHECK: Breakpoints:
+# CHECK-NEXT: [0] at cycle 3
+# Run to the breakpoint: the prompt enters the STOP state.
+continue
+# CHECK: STOP
+stack
+# CHECK: Operand Stack
+# Run to completion and check the final result.
+continue
+# CHECK: Program terminated successfully
+stack
+# CHECK: [0] 150
+# CHECK-NOT: Error

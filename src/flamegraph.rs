@@ -214,6 +214,7 @@ impl FlamegraphArgs {
             search_path: self.search_path,
             link_libraries: self.link_libraries,
             repl: false,
+            commands: None,
         }
     }
 }

@@ -1,48 +1,47 @@
-use std::io::Write;
+use std::{io::Write, path::Path};
 
 use miden_assembly_syntax::diagnostics::Report;
 
 use super::engine::{Outcome, ReplEngine};
+use crate::config::DebuggerConfig;
 
-/// Execute a sequence of REPL commands against an inline MASM program and
-/// return the full transcript.
+/// Run a script of debugger commands non-interactively, then return.
 ///
-/// The transcript interleaves, for each command, a plain-text prompt reflecting
-/// the execution state *before* the command runs, the echoed command itself,
-/// and any output the command produced. This mirrors what an interactive
-/// session would display, which makes it convenient to assert against with the
-/// `# CHECK:` directives understood by the REPL test harness (`tests/repl/`).
+/// This is the batch / "source a command file" mode, analogous to
+/// `gdb -x <file> -batch` or `lldb -s <file>`. The program to debug is loaded
+/// from `config` exactly as for an interactive session.
 ///
-/// `commands` should contain only actual REPL commands; comment and directive
-/// lines are expected to have been stripped by the caller. Blank lines are
-/// ignored. A `quit` command (or end of input) stops execution.
+/// Each line of the file is one REPL command, using the same syntax as the
+/// interactive prompt. Blank lines and lines beginning with `#` are ignored, so
+/// scripts can be commented — and a script can double as a lit/FileCheck test
+/// input, where the `# RUN:` and `# CHECK:` lines are skipped here and consumed
+/// by the test runner instead. A `quit` command, or end of file, ends the run.
 ///
-/// Command errors are written into the transcript as `Error: <message>` lines
-/// rather than aborting, so that scripts can assert on expected failures.
-pub fn run_script(masm: &str, commands: &[&str]) -> Result<String, Report> {
-    let mut engine = ReplEngine::from_masm(masm, vec![])?;
-    let mut out: Vec<u8> = Vec::new();
+/// Command output goes to stdout; command/parse errors go to stderr and do not
+/// abort the script.
+pub fn run_commands(config: Box<DebuggerConfig>, script_path: &Path) -> Result<(), Report> {
+    let script = std::fs::read_to_string(script_path).map_err(|e| {
+        Report::msg(format!("failed to read command file {}: {e}", script_path.display()))
+    })?;
 
-    engine.print_location(&mut out);
+    let mut engine = ReplEngine::from_config(config)?;
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    run_lines(&mut engine, &script, &mut out);
+    Ok(())
+}
 
-    for line in commands {
+fn run_lines(engine: &mut ReplEngine, script: &str, out: &mut dyn Write) {
+    for line in script.lines() {
         let line = line.trim();
-        if line.is_empty() {
+        if line.is_empty() || line.starts_with('#') {
             continue;
         }
 
-        let _ = write!(out, "{}", engine.make_prompt(false));
-        let _ = writeln!(out, "{line}");
-
-        match engine.execute_line(line, &mut out) {
+        match engine.execute_line(line, out) {
             Ok(Outcome::Quit) => break,
             Ok(Outcome::Continue) => {}
-            Err(e) => {
-                let _ = writeln!(out, "Error: {e}");
-            }
+            Err(e) => eprintln!("error: {e}"),
         }
     }
-
-    String::from_utf8(out)
-        .map_err(|e| Report::msg(format!("REPL transcript was not valid UTF-8: {e}")))
 }

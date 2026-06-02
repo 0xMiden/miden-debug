@@ -326,10 +326,10 @@ impl State {
 
     /// Create a debugger state by assembling inline Miden Assembly source.
     ///
-    /// Unlike [`State::new`], which loads a compiled package from disk, this
-    /// builds a program directly from a MASM source string. It is intended for
-    /// the scriptable REPL test harness, where small programs are embedded in
-    /// test files rather than shipped as `.masp` packages.
+    /// Unlike [`State::new`], which loads a compiled `.masp` package from disk,
+    /// this assembles a program directly from MASM source. It is used by the
+    /// batch command runner so that lit/FileCheck tests can debug small `.masm`
+    /// programs without first compiling them to a package.
     ///
     /// `args` are pushed onto the operand stack before execution, with the
     /// first element ending up on top of the stack (matching the CLI `-- a b`
@@ -339,14 +339,14 @@ impl State {
         let source_manager = Arc::new(DefaultSourceManager::default());
         let program = miden_assembly::Assembler::new(source_manager.clone())
             .assemble_program(source)?;
-        // Mirror `State::new`: CLI/test args model sequential pushes, but the
-        // executor expects the top-of-stack element first.
+        // CLI/test args model sequential pushes, but the executor expects the
+        // top-of-stack element first.
         let args = args.into_iter().rev().collect::<Vec<_>>();
         let executor = Executor::new(args).into_debug(&program, source_manager.clone());
 
         Ok(Self::new_local(
             source_manager,
-            Box::new(DebuggerConfig::default()),
+            Box::<DebuggerConfig>::default(),
             DebugMode::Program,
             LocalState {
                 executor,

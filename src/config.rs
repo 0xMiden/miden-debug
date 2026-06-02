@@ -159,6 +159,24 @@ pub struct DebuggerConfig {
         arg(long, help_heading = "Output")
     )]
     pub repl: bool,
+    /// Run a script of debugger commands non-interactively, then exit.
+    ///
+    /// FILE is a list of debugger commands, one per line, using the same syntax
+    /// as the interactive REPL prompt. Blank lines and lines beginning with `#`
+    /// are ignored, so scripts may be commented. This is analogous to
+    /// `gdb -x <file> -batch` or `lldb -s <file>`, and is primarily used to
+    /// drive the debugger from lit/FileCheck tests.
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl", feature = "flamegraph"),
+        arg(
+            long = "commands",
+            visible_alias = "source",
+            short = 'x',
+            value_name = "FILE",
+            help_heading = "Execution"
+        )
+    )]
+    pub commands: Option<PathBuf>,
 }
 
 /// ColorChoice represents the color preferences of an end user.

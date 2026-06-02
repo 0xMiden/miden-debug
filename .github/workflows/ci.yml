@@ -101,28 +101,32 @@ jobs:
         run: |
           cargo make test
 
-  repl_tests:
-    name: repl harness tests
+  lit_tests:
+    name: lit/filecheck tests
     runs-on: ubuntu-latest
+    # Run after the unit tests so we can reuse a warm cache
+    needs: [unit_tests]
     steps:
       - *checkout
       - *install-rust
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
-          # Dedicated cache so this job can run in parallel with the others
-          shared-key: ${{ github.workflow }}-shared-repl-tests
+          # Dedicated cache for the lit job
+          shared-key: ${{ github.workflow }}-shared-lit-tests
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: ${{ github.ref == 'refs/heads/next' }}
       - *install-cargo-make
-      - uses: taiki-e/install-action@nextest
-      - name: Check
-        # Verify the harness compiles before running it, for readable errors
+      - name: Install litcheck
         run: |
-          cargo make check --features repl --test repl_harness
+          if ! litcheck --help >/dev/null 2>&1; then
+            cargo install litcheck --locked
+          fi
       - name: Test
+        # The debugger assembles the `.masm` programs itself, so no external
+        # Miden toolchain is required.
         run: |
-          cargo make test-repl
+          cargo make test-lit
 
   check_release:
     name: release checks

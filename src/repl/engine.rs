@@ -6,7 +6,6 @@ use super::commands::ReplCommand;
 use crate::{
     config::DebuggerConfig,
     debug::{Breakpoint, BreakpointType},
-    felt::Felt,
     ui::state::State,
 };
 
@@ -36,19 +35,35 @@ impl ReplEngine {
         Ok(Self { state: State::new(config)? })
     }
 
-    /// Create an engine by assembling inline Miden Assembly source.
+    /// Create an engine from a debugger configuration, assembling the program
+    /// input directly when it is Miden Assembly source rather than a compiled
+    /// `.masp` package.
     ///
-    /// Intended for tests and scripted sessions; see [`State::from_masm_source`].
-    pub fn from_masm(source: &str, args: Vec<Felt>) -> Result<Self, Report> {
-        // `Felt` here is the debugger's public wrapper type; `State` works with
-        // the raw processor field element, so unwrap each value.
-        let args = args.into_iter().map(|f| f.0).collect();
-        Ok(Self { state: State::from_masm_source(source, args)? })
-    }
+    /// This lets the batch command runner debug a `.masm` file straight from
+    /// disk (used by the lit/FileCheck tests), while still loading `.masp`
+    /// packages via the normal [`State::new`] path.
+    pub fn from_config(config: Box<DebuggerConfig>) -> Result<Self, Report> {
+        use crate::{input::InputFile, linker::LibraryKind};
 
-    /// Access the underlying debugger state, e.g. for assertions in tests.
-    pub fn state(&self) -> &State {
-        &self.state
+        // A `.masp` package is the only binary program format `State::new` loads;
+        // treat any other input (a `.masm` file) as MASM source to assemble.
+        let is_masp =
+            matches!(config.input.as_ref().and_then(InputFile::library_kind), Some(LibraryKind::Masp));
+
+        match config.input.as_ref() {
+            Some(input) if !is_masp => {
+                let bytes = input
+                    .bytes()
+                    .ok_or_else(|| Report::msg("failed to read MASM program input"))?;
+                let source = core::str::from_utf8(&bytes)
+                    .map_err(|e| Report::msg(format!("MASM source is not valid UTF-8: {e}")))?;
+                // `config.args` use the debugger's public `Felt` wrapper; `State`
+                // works with the raw processor field element.
+                let args = config.args.iter().map(|f| f.0).collect();
+                Ok(Self { state: State::from_masm_source(source, args)? })
+            }
+            _ => Self::new(config),
+        }
     }
 
     /// Render the prompt for the current execution state.
@@ -289,18 +304,17 @@ impl ReplEngine {
                 if cycles_stepped > 0
                     && is_op_boundary
                     && matches!(&bp.ty, BreakpointType::NextLine)
-                {
-                    if State::is_next_source_line(
+                    && State::is_next_source_line(
                         start_proc.as_deref(),
                         start_line_loc.as_ref(),
                         proc.as_deref(),
                         line_loc.as_ref(),
                         &source_path_prefixes,
                         minimum_source_line,
-                    ) {
-                        self.state.breakpoints_hit.push(core::mem::take(bp));
-                        return false;
-                    }
+                    )
+                {
+                    self.state.breakpoints_hit.push(core::mem::take(bp));
+                    return false;
                 }
 
                 if has_internal_breakpoint && !bp.is_internal() {

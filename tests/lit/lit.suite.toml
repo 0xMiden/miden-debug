@@ -1,0 +1,13 @@
+name = "miden-debug"
+
+# Only `*.test` files are test entry points. The `*.masm` programs they debug
+# sit alongside them as fixtures and are not themselves discovered as tests.
+patterns = ["*.test"]
+
+working_dir = "."
+
+[substitutions]
+# `miden-debug` resolves via the directory passed to `litcheck lit run --path`
+# (see the `test-lit` task in Makefile.toml). `filecheck` is provided by
+# litcheck itself. The debugger assembles the `.masm` programs directly, so no
+# external compiler toolchain is required.

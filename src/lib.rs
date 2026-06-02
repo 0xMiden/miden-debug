@@ -20,7 +20,7 @@ mod repl;
 pub use self::dap_server::run as run_dap_server;
 #[cfg(feature = "repl")]
 pub use self::repl::{
-    ReplEngine, run as run_repl, run_script, run_with_log_level as run_repl_with_log_level,
+    run as run_repl, run_commands, run_with_log_level as run_repl_with_log_level,
 };
 #[cfg(feature = "tui")]
 pub use self::ui::{

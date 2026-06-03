@@ -32,7 +32,9 @@ pub struct ReplEngine {
 impl ReplEngine {
     /// Create an engine from a debugger configuration (loads a program package).
     pub fn new(config: Box<DebuggerConfig>) -> Result<Self, Report> {
-        Ok(Self { state: State::new(config)? })
+        Ok(Self {
+            state: State::new(config)?,
+        })
     }
 
     /// Create an engine from a debugger configuration, assembling the program
@@ -47,8 +49,10 @@ impl ReplEngine {
 
         // A `.masp` package is the only binary program format `State::new` loads;
         // treat any other input (a `.masm` file) as MASM source to assemble.
-        let is_masp =
-            matches!(config.input.as_ref().and_then(InputFile::library_kind), Some(LibraryKind::Masp));
+        let is_masp = matches!(
+            config.input.as_ref().and_then(InputFile::library_kind),
+            Some(LibraryKind::Masp)
+        );
 
         match config.input.as_ref() {
             Some(input) if !is_masp => {
@@ -60,7 +64,9 @@ impl ReplEngine {
                 // `config.args` use the debugger's public `Felt` wrapper; `State`
                 // works with the raw processor field element.
                 let args = config.args.iter().map(|f| f.0).collect();
-                Ok(Self { state: State::from_masm_source(source, args)? })
+                Ok(Self {
+                    state: State::from_masm_source(source, args)?,
+                })
             }
             _ => Self::new(config),
         }

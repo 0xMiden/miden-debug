@@ -337,8 +337,8 @@ impl State {
     #[cfg(feature = "repl")]
     pub fn from_masm_source(source: &str, args: Vec<Felt>) -> Result<Self, Report> {
         let source_manager = Arc::new(DefaultSourceManager::default());
-        let program = miden_assembly::Assembler::new(source_manager.clone())
-            .assemble_program(source)?;
+        let program =
+            miden_assembly::Assembler::new(source_manager.clone()).assemble_program(source)?;
         // CLI/test args model sequential pushes, but the executor expects the
         // top-of-stack element first.
         let args = args.into_iter().rev().collect::<Vec<_>>();

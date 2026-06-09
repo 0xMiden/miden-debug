@@ -1,8 +1,8 @@
 use miden_assembly_syntax::diagnostics::Report;
 use rustyline::{DefaultEditor, error::ReadlineError};
 
-use super::engine::{Outcome, ReplEngine};
-use crate::config::DebuggerConfig;
+use super::engine::Outcome;
+use crate::{config::DebuggerConfig, script::ScriptDebugger};
 
 /// Interactive REPL session for the debugger.
 ///
@@ -11,18 +11,38 @@ use crate::config::DebuggerConfig;
 /// output formatting lives in [`ReplEngine`], so it can be reused by the
 /// scriptable test harness without a terminal.
 pub struct ReplSession {
-    engine: ReplEngine,
+    debugger: ScriptDebugger,
+    #[cfg(feature = "python")]
+    python: crate::script::PythonScriptSession,
     editor: DefaultEditor,
 }
 
 impl ReplSession {
     /// Create a new REPL session from the given config.
     pub fn new(config: Box<DebuggerConfig>) -> Result<Self, Report> {
-        let engine = ReplEngine::new(config)?;
+        #[cfg(feature = "python")]
+        let python_init_file = super::python::project_init_file(&config);
+        let debugger = ScriptDebugger::new(config)?;
+        #[cfg(feature = "python")]
+        let python = {
+            let python = crate::script::PythonScriptSession::new(debugger.clone())
+                .map_err(|e| Report::msg(format!("failed to initialize Python scripting: {e}")))?;
+            if let Some(path) = python_init_file {
+                python.import_file(&path).map_err(|e| {
+                    Report::msg(format!("failed to load Python init file {}: {e}", path.display()))
+                })?;
+            }
+            python
+        };
         let editor = DefaultEditor::new()
             .map_err(|e| Report::msg(format!("failed to create editor: {e}")))?;
 
-        Ok(Self { engine, editor })
+        Ok(Self {
+            debugger,
+            #[cfg(feature = "python")]
+            python,
+            editor,
+        })
     }
 
     /// Run the main REPL loop.
@@ -30,10 +50,10 @@ impl ReplSession {
         self.print_welcome();
 
         let mut stdout = std::io::stdout();
-        self.engine.print_location(&mut stdout);
+        self.debugger.print_location(&mut stdout);
 
         loop {
-            let prompt = self.engine.make_prompt(true);
+            let prompt = self.debugger.make_prompt(true);
             match self.editor.readline(&prompt) {
                 Ok(line) => {
                     let line = line.trim();
@@ -45,7 +65,17 @@ impl ReplSession {
                     let _ = self.editor.add_history_entry(line);
 
                     // Parse and execute command
-                    match self.engine.execute_line(line, &mut stdout) {
+                    #[cfg(feature = "python")]
+                    let outcome = super::python::execute_line(
+                        &self.debugger,
+                        &mut self.python,
+                        line,
+                        &mut stdout,
+                    );
+                    #[cfg(not(feature = "python"))]
+                    let outcome = self.debugger.execute_repl_line(line, &mut stdout);
+
+                    match outcome {
                         Ok(Outcome::Quit) => {
                             println!("\x1b[36mGoodbye!\x1b[0m");
                             break;

@@ -97,6 +97,7 @@ flamegraph = ["std", "dep:env_logger", "dep:inferno", "miden-debug-engine/tui"]
 tui = ["std", "flamegraph", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect", "miden-debug-engine/tui"]
 repl = ["std", "dep:env_logger", "dep:rustyline", "miden-debug-engine/tui"]
 dap = ["miden-debug-engine/dap"]
+python = ["repl", "dep:pyo3"]
 std = ["clap/std", "clap/env", "compact_str/std", "miden-assembly-syntax/std", "miden-debug-engine/std"]
 proptest = ["miden-debug-engine/proptest"]
 
@@ -115,6 +116,7 @@ miden-debug-types.workspace = true
 miden-mast-package.workspace = true
 miden-package-registry.workspace = true
 miden-processor.workspace = true
+pyo3 = { version = "0.28.3", optional = true, features = ["auto-initialize"] }
 ratatui = { version = "0.30.0", optional = true }
 signal-hook = { version = "0.4.4", optional = true }
 syntect = { version = "5.2.0", optional = true, default-features = false, features = [
@@ -130,3 +132,6 @@ rustyline = { version = "18.0", optional = true }
 tokio = { version = "1.39.2", features = ["rt", "time", "macros", "rt-multi-thread"] }
 tokio-util = "0.7.11"
 futures = "0.3.30"
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }

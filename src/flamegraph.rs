@@ -211,6 +211,8 @@ impl FlamegraphArgs {
             link_libraries: self.link_libraries,
             repl: false,
             commands: None,
+            #[cfg(feature = "python")]
+            no_user_python_init: true,
         }
     }
 }

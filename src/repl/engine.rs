@@ -33,9 +33,24 @@ impl ReplEngine {
         })
     }
 
+    /// Create an engine from an already constructed debugger state.
+    pub(crate) fn from_state(state: State) -> Self {
+        Self { state }
+    }
+
     /// Create an engine from a debugger configuration.
     pub fn from_config(config: Box<DebuggerConfig>) -> Result<Self, Report> {
         Self::new(config)
+    }
+
+    /// Borrow the current debugger state.
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+
+    /// Mutably borrow the current debugger state.
+    pub fn state_mut(&mut self) -> &mut State {
+        &mut self.state
     }
 
     /// Render the prompt for the current execution state.
@@ -349,7 +364,7 @@ impl ReplEngine {
     }
 }
 
-fn format_bp_type(ty: &BreakpointType) -> String {
+pub(crate) fn format_bp_type(ty: &BreakpointType) -> String {
     match ty {
         BreakpointType::Step => "next cycle".into(),
         BreakpointType::StepN(n) => format!("after {} cycles", n),

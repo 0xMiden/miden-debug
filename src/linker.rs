@@ -299,7 +299,7 @@ fn read_package_unchecked<R: ByteReader>(source: &mut R) -> Result<Package, Dese
     })
 }
 
-#[cfg(any(feature = "tui", feature = "flamegraph"))]
+#[cfg(any(feature = "tui", feature = "repl", feature = "flamegraph"))]
 impl clap::builder::ValueParserFactory for LinkLibrary {
     type Parser = LinkLibraryParser;
 
@@ -308,12 +308,12 @@ impl clap::builder::ValueParserFactory for LinkLibrary {
     }
 }
 
-#[cfg(any(feature = "tui", feature = "flamegraph"))]
+#[cfg(any(feature = "tui", feature = "repl", feature = "flamegraph"))]
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct LinkLibraryParser;
 
-#[cfg(any(feature = "tui", feature = "flamegraph"))]
+#[cfg(any(feature = "tui", feature = "repl", feature = "flamegraph"))]
 impl clap::builder::TypedValueParser for LinkLibraryParser {
     type Value = LinkLibrary;
 

@@ -2,8 +2,8 @@ use std::{io::Write, path::Path};
 
 use miden_assembly_syntax::diagnostics::Report;
 
-use super::engine::{Outcome, ReplEngine};
-use crate::config::DebuggerConfig;
+use super::engine::Outcome;
+use crate::{config::DebuggerConfig, script::ScriptDebugger};
 
 /// Run a script of debugger commands non-interactively, then return.
 ///
@@ -24,21 +24,64 @@ pub fn run_commands(config: Box<DebuggerConfig>, script_path: &Path) -> Result<(
         Report::msg(format!("failed to read command file {}: {e}", script_path.display()))
     })?;
 
-    let mut engine = ReplEngine::from_config(config)?;
+    #[cfg(feature = "python")]
+    let python_init_file = super::python::project_init_file(&config);
+    let debugger = ScriptDebugger::from_config(config)?;
+    #[cfg(feature = "python")]
+    let mut python = {
+        let python = crate::script::PythonScriptSession::new(debugger.clone())
+            .map_err(|e| Report::msg(format!("failed to initialize Python scripting: {e}")))?;
+        if let Some(path) = python_init_file {
+            python.import_file(&path).map_err(|e| {
+                Report::msg(format!("failed to load Python init file {}: {e}", path.display()))
+            })?;
+        }
+        python
+    };
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    run_lines(&mut engine, &script, &mut out);
+    #[cfg(feature = "python")]
+    run_lines(&debugger, Some(&mut python), &script, &mut out);
+    #[cfg(not(feature = "python"))]
+    run_lines(&debugger, &script, &mut out);
     Ok(())
 }
 
-fn run_lines(engine: &mut ReplEngine, script: &str, out: &mut dyn Write) {
+#[cfg(feature = "python")]
+fn run_lines(
+    debugger: &ScriptDebugger,
+    mut python: Option<&mut crate::script::PythonScriptSession>,
+    script: &str,
+    out: &mut dyn Write,
+) {
     for line in script.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
 
-        match engine.execute_line(line, out) {
+        let outcome = match python.as_deref_mut() {
+            Some(python) => super::python::execute_line(debugger, python, line, out),
+            None => debugger.execute_repl_line(line, out),
+        };
+
+        match outcome {
+            Ok(Outcome::Quit) => break,
+            Ok(Outcome::Continue) => {}
+            Err(e) => eprintln!("error: {e}"),
+        }
+    }
+}
+
+#[cfg(not(feature = "python"))]
+fn run_lines(debugger: &ScriptDebugger, script: &str, out: &mut dyn Write) {
+    for line in script.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        match debugger.execute_repl_line(line, out) {
             Ok(Outcome::Quit) => break,
             Ok(Outcome::Continue) => {}
             Err(e) => eprintln!("error: {e}"),

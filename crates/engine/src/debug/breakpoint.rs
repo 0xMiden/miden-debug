@@ -1,6 +1,7 @@
 use std::{ops::Deref, path::Path, str::FromStr};
 
 use glob::Pattern;
+use miden_core::events::EventId;
 
 use super::ResolvedLocation;
 use crate::TraceEvent;
@@ -78,6 +79,8 @@ pub enum BreakpointType {
     Called(Pattern),
     /// Break when the given trace event occurs
     Trace(TraceEvent),
+    /// Break whet the given event is emitted
+    Event(EventId),
 }
 impl BreakpointType {
     /// Return true if this breakpoint indicates we should break for `current_op`

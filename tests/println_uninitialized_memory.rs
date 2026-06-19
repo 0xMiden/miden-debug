@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use log::Level;
 use miden_assembly::DefaultSourceManager;
-use miden_debug::{DebugQuery, TRACE_PRINT_LN};
+use miden_debug::{DebugQuery, PRINTLN_EVENT};
 
 #[test]
-fn trace_println_uninitialized_memory_logs_warning_and_continues_execution() {
+fn println_uninitialized_memory_logs_warning_and_continues_execution() {
     common::init_test_debug_logger();
     let source = format!(
         r#"
@@ -15,7 +15,7 @@ begin
     # Try to print a byte from uninitialized memory.
     push.1
     push.1114112
-    trace.{TRACE_PRINT_LN}
+    emit.event("{PRINTLN_EVENT}")
     drop
     drop
 

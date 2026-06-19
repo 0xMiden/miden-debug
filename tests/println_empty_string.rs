@@ -3,10 +3,10 @@ mod common;
 use std::sync::Arc;
 
 use miden_assembly::DefaultSourceManager;
-use miden_debug::TRACE_PRINT_LN;
+use miden_debug::PRINTLN_EVENT;
 
 #[test]
-fn trace_println_logs_empty_strings() {
+fn println_logs_empty_strings() {
     common::init_test_debug_logger();
 
     let source_manager = Arc::new(DefaultSourceManager::default());
@@ -21,9 +21,9 @@ begin
     # on the stack
     push.0
     push.{byte_addr}
-    trace.{TRACE_PRINT_LN}
+    emit.event("{PRINTLN_EVENT}")
 
-    # Drop the address and string length passed to the TRACE_PRINT_LN event.
+    # Stack cleanup
     drop
     drop
 end

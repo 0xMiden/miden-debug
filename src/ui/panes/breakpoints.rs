@@ -1,4 +1,5 @@
 use miden_assembly_syntax::diagnostics::Report;
+use miden_processor::BaseHost;
 use ratatui::{prelude::*, widgets::*};
 
 use crate::{
@@ -208,6 +209,19 @@ impl Pane for BreakpointsPane {
                         Span::styled("trace:", yellow),
                         Span::styled(format!("{id}"), gray),
                     ]),
+                    BreakpointType::Event(id) => {
+                        let event_name = state
+                            .executor()
+                            .host
+                            .resolve_event(*id)
+                            .map(|name| name.as_str().to_string())
+                            .unwrap_or_else(|| format!("{id}"));
+                        Line::from(vec![
+                            gutter,
+                            Span::styled("event:", yellow),
+                            Span::styled(event_name, gray),
+                        ])
+                    },
                 };
                 if is_hit {
                     line.patch_style(Style::default().add_modifier(Modifier::BOLD))

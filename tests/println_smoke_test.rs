@@ -3,10 +3,10 @@ mod common;
 use std::sync::Arc;
 
 use miden_assembly::DefaultSourceManager;
-use miden_debug::TRACE_PRINT_LN;
+use miden_debug::PRINTLN_EVENT;
 
 #[test]
-fn trace_println_logs_byte_addressed_strings() {
+fn println_logs_byte_addressed_strings() {
     common::init_test_debug_logger();
     let source_manager = Arc::new(DefaultSourceManager::default());
 
@@ -29,13 +29,12 @@ begin
     push.{second_elem}
     mem_store
 
-    # TRACE_PRINT_LN expects [address, string_length] on the stack, so push the byte length first
-    # and the byte address last.
+    # Push address and string length
     push.5
     push.{byte_addr}
-    trace.{TRACE_PRINT_LN}
+    emit.event("{PRINTLN_EVENT}")
 
-    # Drop the address and string length passed to the TRACE_PRINT_LN event.
+    # Stack cleanup
     drop
     drop
 end

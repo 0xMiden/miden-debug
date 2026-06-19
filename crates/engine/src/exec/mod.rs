@@ -23,11 +23,11 @@ pub use self::dap_types::{DapUiFrame, DapUiState};
 pub use self::{
     config::ExecutionConfig,
     diagnostic::DiagnosticExecutor,
-    executor::Executor,
+    executor::{Executor, PRINTLN_EVENT, PRINTLN_EVENT_ID},
     host::DebuggerHost,
     query::DebugQuery,
     state::DebugExecutor,
     trace::{ExecutionTrace, TraceHandler},
-    trace_event::{TRACE_PRINT_LN, TraceEvent},
+    trace_event::TraceEvent,
     trace_monitor::TraceMonitor,
 };

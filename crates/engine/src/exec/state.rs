@@ -336,6 +336,15 @@ impl DebugExecutor {
                 return Ok(());
             }
 
+            // Break on `emit`-based events (e.g. println) by inspecting the op and stack.
+            // On `Operation::Emit` the top of the stack contains the id of the event.
+            if self.current_op == Some(Operation::Emit)
+                && let BreakpointType::Event(target) = &breakpoint.ty
+                && self.current_stack.first() == Some(&target.as_felt())
+            {
+                return Ok(());
+            }
+
             let (op, is_op_boundary, proc, loc) = {
                 let op = self.current_op;
                 let is_boundary = self.current_asmop.as_ref().map(|_info| true).unwrap_or(false);

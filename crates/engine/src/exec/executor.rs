@@ -4,7 +4,7 @@ use std::{
     fmt,
     ops::Deref,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, LazyLock},
 };
 
 use log::Level;
@@ -19,14 +19,14 @@ use miden_mast_package::Dependency;
 use miden_processor::{
     ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt, ProcessorState,
     advice::{AdviceInputs, AdviceMutation},
-    event::{EventHandler, EventName},
+    event::{EventError, EventHandler, EventId, EventName},
     mast::MastForest,
     trace::RowIndex,
 };
 
 use super::{
     DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent,
-    query::read_memory_bytes, trace_event::TRACE_PRINT_LN,
+    query::read_memory_bytes,
 };
 use crate::{
     debug::{CallStack, DebugVarTracker, NativePtr},
@@ -38,8 +38,15 @@ use crate::{
 /// A limit is required as `u32::MAX` exceeds the size that strings can take in Miden VM. The limit
 /// is generous and still permits use cases like formatting a large amount of data in storage.
 ///
-/// Exceeding the limit likely indicates a bug in the corresponding trace event handling.
+/// Exceeding the limit likely indicates a bug in the corresponding event handler.
 const MAX_PRINTLN_BYTES: usize = 512 * 1024;
+
+// TODO move this somewhere else, similar to Trace println was defined
+/// The name of the event emitted for `println!`.
+pub const PRINTLN_EVENT: EventName = EventName::new("miden::println");
+
+/// The [`EventId`] corresponding to [`PRINTLN_EVENT`].
+pub static PRINTLN_EVENT_ID: LazyLock<EventId> = LazyLock::new(|| PRINTLN_EVENT.to_event_id());
 
 /// The [Executor] is responsible for executing a program with the Miden VM.
 ///
@@ -169,6 +176,7 @@ impl Executor {
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
         register_builtin_trace_handlers(&mut host, Rc::clone(&trace_events));
+        register_builtin_event_handlers(&mut host);
 
         // Set up debug variable tracking
         // Note: Currently no debug var events are emitted (requires new miden-core),
@@ -240,6 +248,7 @@ impl Executor {
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
         register_builtin_trace_handlers(&mut host, Rc::clone(&trace_events));
+        register_builtin_event_handlers(&mut host);
 
         let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
             .expect("advice inputs should fit advice map limits")
@@ -392,35 +401,42 @@ fn register_builtin_trace_handlers(
         frame_end_events.borrow_mut().insert(process.clock(), event);
     });
 
-    host.register_trace_handler(TraceEvent::PrintLn, move |process, _event| {
-        match decode_println(process) {
-            Ok(content) => {
-                log::log!(target: "stdout", Level::Info, "{content}");
-            }
-            Err(err) => {
-                log::warn!(
-                    target: "executor",
-                    "trace.{TRACE_PRINT_LN} failed at cycle {}: {err}",
-                    process.clock(),
-                );
-            }
-        }
-    });
-
     let assertion_events = Rc::clone(&trace_events);
     host.register_assert_failed_tracer(move |process, event| {
         assertion_events.borrow_mut().insert(process.clock(), event);
     });
 }
 
-/// Decode a `TRACE_PRINT_LN` event into a UTF-8 string.
+fn register_builtin_event_handlers(host: &mut DebuggerHost<dyn SourceManager>) {
+    let println_handler: Arc<dyn EventHandler> =
+        Arc::new(|process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
+            match decode_println(process) {
+                Ok(content) => {
+                    log::log!(target: "stdout", Level::Info, "{content}");
+                }
+                Err(err) => {
+                    log::warn!(
+                        target: "executor",
+                        "event {PRINTLN_EVENT} failed at cycle {}: {err}",
+                        process.clock(),
+                    );
+                }
+            }
+            // `PRINTLN_EVENT` only triggers a side effect (print); no changes in advice stack
+            Ok(Vec::new())
+        });
+    host.register_event_handler(PRINTLN_EVENT, println_handler)
+        .expect("failed to register builtin println event handler");
+}
+
+/// Decode a `miden::println` event payload into a UTF-8 string.
 ///
-/// Expects `[address, length]` on the operand stack. Reads `length` bytes from
-/// `address` in the current context's memory and returns them as a string.
+/// Expects `[event_id, address, length]` on the operand stack. Reads `length` bytes from `address`
+/// in the current context's memory and returns them as a string.
 fn decode_println(process: &ProcessorState<'_>) -> Result<String, PrintLnError> {
-    let addr = u32::try_from(process.get_stack_item(0).as_canonical_u64())
+    let addr = u32::try_from(process.get_stack_item(1).as_canonical_u64())
         .map_err(|_| PrintLnError::InvalidAddress)?;
-    let len = usize::try_from(process.get_stack_item(1).as_canonical_u64())
+    let len = usize::try_from(process.get_stack_item(2).as_canonical_u64())
         .map_err(|_| PrintLnError::InvalidLength)?;
     if len > MAX_PRINTLN_BYTES {
         return Err(PrintLnError::LengthExceeded {

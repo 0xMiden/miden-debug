@@ -552,5 +552,6 @@ fn format_bp_type(ty: &BreakpointType) -> String {
         BreakpointType::Opcode(matcher) => format!("opcode {matcher}"),
         BreakpointType::Called(pat) => format!("call {}", pat.as_str()),
         BreakpointType::Trace(event) => format!("trace event {event:?}"),
+        BreakpointType::Event(id) => format!("event {id}"),
     }
 }

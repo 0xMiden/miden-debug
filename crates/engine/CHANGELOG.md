@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `println!` is now handled with `Event` instead of `Trace`
+
+### Added
+
+- `BreakpointType::Event(EventId)` for breaking on `emit.<id>` events
+
+### Removed
+
+- `TRACE_PRINT_LN` constant and the `TraceEvent::PrintLn` variant
+
 ## [0.8.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.7.1...miden-debug-engine-v0.8.0) - 2026-05-20
 
 ### Added

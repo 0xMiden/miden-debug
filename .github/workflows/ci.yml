@@ -123,8 +123,8 @@ jobs:
             cargo install litcheck --locked
           fi
       - name: Test
-        # The debugger assembles the `.masm` programs itself, so no external
-        # Miden toolchain is required.
+        # The lit harness compiles `.masm` fixtures with `miden-vm`, then
+        # checks debugger output with FileCheck.
         run: |
           cargo make test-lit
 

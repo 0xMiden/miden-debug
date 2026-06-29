@@ -3,11 +3,7 @@ use std::{io::Write, rc::Rc};
 use miden_assembly_syntax::diagnostics::Report;
 
 use super::commands::ReplCommand;
-use crate::{
-    config::DebuggerConfig,
-    debug::{Breakpoint, BreakpointType},
-    ui::state::State,
-};
+use crate::{config::DebuggerConfig, debug::BreakpointType, ui::state::State};
 
 /// The result of executing a single REPL line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,39 +33,9 @@ impl ReplEngine {
         })
     }
 
-    /// Create an engine from a debugger configuration, assembling the program
-    /// input directly when it is Miden Assembly source rather than a compiled
-    /// `.masp` package.
-    ///
-    /// This lets the batch command runner debug a `.masm` file straight from
-    /// disk (used by the lit/FileCheck tests), while still loading `.masp`
-    /// packages via the normal [`State::new`] path.
+    /// Create an engine from a debugger configuration.
     pub fn from_config(config: Box<DebuggerConfig>) -> Result<Self, Report> {
-        use crate::{input::InputFile, linker::LibraryKind};
-
-        // A `.masp` package is the only binary program format `State::new` loads;
-        // treat any other input (a `.masm` file) as MASM source to assemble.
-        let is_masp = matches!(
-            config.input.as_ref().and_then(InputFile::library_kind),
-            Some(LibraryKind::Masp)
-        );
-
-        match config.input.as_ref() {
-            Some(input) if !is_masp => {
-                let bytes = input
-                    .bytes()
-                    .ok_or_else(|| Report::msg("failed to read MASM program input"))?;
-                let source = core::str::from_utf8(&bytes)
-                    .map_err(|e| Report::msg(format!("MASM source is not valid UTF-8: {e}")))?;
-                // `config.args` use the debugger's public `Felt` wrapper; `State`
-                // works with the raw processor field element.
-                let args = config.args.iter().map(|f| f.0).collect();
-                Ok(Self {
-                    state: State::from_masm_source(source, args)?,
-                })
-            }
-            _ => Self::new(config),
-        }
+        Self::new(config)
     }
 
     /// Render the prompt for the current execution state.
@@ -178,36 +144,17 @@ impl ReplEngine {
     }
 
     fn cmd_next(&mut self, out: &mut dyn Write) -> Result<(), String> {
-        if self.state.executor().stopped {
-            return Err("program has terminated, cannot continue".into());
-        }
-
-        self.state.create_breakpoint(BreakpointType::Next);
-        self.state.stopped = false;
-        self.run_until_stopped();
-        self.print_location(out);
-        Ok(())
+        self.cmd_resume_with_breakpoint(BreakpointType::Next, out)
     }
 
     fn cmd_next_line(&mut self, out: &mut dyn Write) -> Result<(), String> {
-        if self.state.executor().stopped {
-            return Err("program has terminated, cannot continue".into());
-        }
-
-        self.state.create_breakpoint(BreakpointType::NextLine);
-        self.state.stopped = false;
-        self.run_until_stopped();
-        self.print_location(out);
-        Ok(())
+        self.cmd_resume_with_breakpoint(BreakpointType::NextLine, out)
     }
 
     fn cmd_continue(&mut self, out: &mut dyn Write) -> Result<(), String> {
-        if self.state.executor().stopped {
-            return Err("program has terminated, cannot continue".into());
-        }
+        self.ensure_can_continue()?;
 
-        self.state.stopped = false;
-        self.run_until_stopped();
+        self.state.run_until_stopped();
 
         if self.state.executor().stopped {
             if let Some(err) = self.state.execution_failed() {
@@ -223,191 +170,28 @@ impl ReplEngine {
     }
 
     fn cmd_finish(&mut self, out: &mut dyn Write) -> Result<(), String> {
-        if self.state.executor().stopped {
-            return Err("program has terminated, cannot continue".into());
-        }
+        self.cmd_resume_with_breakpoint(BreakpointType::Finish, out)
+    }
 
-        self.state.create_breakpoint(BreakpointType::Finish);
-        self.state.stopped = false;
-        self.run_until_stopped();
+    fn cmd_resume_with_breakpoint(
+        &mut self,
+        bp_type: BreakpointType,
+        out: &mut dyn Write,
+    ) -> Result<(), String> {
+        self.ensure_can_continue()?;
+
+        self.state.create_breakpoint(bp_type);
+        self.state.run_until_stopped();
         self.print_location(out);
         Ok(())
     }
 
-    fn run_until_stopped(&mut self) {
-        let start_cycle = self.state.executor().cycle;
-        let start_asmop = self.state.executor().current_asmop.clone();
-        let start_proc = self.state.current_procedure();
-        let start_line_loc = self.state.current_display_location();
-        let source_path_prefixes = self.state.source_path_prefixes();
-        let minimum_source_line =
-            start_proc.as_deref().zip(start_line_loc.as_ref()).and_then(|(proc, loc)| {
-                self.state.minimum_source_line_for_proc(proc, loc.source_file.uri().as_str())
-            });
-        let mut previous_proc = self.state.current_procedure();
-        let mut pending_called_breakpoints = Vec::new();
-        let mut breakpoints: Vec<Breakpoint> = core::mem::take(&mut self.state.breakpoints);
-        self.state.breakpoints_hit.clear();
-
-        loop {
-            // Check if program has terminated
-            if self.state.executor().stopped {
-                self.state.stopped = true;
-                break;
-            }
-
-            let mut consume_most_recent_finish = false;
-            match self.state.executor_mut().step() {
-                Ok(Some(ref exited)) if exited.should_break_on_exit() => {
-                    consume_most_recent_finish = true;
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    self.state.set_execution_failed(err);
-                    self.state.stopped = true;
-                    break;
-                }
-            }
-
-            if breakpoints.is_empty() {
-                continue;
-            }
-
-            // Get current execution state for breakpoint checking
-            let is_op_boundary = self.state.executor().current_asmop.is_some();
-            let loc = self.state.current_location();
-            let line_loc = self.state.current_display_location();
-            let proc = self.state.current_procedure();
-
-            // Check breakpoints
-            let current_cycle = self.state.executor().cycle;
-            let cycles_stepped = current_cycle - start_cycle;
-            let has_internal_breakpoint = breakpoints.iter().any(|bp| bp.is_internal());
-
-            breakpoints.retain_mut(|bp| {
-                if let Some(n) = bp.cycles_to_skip(current_cycle) {
-                    if cycles_stepped >= n {
-                        let retained = !bp.is_one_shot();
-                        if retained {
-                            self.state.breakpoints_hit.push(bp.clone());
-                        } else {
-                            self.state.breakpoints_hit.push(core::mem::take(bp));
-                        }
-                        return retained;
-                    }
-                    return true;
-                }
-
-                if cycles_stepped > 0
-                    && is_op_boundary
-                    && matches!(&bp.ty, BreakpointType::Next)
-                    && self.state.executor().current_asmop != start_asmop
-                {
-                    self.state.breakpoints_hit.push(core::mem::take(bp));
-                    return false;
-                }
-
-                if cycles_stepped > 0
-                    && is_op_boundary
-                    && matches!(&bp.ty, BreakpointType::NextLine)
-                    && State::is_next_source_line(
-                        start_proc.as_deref(),
-                        start_line_loc.as_ref(),
-                        proc.as_deref(),
-                        line_loc.as_ref(),
-                        &source_path_prefixes,
-                        minimum_source_line,
-                    )
-                {
-                    self.state.breakpoints_hit.push(core::mem::take(bp));
-                    return false;
-                }
-
-                if has_internal_breakpoint && !bp.is_internal() {
-                    return true;
-                }
-
-                if let Some(loc) = loc.as_ref()
-                    && bp.should_break_at(loc)
-                {
-                    let retained = !bp.is_one_shot();
-                    if retained {
-                        self.state.breakpoints_hit.push(bp.clone());
-                    } else {
-                        self.state.breakpoints_hit.push(core::mem::take(bp));
-                    }
-                    return retained;
-                }
-
-                if matches!(&bp.ty, BreakpointType::Called(_))
-                    && let Some(proc) = proc.as_deref()
-                {
-                    let matched = bp.should_break_in(proc);
-                    if !matched {
-                        pending_called_breakpoints.retain(|id| *id != bp.id);
-                        return true;
-                    }
-
-                    let was_matched = previous_proc
-                        .as_deref()
-                        .is_some_and(|previous| bp.should_break_in(previous));
-                    let matched_at_start =
-                        start_proc.as_deref().is_some_and(|start| bp.should_break_in(start));
-                    let pending = pending_called_breakpoints.contains(&bp.id);
-                    let entered_matching_proc = !was_matched && !matched_at_start;
-
-                    if entered_matching_proc
-                        && self.state.should_defer_called_breakpoint(proc, line_loc.as_ref())
-                    {
-                        if !pending {
-                            pending_called_breakpoints.push(bp.id);
-                        }
-                        return true;
-                    }
-
-                    if entered_matching_proc
-                        || (pending
-                            && self.state.deferred_called_breakpoint_is_ready(line_loc.as_ref()))
-                    {
-                        pending_called_breakpoints.retain(|id| *id != bp.id);
-                        let retained = !bp.is_one_shot();
-                        if retained {
-                            self.state.breakpoints_hit.push(bp.clone());
-                        } else {
-                            self.state.breakpoints_hit.push(core::mem::take(bp));
-                        }
-                        return retained;
-                    }
-                }
-
-                true
-            });
-
-            // Handle Finish breakpoint
-            if consume_most_recent_finish
-                && let Some(id) = breakpoints.iter().rev().find_map(|bp| {
-                    if matches!(bp.ty, BreakpointType::Finish) {
-                        Some(bp.id)
-                    } else {
-                        None
-                    }
-                })
-            {
-                breakpoints.retain(|bp| bp.id != id);
-                self.state.stopped = true;
-                break;
-            }
-
-            if !self.state.breakpoints_hit.is_empty() {
-                self.state.stopped = true;
-                break;
-            }
-
-            previous_proc = proc;
+    fn ensure_can_continue(&self) -> Result<(), String> {
+        if self.state.executor().stopped {
+            return Err("program has terminated, cannot continue".into());
         }
 
-        // Restore breakpoints
-        self.state.breakpoints = breakpoints;
+        Ok(())
     }
 
     fn cmd_break(&mut self, bp_type: BreakpointType, out: &mut dyn Write) -> Result<(), String> {

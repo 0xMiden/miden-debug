@@ -303,7 +303,7 @@ args = [
 
 [tasks.test-lit]
 category = "Test"
-description = "Runs the lit/filecheck debugger test suite (requires the Miden compiler toolchain, i.e. `cargo miden`, on PATH)"
+description = "Runs the lit/filecheck debugger test suite"
 command = "litcheck"
 args = [
     "lit",
@@ -313,24 +313,30 @@ args = [
     "${LOCAL_BIN_DIR}",
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/tests/lit",
 ]
-dependencies = ["litcheck", "install-miden-debug-repl-locally"]
+dependencies = ["litcheck", "miden-vm", "install-repl-locally"]
 
 [tasks.litcheck]
 category = "Test"
 description = "Set up the litcheck utility (provides `lit` and `filecheck`)"
 install_crate = { crate_name = "litcheck", binary = "litcheck", test_arg = "--help" }
 
-[tasks.build-miden-debug-repl]
+[tasks.miden-vm]
+category = "Test"
+description = "Set up the miden-vm executable used to compile MASM lit fixtures"
+install_crate = { crate_name = "miden-vm", binary = "miden-vm", test_arg = "--help", version = "0.23.4" }
+install_crate_args = ["--features", "executable", "--bin", "miden-vm"]
+
+[tasks.repl]
 category = "Build"
 description = "Builds miden-debug with the `repl` feature, required for `--commands` batch mode"
 command = "cargo"
 args = ["build", "--bin", "miden-debug", "--features", "repl", "${@}"]
 
-[tasks.install-miden-debug-repl-locally]
+[tasks.install-repl-locally]
 category = "Install"
 description = "Builds miden-debug (with `repl`) and copies it into the local bin folder for lit tests"
 private = true
-dependencies = ["build-miden-debug-repl"]
+dependencies = ["repl"]
 script_runner = "@duckscript"
 script = '''
 mkdir ${LOCAL_BIN_DIR}

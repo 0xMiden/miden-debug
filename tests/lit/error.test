@@ -1,7 +1,8 @@
 # A program that leaves more than 16 elements on the stack fails at program end.
 # The debugger surfaces the VM error rather than reporting success.
 #
-# RUN: miden-debug --commands %s %S/error.masm 2>&1 | filecheck %s
+# RUN: miden-vm compile -a %S/error.masm -o %t.masb
+# RUN: miden-debug --commands %s %t.masb 2>&1 | filecheck %s
 
 continue
 

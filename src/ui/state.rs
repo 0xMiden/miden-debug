@@ -6,12 +6,11 @@ use std::{
 };
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
-use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
+use miden_assembly_syntax::diagnostics::Report;
 use miden_core::{
     mast::{MastNode, MastNodeId},
     operations::AssemblyOp,
     program::Program,
-    serde::Deserializable,
 };
 use miden_debug_types::{Location, SourceManagerExt, SourceSpan};
 use miden_processor::{
@@ -24,7 +23,6 @@ use crate::{
     config::DebuggerConfig,
     debug::{Breakpoint, BreakpointType, ReadMemoryExpr, ResolvedLocation, resolve_variable_value},
     exec::{DebugExecutor, Executor},
-    input::InputFile,
 };
 
 /// Whether the debugger is debugging a plain program or a transaction.
@@ -276,83 +274,9 @@ impl State {
 
     pub fn new(config: Box<DebuggerConfig>) -> Result<Self, Report> {
         let source_manager = Arc::new(DefaultSourceManager::default());
-        let mut inputs = config.inputs.clone().unwrap_or_default();
-        if !config.args.is_empty() {
-            // CLI args model sequential pushes, but StackInputs expects the top element first.
-            let args = config.args.iter().rev().map(|felt| felt.0).collect::<Vec<_>>();
-            inputs.inputs = StackInputs::new(&args).into_diagnostic()?;
-        }
-        let args = inputs.inputs.iter().copied().collect::<Vec<_>>();
-        let package = load_package(&config)?;
+        let local = create_local_state(&config, source_manager.clone())?;
 
-        // Load libraries from link_libraries and sysroot BEFORE resolving dependencies
-        let mut libs = Vec::with_capacity(config.link_libraries.len());
-        for link_library in config.link_libraries.iter() {
-            log::debug!(target: "state", "loading link library {}", link_library.name());
-            let lib = link_library.load(&config, source_manager.clone())?;
-            libs.push(lib.clone());
-        }
-
-        // Load std and base libraries from sysroot if available
-        if let Some(toolchain_dir) = config.toolchain_dir() {
-            libs.extend(load_sysroot_libs(&toolchain_dir)?);
-        }
-
-        // Create executor and register libraries with dependency resolver before resolving
-        let mut executor = Executor::new(args.clone());
-        for lib in libs.iter() {
-            executor.register_library_dependency(lib.clone());
-            executor.with_library(lib.clone());
-        }
-
-        // Now resolve package dependencies (they should find the registered libraries)
-        let dependencies = package.manifest.dependencies();
-        executor.with_dependencies(dependencies)?;
-        executor.with_advice_inputs(inputs.advice_inputs);
-
-        let program = package.unwrap_program();
-        let executor = executor.into_debug(&program, source_manager.clone());
-
-        Ok(Self::new_local(
-            source_manager,
-            config,
-            DebugMode::Program,
-            LocalState {
-                executor,
-                execution_failed: None,
-            },
-        ))
-    }
-
-    /// Create a debugger state by assembling inline Miden Assembly source.
-    ///
-    /// Unlike [`State::new`], which loads a compiled `.masp` package from disk,
-    /// this assembles a program directly from MASM source. It is used by the
-    /// batch command runner so that lit/FileCheck tests can debug small `.masm`
-    /// programs without first compiling them to a package.
-    ///
-    /// `args` are pushed onto the operand stack before execution, with the
-    /// first element ending up on top of the stack (matching the CLI `-- a b`
-    /// ordering).
-    #[cfg(feature = "repl")]
-    pub fn from_masm_source(source: &str, args: Vec<Felt>) -> Result<Self, Report> {
-        let source_manager = Arc::new(DefaultSourceManager::default());
-        let program =
-            miden_assembly::Assembler::new(source_manager.clone()).assemble_program(source)?;
-        // CLI/test args model sequential pushes, but the executor expects the
-        // top-of-stack element first.
-        let args = args.into_iter().rev().collect::<Vec<_>>();
-        let executor = Executor::new(args).into_debug(&program, source_manager.clone());
-
-        Ok(Self::new_local(
-            source_manager,
-            Box::<DebuggerConfig>::default(),
-            DebugMode::Program,
-            LocalState {
-                executor,
-                execution_failed: None,
-            },
-        ))
+        Ok(Self::new_local(source_manager, config, DebugMode::Program, local))
     }
 
     /// Create a new debugger state for transaction debugging.
@@ -424,47 +348,9 @@ impl State {
         }
 
         log::debug!("reloading program");
-        let package = load_package(&self.config)?;
+        let local = create_local_state(&self.config, self.source_manager.clone())?;
 
-        let mut inputs = self.config.inputs.clone().unwrap_or_default();
-        if !self.config.args.is_empty() {
-            // CLI args model sequential pushes, but StackInputs expects the top element first.
-            let args = self.config.args.iter().rev().map(|felt| felt.0).collect::<Vec<_>>();
-            inputs.inputs = StackInputs::new(&args).into_diagnostic()?;
-        }
-        let args = inputs.inputs.iter().copied().collect::<Vec<_>>();
-
-        // Load libraries from link_libraries and sysroot BEFORE resolving dependencies
-        let mut libs = Vec::with_capacity(self.config.link_libraries.len());
-        for link_library in self.config.link_libraries.iter() {
-            let lib = link_library.load(&self.config, self.source_manager.clone())?;
-            libs.push(lib.clone());
-        }
-
-        // Load std and base libraries from sysroot if available
-        if let Some(toolchain_dir) = self.config.toolchain_dir() {
-            libs.extend(load_sysroot_libs(&toolchain_dir)?);
-        }
-
-        // Create executor and register libraries with dependency resolver before resolving
-        let mut executor = Executor::new(args.clone());
-        for lib in libs.iter() {
-            executor.register_library_dependency(lib.clone());
-            executor.with_library(lib.clone());
-        }
-
-        // Now resolve package dependencies
-        let dependencies = package.manifest.dependencies();
-        executor.with_dependencies(dependencies)?;
-        executor.with_advice_inputs(inputs.advice_inputs);
-
-        let program = package.unwrap_program();
-        let executor = executor.into_debug(&program, self.source_manager.clone());
-
-        self.session = SessionState::Local(Box::new(LocalState {
-            executor,
-            execution_failed: None,
-        }));
+        self.session = SessionState::Local(Box::new(local));
         self.breakpoints_hit.clear();
         let breakpoints = core::mem::take(&mut self.breakpoints);
         self.breakpoints.reserve(breakpoints.len());
@@ -474,6 +360,174 @@ impl State {
             self.create_breakpoint(bp.ty);
         }
         Ok(())
+    }
+
+    /// Resume local execution until the VM terminates, errors, or a breakpoint is hit.
+    pub fn run_until_stopped(&mut self) {
+        let start_cycle = self.executor().cycle;
+        let start_asmop = self.executor().current_asmop.clone();
+        let start_proc = self.current_procedure();
+        let start_line_loc = self.current_display_location();
+        let source_path_prefixes = self.source_path_prefixes();
+        let minimum_source_line =
+            start_proc.as_deref().zip(start_line_loc.as_ref()).and_then(|(proc, loc)| {
+                self.minimum_source_line_for_proc(proc, loc.source_file.uri().as_str())
+            });
+        let mut previous_proc = self.current_procedure();
+        let mut pending_called_breakpoints = Vec::new();
+        let mut breakpoints = core::mem::take(&mut self.breakpoints);
+        self.breakpoints_hit.clear();
+        self.stopped = false;
+
+        let stopped = loop {
+            if self.executor().stopped {
+                break true;
+            }
+
+            let mut consume_most_recent_finish = false;
+            match self.executor_mut().step() {
+                Ok(Some(exited)) if exited.should_break_on_exit() => {
+                    consume_most_recent_finish = true;
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    self.set_execution_failed(err);
+                    break true;
+                }
+            }
+
+            if breakpoints.is_empty() {
+                continue;
+            }
+
+            let is_op_boundary = self.executor().current_asmop.is_some();
+            let loc = self.current_location();
+            let line_loc = self.current_display_location();
+            let proc = self.current_procedure();
+            let current_cycle = self.executor().cycle;
+            let cycles_stepped = current_cycle - start_cycle;
+            let has_internal_breakpoint = breakpoints.iter().any(|bp| bp.is_internal());
+
+            breakpoints.retain_mut(|bp| {
+                if let Some(n) = bp.cycles_to_skip(current_cycle) {
+                    if cycles_stepped >= n {
+                        let retained = !bp.is_one_shot();
+                        if retained {
+                            self.breakpoints_hit.push(bp.clone());
+                        } else {
+                            self.breakpoints_hit.push(core::mem::take(bp));
+                        }
+                        return retained;
+                    }
+                    return true;
+                }
+
+                if cycles_stepped > 0
+                    && is_op_boundary
+                    && matches!(&bp.ty, BreakpointType::Next)
+                    && self.executor().current_asmop != start_asmop
+                {
+                    self.breakpoints_hit.push(core::mem::take(bp));
+                    return false;
+                }
+
+                if cycles_stepped > 0
+                    && is_op_boundary
+                    && matches!(&bp.ty, BreakpointType::NextLine)
+                    && Self::is_next_source_line(
+                        start_proc.as_deref(),
+                        start_line_loc.as_ref(),
+                        proc.as_deref(),
+                        line_loc.as_ref(),
+                        &source_path_prefixes,
+                        minimum_source_line,
+                    )
+                {
+                    self.breakpoints_hit.push(core::mem::take(bp));
+                    return false;
+                }
+
+                if has_internal_breakpoint && !bp.is_internal() {
+                    return true;
+                }
+
+                if let Some(loc) = loc.as_ref()
+                    && bp.should_break_at(loc)
+                {
+                    let retained = !bp.is_one_shot();
+                    if retained {
+                        self.breakpoints_hit.push(bp.clone());
+                    } else {
+                        self.breakpoints_hit.push(core::mem::take(bp));
+                    }
+                    return retained;
+                }
+
+                if matches!(&bp.ty, BreakpointType::Called(_))
+                    && let Some(proc) = proc.as_deref()
+                {
+                    let matched = bp.should_break_in(proc);
+                    if !matched {
+                        pending_called_breakpoints.retain(|id| *id != bp.id);
+                        return true;
+                    }
+
+                    let was_matched = previous_proc
+                        .as_deref()
+                        .is_some_and(|previous| bp.should_break_in(previous));
+                    let matched_at_start =
+                        start_proc.as_deref().is_some_and(|start| bp.should_break_in(start));
+                    let pending = pending_called_breakpoints.contains(&bp.id);
+                    let entered_matching_proc = !was_matched && !matched_at_start;
+
+                    if entered_matching_proc
+                        && self.should_defer_called_breakpoint(proc, line_loc.as_ref())
+                    {
+                        if !pending {
+                            pending_called_breakpoints.push(bp.id);
+                        }
+                        return true;
+                    }
+
+                    if entered_matching_proc
+                        || (pending && self.deferred_called_breakpoint_is_ready(line_loc.as_ref()))
+                    {
+                        pending_called_breakpoints.retain(|id| *id != bp.id);
+                        let retained = !bp.is_one_shot();
+                        if retained {
+                            self.breakpoints_hit.push(bp.clone());
+                        } else {
+                            self.breakpoints_hit.push(core::mem::take(bp));
+                        }
+                        return retained;
+                    }
+                }
+
+                true
+            });
+
+            if consume_most_recent_finish
+                && let Some(id) = breakpoints.iter().rev().find_map(|bp| {
+                    if matches!(bp.ty, BreakpointType::Finish) {
+                        Some(bp.id)
+                    } else {
+                        None
+                    }
+                })
+            {
+                breakpoints.retain(|bp| bp.id != id);
+                break true;
+            }
+
+            if !self.breakpoints_hit.is_empty() {
+                break true;
+            }
+
+            previous_proc = proc;
+        };
+
+        self.breakpoints = breakpoints;
+        self.stopped = stopped;
     }
 
     pub fn create_breakpoint(&mut self, ty: BreakpointType) {
@@ -1176,88 +1230,13 @@ fn resolve_remote_frame(
     })
 }
 
-/// Attempts to load the standard library from the sysroot/toolchain directory.
-///
-/// Supports both formats:
-/// - `.masp` (package format) - used by the midenup toolchain
-/// - `.masl` (serialized Library) - legacy format
-///   Load all library files (.masp and .masl) from the sysroot directory.
-///
-/// The toolchain determines what libraries are available in the sysroot.
-fn load_sysroot_libs(
-    toolchain_dir: &std::path::Path,
-) -> Result<Vec<Arc<miden_assembly_syntax::Library>>, Report> {
-    let mut libs = Vec::new();
-
-    let entries = match std::fs::read_dir(toolchain_dir) {
-        Ok(entries) => entries,
-        Err(_) => {
-            log::debug!(target: "state", "could not read sysroot directory: {}", toolchain_dir.display());
-            return Ok(libs);
-        }
-    };
-
-    for entry in entries {
-        let entry = entry.into_diagnostic()?;
-        let path = entry.path();
-        let Some(ext) = path.extension() else {
-            continue;
-        };
-
-        if ext == "masp" {
-            log::debug!(target: "state", "loading library from sysroot: {}", path.display());
-            let bytes = std::fs::read(&path).into_diagnostic()?;
-            let package = miden_mast_package::Package::read_from_bytes(&bytes).map_err(|e| {
-                Report::msg(format!("failed to load package '{}': {e}", path.display()))
-            })?;
-            libs.push(package.mast.clone());
-        } else if ext == "masl" {
-            log::debug!(target: "state", "loading library from sysroot: {}", path.display());
-            let bytes = std::fs::read(&path).into_diagnostic()?;
-            let lib = miden_assembly_syntax::Library::read_from_bytes(&bytes).map_err(|e| {
-                Report::msg(format!("failed to load library '{}': {e}", path.display()))
-            })?;
-            libs.push(Arc::new(lib));
-        }
-    }
-
-    if libs.is_empty() {
-        log::debug!(target: "state", "no libraries found in sysroot: {}", toolchain_dir.display());
-    }
-
-    Ok(libs)
-}
-
-fn load_package(config: &DebuggerConfig) -> Result<Arc<miden_mast_package::Package>, Report> {
-    let input = config.input.as_ref().ok_or_else(|| Report::msg("no input file specified"))?;
-    let package = match input {
-        InputFile::Real(path) => {
-            let bytes = std::fs::read(path).into_diagnostic()?;
-            miden_mast_package::Package::read_from_bytes(&bytes)
-                .map(Arc::new)
-                .map_err(|e| {
-                    Report::msg(format!(
-                        "failed to load Miden package from {}: {e}",
-                        path.display()
-                    ))
-                })?
-        }
-        InputFile::Stdin(bytes) => miden_mast_package::Package::read_from_bytes(bytes)
-            .map(Arc::new)
-            .map_err(|e| Report::msg(format!("failed to load Miden package from stdin: {e}")))?,
-    };
-
-    if let Some(entry) = config.entrypoint.as_ref() {
-        // Input must be a library, not a program
-        let id = entry
-            .parse::<miden_assembly::ast::QualifiedProcedureName>()
-            .map_err(|_| Report::msg(format!("invalid function identifier: '{entry}'")))?;
-        if !package.is_library() {
-            return Err(Report::msg("cannot use --entrypoint with executable packages"));
-        }
-
-        package.make_executable(&id).map(Arc::new)
-    } else {
-        Ok(package)
-    }
+fn create_local_state(
+    config: &DebuggerConfig,
+    source_manager: Arc<dyn SourceManager>,
+) -> Result<LocalState, Report> {
+    let executor = crate::program_loader::load_debug_executor(config, source_manager, "state")?;
+    Ok(LocalState {
+        executor,
+        execution_failed: None,
+    })
 }

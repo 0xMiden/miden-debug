@@ -1,6 +1,7 @@
 # Assemble and run a small MASM program to completion, then inspect the stack.
 #
-# RUN: miden-debug --commands %s %S/add.masm 2>&1 | filecheck %s
+# RUN: miden-vm compile -a %S/add.masm -o %t.masb
+# RUN: miden-debug --commands %s %t.masb 2>&1 | filecheck %s
 #
 # The lines below without a leading '#' are debugger commands, executed in order
 # by `miden-debug --commands`. Lines starting with '#' are ignored by the

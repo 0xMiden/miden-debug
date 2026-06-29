@@ -1,7 +1,8 @@
 # Set a cycle breakpoint, verify the debugger stops there, then run to the end.
 # Computes (10 + 20) * 5 = 150.
 #
-# RUN: miden-debug --commands %s %S/breakpoint.masm 2>&1 | filecheck %s
+# RUN: miden-vm compile -a %S/breakpoint.masm -o %t.masb
+# RUN: miden-debug --commands %s %t.masb 2>&1 | filecheck %s
 
 break at 3
 breakpoints

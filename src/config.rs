@@ -13,9 +13,10 @@ use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile, linker::LinkLib
     derive(clap::Args)
 )]
 pub struct DebuggerConfig {
-    /// Specify the path to a Miden program file to execute.
+    /// Specify the path to a Miden program artifact to execute.
     ///
     /// Miden Assembly programs are emitted by the compiler with a `.masp` extension.
+    /// The debugger also accepts compiled `.masb` programs produced by `miden-vm compile`.
     ///
     /// You may use `-` as a file name to read a file from stdin.
     #[cfg_attr(

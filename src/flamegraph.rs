@@ -7,17 +7,13 @@ use std::{
 };
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
-use miden_assembly_syntax::{
-    Library,
-    diagnostics::{IntoDiagnostic, Report, WrapErr},
-};
-use miden_core::serde::Deserializable;
-use miden_processor::{ExecutionError, StackInputs};
+use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report, WrapErr};
+use miden_processor::ExecutionError;
 
 use crate::{
     config::{ColorChoice, DebuggerConfig},
     debug::CallFrame,
-    exec::{DebugExecutor, ExecutionConfig, Executor},
+    exec::{DebugExecutor, ExecutionConfig},
     felt::Felt,
     input::InputFile,
     linker::LinkLibrary,
@@ -225,22 +221,8 @@ pub fn run(args: FlamegraphArgs) -> Result<(), Report> {
     ensure_working_dir(&mut config)?;
 
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
-    let mut inputs = execution_inputs(&config)?;
-    let args = inputs.inputs.iter().copied().collect::<Vec<_>>();
-    let package = load_package(&config)?;
-
-    let libs = load_libraries(&config, source_manager.clone())?;
-
-    let mut executor = Executor::new(args);
-    for lib in libs.iter() {
-        executor.register_library_dependency(lib.clone());
-        executor.with_library(lib.clone());
-    }
-    executor.with_dependencies(package.manifest.dependencies())?;
-    executor.with_advice_inputs(core::mem::take(&mut inputs.advice_inputs));
-
-    let program = package.unwrap_program();
-    let mut executor = executor.into_debug(&program, source_manager);
+    let mut executor =
+        crate::program_loader::load_debug_executor(&config, source_manager, "flamegraph")?;
 
     let profile = match FlamegraphProfile::collect(&mut executor) {
         Ok(profile) => profile,
@@ -272,105 +254,6 @@ fn ensure_working_dir(config: &mut DebuggerConfig) -> Result<(), Report> {
     }
 
     Ok(())
-}
-
-fn execution_inputs(config: &DebuggerConfig) -> Result<ExecutionConfig, Report> {
-    let mut inputs = config.inputs.clone().unwrap_or_default();
-    if !config.args.is_empty() {
-        // CLI args model sequential pushes, but StackInputs expects the top element first.
-        let args = config.args.iter().rev().map(|felt| felt.0).collect::<Vec<_>>();
-        inputs.inputs = StackInputs::new(&args).into_diagnostic()?;
-    }
-
-    Ok(inputs)
-}
-
-fn load_libraries(
-    config: &DebuggerConfig,
-    source_manager: Arc<dyn SourceManager>,
-) -> Result<Vec<Arc<Library>>, Report> {
-    let mut libs = Vec::with_capacity(config.link_libraries.len());
-    for link_library in config.link_libraries.iter() {
-        log::debug!(target: "flamegraph", "loading link library {}", link_library.name());
-        libs.push(link_library.load(config, source_manager.clone())?);
-    }
-
-    if let Some(toolchain_dir) = config.toolchain_dir() {
-        libs.extend(load_sysroot_libs(&toolchain_dir)?);
-    }
-
-    Ok(libs)
-}
-
-fn load_sysroot_libs(toolchain_dir: &Path) -> Result<Vec<Arc<Library>>, Report> {
-    let mut libs = Vec::new();
-
-    let entries = match std::fs::read_dir(toolchain_dir) {
-        Ok(entries) => entries,
-        Err(_) => {
-            log::debug!(target: "flamegraph", "could not read sysroot directory: {}", toolchain_dir.display());
-            return Ok(libs);
-        }
-    };
-
-    for entry in entries {
-        let entry = entry.into_diagnostic()?;
-        let path = entry.path();
-        let Some(ext) = path.extension() else {
-            continue;
-        };
-
-        if ext == "masp" {
-            log::debug!(target: "flamegraph", "loading library from sysroot: {}", path.display());
-            let bytes = std::fs::read(&path).into_diagnostic()?;
-            let package = miden_mast_package::Package::read_from_bytes(&bytes).map_err(|e| {
-                Report::msg(format!("failed to load package '{}': {e}", path.display()))
-            })?;
-            libs.push(package.mast.clone());
-        } else if ext == "masl" {
-            log::debug!(target: "flamegraph", "loading library from sysroot: {}", path.display());
-            let bytes = std::fs::read(&path).into_diagnostic()?;
-            let lib = Library::read_from_bytes(&bytes).map_err(|e| {
-                Report::msg(format!("failed to load library '{}': {e}", path.display()))
-            })?;
-            libs.push(Arc::new(lib));
-        }
-    }
-
-    Ok(libs)
-}
-
-fn load_package(config: &DebuggerConfig) -> Result<Arc<miden_mast_package::Package>, Report> {
-    let input = config.input.as_ref().ok_or_else(|| Report::msg("no input file specified"))?;
-    let package = match input {
-        InputFile::Real(path) => {
-            let bytes = std::fs::read(path).into_diagnostic()?;
-            miden_mast_package::Package::read_from_bytes(&bytes)
-                .map(Arc::new)
-                .map_err(|e| {
-                    Report::msg(format!(
-                        "failed to load Miden package from {}: {e}",
-                        path.display()
-                    ))
-                })?
-        }
-        InputFile::Stdin(bytes) => miden_mast_package::Package::read_from_bytes(bytes)
-            .map(Arc::new)
-            .map_err(|e| Report::msg(format!("failed to load Miden package from stdin: {e}")))?,
-    };
-
-    if let Some(entry) = config.entrypoint.as_ref() {
-        let id = entry
-            .parse::<miden_assembly::ast::QualifiedProcedureName>()
-            .map_err(|_| Report::msg(format!("invalid function identifier: '{entry}'")))?;
-        if !package.is_library() {
-            return Err(Report::msg("cannot use --entrypoint with executable packages"));
-        }
-
-        package.make_executable(&id).map(Arc::new)
-    } else {
-        Ok(package)
-    }
 }
 
 fn build_stack_path(frames: &[CallFrame]) -> String {

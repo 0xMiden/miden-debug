@@ -152,6 +152,7 @@ dependencies = ["format-rust"]
 description = "Runs cargo fmt to check appropriate code format."
 category = "Test"
 command = "cargo"
+toolchain = "nightly"
 args = ["fmt", "--", "--check"]
 dependencies = ["install-rustfmt"]
 

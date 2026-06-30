@@ -72,6 +72,8 @@ jobs:
           # But do not save this cache, just use it
           save-if: false
       - *install-cargo-make
+      - name: Install nightly toolchain
+        run: rustup toolchain install nightly --profile minimal --component rustfmt
       - name: Check Formatting
         run: |
           cargo make check-format

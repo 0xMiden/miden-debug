@@ -31,7 +31,8 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     let mut host = StandaloneDapHost::new(source_manager.clone());
 
     let program = if let Some(path) = masm_input_path(&config)? {
-        let libs = load_masm_libraries(&config, source_manager.clone(), "dap")?;
+        let libs =
+            crate::package_registry::load_libraries(&config, source_manager.clone(), None, "dap")?;
         for lib in libs.iter() {
             host.load_library(lib.mast_forest().clone()).map_err(|err| {
                 Report::msg(format!("failed to load linked library into DAP host: {err}"))
@@ -39,12 +40,16 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
         }
         assemble_masm_program(path, source_manager.clone(), &libs)?
     } else {
-        let packages = crate::program_loader::load_library_packages(&config, "dap")?;
         let package = crate::program_loader::load_package(&config)?;
-        crate::program_loader::verify_package_dependencies(&package, &packages)?;
-        for package in packages {
-            host.load_library(package.mast.mast_forest().clone()).map_err(|err| {
-                Report::msg(format!("failed to load linked package into DAP host: {err}"))
+        let libs = crate::package_registry::load_libraries(
+            &config,
+            source_manager.clone(),
+            Some(&package),
+            "dap",
+        )?;
+        for lib in libs {
+            host.load_library(lib.mast_forest().clone()).map_err(|err| {
+                Report::msg(format!("failed to load linked library into DAP host: {err}"))
             })?;
         }
         package.unwrap_program()
@@ -139,28 +144,6 @@ fn masm_input_path(config: &DebuggerConfig) -> Result<Option<&Path>, Report> {
         }
         _ => None,
     })
-}
-
-fn load_masm_libraries(
-    config: &DebuggerConfig,
-    source_manager: Arc<dyn SourceManager>,
-    log_target: &'static str,
-) -> Result<Vec<Arc<Library>>, Report> {
-    let mut libs = Vec::with_capacity(config.link_libraries.len());
-    for link_library in config.link_libraries.iter() {
-        log::debug!(target: log_target, "loading link library {}", link_library.name());
-        libs.push(link_library.load(config, source_manager.clone())?);
-    }
-
-    if let Some(toolchain_dir) = config.toolchain_dir() {
-        libs.extend(
-            crate::program_loader::load_sysroot_packages(&toolchain_dir, log_target)?
-                .into_iter()
-                .map(|package| package.mast.clone()),
-        );
-    }
-
-    Ok(libs)
 }
 
 fn assemble_masm_program(

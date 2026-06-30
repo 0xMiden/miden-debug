@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::sync::Arc;
 
 use miden_assembly::SourceManager;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
@@ -30,15 +30,22 @@ pub(crate) fn load_debug_executor(
     let inputs = execution_inputs(config)?;
     let args = inputs.inputs.iter().copied().collect::<Vec<_>>();
     let package = load_package(config)?;
-    let packages = load_library_packages(config, log_target)?;
+    // The registry indexes explicitly linked libraries, the toolchain sysroot, and local build
+    // artifacts, then resolves the package's manifest dependencies against that index, so
+    // missing dependencies are reported before execution with a hint on how to provide them.
+    //
     // TODO: When upgrading to miden-assembly/miden-mast-package 0.24, extract any embedded
     // kernel package via `Package::try_embedded_kernel_package()` and register it if the
     // dependency resolver does not already have it.
-    verify_package_dependencies(&package, &packages)?;
+    let libs = crate::package_registry::load_libraries(
+        config,
+        source_manager.clone(),
+        Some(&package),
+        log_target,
+    )?;
 
     let mut executor = Executor::new(args);
-    for package in packages {
-        let lib = package.mast.clone();
+    for lib in libs {
         executor.register_library_dependency(lib.clone());
         executor.with_library(lib);
     }
@@ -48,23 +55,6 @@ pub(crate) fn load_debug_executor(
 
     let program = package.unwrap_program();
     Ok(executor.into_debug(&program, source_manager))
-}
-
-pub(crate) fn load_library_packages(
-    config: &DebuggerConfig,
-    log_target: &'static str,
-) -> Result<Vec<Arc<Package>>, Report> {
-    let mut packages = Vec::with_capacity(config.link_libraries.len());
-    for link_library in config.link_libraries.iter() {
-        log::debug!(target: log_target, "loading link library {}", link_library.name());
-        packages.push(link_library.load_package(config)?);
-    }
-
-    if let Some(toolchain_dir) = config.toolchain_dir() {
-        packages.extend(load_sysroot_packages(&toolchain_dir, log_target)?);
-    }
-
-    Ok(packages)
 }
 
 pub(crate) fn load_package(config: &DebuggerConfig) -> Result<Arc<Package>, Report> {
@@ -78,63 +68,6 @@ pub(crate) fn load_package(config: &DebuggerConfig) -> Result<Arc<Package>, Repo
     };
 
     load_package_from_bytes(&bytes, &source, config)
-}
-
-pub(crate) fn verify_package_dependencies(
-    package: &Package,
-    packages: &[Arc<Package>],
-) -> Result<(), Report> {
-    let available = packages
-        .iter()
-        .map(|package| package.digest())
-        .collect::<std::collections::BTreeSet<_>>();
-    for dependency in package.manifest.dependencies() {
-        if !available.contains(&dependency.digest) {
-            return Err(Report::msg(format!(
-                "dependency {dependency:?} not found in loaded packages"
-            )));
-        }
-    }
-
-    Ok(())
-}
-
-pub(crate) fn load_sysroot_packages(
-    toolchain_dir: &Path,
-    log_target: &'static str,
-) -> Result<Vec<Arc<Package>>, Report> {
-    let mut packages = Vec::new();
-
-    let entries = match std::fs::read_dir(toolchain_dir) {
-        Ok(entries) => entries,
-        Err(_) => {
-            log::debug!(target: log_target, "could not read sysroot directory: {}", toolchain_dir.display());
-            return Ok(packages);
-        }
-    };
-
-    for entry in entries {
-        let entry = entry.into_diagnostic()?;
-        let path = entry.path();
-        let Some(ext) = path.extension() else {
-            continue;
-        };
-
-        if ext == "masp" {
-            log::debug!(target: log_target, "loading package from sysroot: {}", path.display());
-            let bytes = std::fs::read(&path).into_diagnostic()?;
-            let package = Package::read_from_bytes(&bytes).map_err(|err| {
-                Report::msg(format!("failed to load package '{}': {err}", path.display()))
-            })?;
-            packages.push(Arc::new(package));
-        }
-    }
-
-    if packages.is_empty() {
-        log::debug!(target: log_target, "no packages found in sysroot: {}", toolchain_dir.display());
-    }
-
-    Ok(packages)
 }
 
 fn load_package_from_bytes(

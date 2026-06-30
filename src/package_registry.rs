@@ -51,19 +51,19 @@ pub(crate) fn load_libraries(
     }
 
     registry.discover(config, log_target)?;
-    for package in registry.library_packages() {
-        push_library(&mut libs, &mut seen, package.mast.clone());
-    }
-
     if let Some(root_package) = root_package {
         for lib in registry.resolve_dependency_libraries(root_package)? {
             push_library(&mut libs, &mut seen, lib);
         }
-    }
+    } else {
+        for package in registry.library_packages() {
+            push_library(&mut libs, &mut seen, package.mast.clone());
+        }
 
-    if let Some(toolchain_dir) = config.toolchain_dir() {
-        for lib in load_legacy_libraries(&toolchain_dir, log_target)? {
-            push_library(&mut libs, &mut seen, lib);
+        if let Some(toolchain_dir) = config.toolchain_dir() {
+            for lib in load_legacy_libraries(&toolchain_dir, log_target)? {
+                push_library(&mut libs, &mut seen, lib);
+            }
         }
     }
 

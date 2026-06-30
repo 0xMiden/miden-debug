@@ -210,7 +210,14 @@ pub(crate) fn load_package_from_path(
 ) -> Result<Arc<miden_mast_package::Package>, Report> {
     let bytes = std::fs::read(path).into_diagnostic()?;
     match read_package_from_bytes_unchecked(&bytes) {
-        Ok(package) => Ok(Arc::new(package)),
+        Ok(package) => {
+            log::warn!(
+                "loading Miden package '{}' without validating embedded MAST node hashes; use \
+                 only trusted local build artifacts",
+                path.display()
+            );
+            Ok(Arc::new(package))
+        }
         Err(_) => Package::read_from_bytes(&bytes).map(Arc::new).map_err(|strict_error| {
             Report::msg(format!(
                 "failed to load Miden package from {}: {strict_error}",
@@ -222,9 +229,20 @@ pub(crate) fn load_package_from_path(
 
 pub(crate) fn load_local_package_from_path(path: &FsPath) -> Result<Arc<Package>, Report> {
     let bytes = std::fs::read(path).into_diagnostic()?;
-    read_package_from_bytes_unchecked(&bytes).map(Arc::new).map_err(|err| {
-        Report::msg(format!("failed to load local Miden package from {}: {err}", path.display()))
-    })
+    match read_package_from_bytes_unchecked(&bytes) {
+        Ok(package) => Ok(Arc::new(package)),
+        Err(unchecked_error) => {
+            Package::read_from_bytes(&bytes).map(Arc::new).map_err(|strict_error| {
+                Report::msg(format!(
+                    "failed to load local Miden package from {}: unchecked reader failed: {}; \
+                     strict reader failed: {}",
+                    path.display(),
+                    unchecked_error,
+                    strict_error
+                ))
+            })
+        }
+    }
 }
 
 fn read_package_from_bytes_unchecked(bytes: &[u8]) -> Result<Package, DeserializationError> {

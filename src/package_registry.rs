@@ -293,10 +293,10 @@ impl PackageRegistry for LocalPackageRegistry {
 
 impl PackageProvider for LocalPackageRegistry {
     fn load_package(&self, package: &PackageId, version: &Version) -> Result<Arc<Package>, Report> {
-        if let Some(digest) = version.digest {
-            if let Some(package) = self.artifacts_by_digest.get(&(package.clone(), digest)) {
-                return Ok(package.clone());
-            }
+        if let Some(digest) = version.digest
+            && let Some(package) = self.artifacts_by_digest.get(&(package.clone(), digest))
+        {
+            return Ok(package.clone());
         }
 
         self.artifacts
@@ -381,7 +381,7 @@ mod tests {
         library::{LibraryExport, ProcedureExport as LibraryProcedureExport},
     };
     use miden_core::{
-        mast::{BasicBlockNodeBuilder, MastForest, MastForestContributor, MastNodeId},
+        mast::{BasicBlockNodeBuilder, MastForest, MastForestContributor},
         operations::Operation,
     };
     use miden_mast_package::{Dependency, Package, TargetType};
@@ -402,7 +402,7 @@ mod tests {
         forest.make_root(node_id);
 
         let path = absolute_path(export);
-        let export = LibraryProcedureExport::new(MastNodeId::from(node_id), path.clone());
+        let export = LibraryProcedureExport::new(node_id, path.clone());
         let exports = BTreeMap::from([(path, LibraryExport::Procedure(export))]);
 
         Arc::new(Library::new(Arc::new(forest), exports).expect("failed to build library"))

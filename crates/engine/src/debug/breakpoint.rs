@@ -169,9 +169,7 @@ impl FromStr for BreakpointType {
             return Ok(BreakpointType::StepTo(cycle));
         }
         if let Some(procedure) = s.strip_prefix("in ") {
-            let pattern = Pattern::new(procedure.trim())
-                .map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))?;
-            return Ok(BreakpointType::Called(pattern));
+            return Ok(BreakpointType::Called(procedure_pattern(procedure)?));
         }
         match s.split_once(':') {
             Some((file, line)) => {
@@ -184,6 +182,26 @@ impl FromStr for BreakpointType {
             None => Ok(BreakpointType::File(file_pattern(s)?)),
         }
     }
+}
+
+/// Compile a user-provided procedure spec into a glob pattern.
+///
+/// Procedures are matched against their fully-qualified name, including the
+/// package qualification (e.g. `::"root_ns:root@1.0.0"::fibonacci::entrypoint`),
+/// which users rarely know or type. Anchor unqualified specs with a leading
+/// `*::` so they match by trailing path components: `entrypoint` and
+/// `fibonacci::entrypoint` both match the example above, while a partial
+/// component like `point` does not.
+fn procedure_pattern(spec: &str) -> Result<Pattern, String> {
+    let spec = spec.trim();
+    let anchored;
+    let spec = if spec.starts_with("::") || spec.starts_with('*') {
+        spec
+    } else {
+        anchored = format!("*::{spec}");
+        &anchored
+    };
+    Pattern::new(spec).map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))
 }
 
 /// Compile a user-provided file spec into a glob pattern.

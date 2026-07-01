@@ -829,8 +829,8 @@ macro_rules! write_with_format_type {
     ($out:ident, $read_expr:ident, $value:expr) => {
         match $read_expr.format {
             crate::debug::FormatType::Decimal => write!(&mut $out, "{}", $value).unwrap(),
-            crate::debug::FormatType::Hex => write!(&mut $out, "{:0x}", $value).unwrap(),
-            crate::debug::FormatType::Binary => write!(&mut $out, "{:0b}", $value).unwrap(),
+            crate::debug::FormatType::Hex => write!(&mut $out, "{:#x}", $value).unwrap(),
+            crate::debug::FormatType::Binary => write!(&mut $out, "{:#b}", $value).unwrap(),
         }
     };
 }

@@ -595,7 +595,7 @@ impl fmt::Display for StackTrace<'_> {
                         write!(f, " |   {}", &op.opcode())?;
                     }
                     if is_last {
-                        writeln!(f, "\n `-> <error occured here>")?;
+                        writeln!(f, "\n `-> <error occurred here>")?;
                     } else {
                         f.write_char('\n')?;
                     }
@@ -607,7 +607,7 @@ impl fmt::Display for StackTrace<'_> {
                     let is_last = i + 1 == context_size;
                     if is_last {
                         writeln!(f, " |   {}", &op)?;
-                        writeln!(f, " `-> <error occured here>")?;
+                        writeln!(f, " `-> <error occurred here>")?;
                     } else {
                         writeln!(f, " |   {}", &op)?;
                     }

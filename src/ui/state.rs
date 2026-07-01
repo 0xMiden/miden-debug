@@ -1045,7 +1045,7 @@ impl State {
         }
 
         if output.is_empty() {
-            "No source-level variables (use ':vars all' to show compiler locals)".to_string()
+            "No source-level variables (use 'vars all' to show compiler locals)".to_string()
         } else {
             output
         }

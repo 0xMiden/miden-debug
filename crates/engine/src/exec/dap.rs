@@ -864,6 +864,27 @@ impl DapExecutor {
 }
 
 impl DapExecutor {
+    /// Bind the DAP listen socket, reporting failures (bad address, port in
+    /// use, ...) as errors instead of aborting the process.
+    fn bind_listener(listen_addr: &str) -> Result<TcpListener, String> {
+        use std::net::ToSocketAddrs;
+
+        use socket2::{Domain, Socket, Type};
+        let addr: std::net::SocketAddr = listen_addr
+            .to_socket_addrs()
+            .map_err(|e| format!("invalid listen address '{listen_addr}': {e}"))?
+            .next()
+            .ok_or_else(|| format!("listen address '{listen_addr}' did not resolve to any address"))?;
+        let socket = Socket::new(Domain::for_address(addr), Type::STREAM, None)
+            .map_err(|e| format!("failed to create socket: {e}"))?;
+        socket.set_reuse_address(true).ok();
+        socket
+            .bind(&addr.into())
+            .map_err(|e| format!("DAP server failed to bind to {addr}: {e}"))?;
+        socket.listen(1).map_err(|e| format!("DAP server failed to listen on {addr}: {e}"))?;
+        Ok(socket.into())
+    }
+
     fn run_dap_server<H: Host>(
         self,
         program: &Program,
@@ -875,35 +896,12 @@ impl DapExecutor {
         let options = self.options.with_debugging(true).with_tracing(true);
 
         // Bind TCP listener with SO_REUSEADDR to allow rebinding during Phase 2 restarts.
-        let listener = {
-            use std::net::ToSocketAddrs;
-
-            use socket2::{Domain, Socket, Type};
-            let addr: std::net::SocketAddr = self
-                .config
-                .listen_addr
-                .to_socket_addrs()
-                .unwrap_or_else(|e| {
-                    panic!("invalid listen address '{}': {e}", self.config.listen_addr)
-                })
-                .next()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "listen address '{}' did not resolve to any address",
-                        self.config.listen_addr
-                    )
-                });
-            let socket = Socket::new(Domain::for_address(addr), Type::STREAM, None)
-                .unwrap_or_else(|e| panic!("failed to create socket: {e}"));
-            socket.set_reuse_address(true).ok();
-            socket
-                .bind(&addr.into())
-                .unwrap_or_else(|e| panic!("DAP server failed to bind to {addr}: {e}"));
-            socket
-                .listen(1)
-                .unwrap_or_else(|e| panic!("DAP server failed to listen on {addr}: {e}"));
-            let listener: TcpListener = socket.into();
-            listener
+        let listener = match Self::bind_listener(&self.config.listen_addr) {
+            Ok(listener) => listener,
+            Err(err) => {
+                eprintln!("{err}");
+                return Err(ExecutionError::Internal("failed to start DAP server"));
+            }
         };
         eprintln!(
             "DAP server listening on {}. Waiting for client connection...",
@@ -911,13 +909,22 @@ impl DapExecutor {
         );
 
         // Accept one client connection (persists across restarts).
-        let (stream, addr) =
-            listener.accept().unwrap_or_else(|e| panic!("DAP server accept failed: {e}"));
+        let (stream, addr) = match listener.accept() {
+            Ok(accepted) => accepted,
+            Err(err) => {
+                eprintln!("DAP server accept failed: {err}");
+                return Err(ExecutionError::Internal("DAP server accept failed"));
+            }
+        };
         eprintln!("DAP client connected from {addr}");
 
-        let reader = BufReader::new(
-            stream.try_clone().unwrap_or_else(|e| panic!("Failed to clone TCP stream: {e}")),
-        );
+        let reader = BufReader::new(match stream.try_clone() {
+            Ok(stream) => stream,
+            Err(err) => {
+                eprintln!("failed to clone TCP stream: {err}");
+                return Err(ExecutionError::Internal("failed to clone TCP stream"));
+            }
+        });
         let writer = BufWriter::new(stream);
 
         let mut server = Server::new(reader, writer);

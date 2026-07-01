@@ -374,6 +374,7 @@ impl State {
                 self.minimum_source_line_for_proc(proc, loc.source_file.uri().as_str())
             });
         let mut previous_proc = self.current_procedure();
+        let mut previous_source_loc = self.current_user_source_location();
         let mut pending_called_breakpoints = Vec::new();
         let mut breakpoints = core::mem::take(&mut self.breakpoints);
         self.breakpoints_hit.clear();
@@ -401,7 +402,7 @@ impl State {
             }
 
             let is_op_boundary = self.executor().current_asmop.is_some();
-            let loc = self.current_location();
+            let user_source_loc = self.current_user_source_location();
             let line_loc = self.current_display_location();
             let proc = self.current_procedure();
             let current_cycle = self.executor().cycle;
@@ -451,8 +452,12 @@ impl State {
                     return true;
                 }
 
-                if let Some(loc) = loc.as_ref()
+                // Line/File breakpoints fire on the transition onto a matching
+                // source position, so that a breakpoint inside a loop fires once
+                // per iteration and `continue` from a stop can leave the line.
+                if let Some(loc) = user_source_loc.as_ref()
                     && bp.should_break_at(loc)
+                    && !previous_source_loc.as_ref().is_some_and(|prev| bp.should_break_at(prev))
                 {
                     let retained = !bp.is_one_shot();
                     if retained {
@@ -524,6 +529,7 @@ impl State {
             }
 
             previous_proc = proc;
+            previous_source_loc = user_source_loc;
         };
 
         self.breakpoints = breakpoints;
@@ -610,6 +616,31 @@ impl State {
                 && let Some(resolved) = self.resolve_op_location(location)
             {
                 return Some(resolved);
+            }
+        }
+        None
+    }
+
+    /// Return the current source position as seen from the nearest non-internal
+    /// (user) call frame.
+    ///
+    /// Excursions into compiler intrinsics do not change this position, which
+    /// makes it suitable for matching source-level (line/file) breakpoints: a
+    /// statement that calls into `::intrinsics::*` helpers mid-line still reads
+    /// as a single visit to that line.
+    fn current_user_source_location(&self) -> Option<ResolvedLocation> {
+        for frame in self.executor().callstack.frames().iter().rev() {
+            for detail in frame.recent().iter().rev() {
+                if let Some(location) = detail.location()
+                    && let Some(resolved) = self.resolve_op_location(location)
+                {
+                    if crate::debug::is_internal_source_uri(resolved.source_file.uri()) {
+                        // This frame is executing compiler-internal code; its
+                        // caller carries the user-source position.
+                        break;
+                    }
+                    return Some(resolved);
+                }
             }
         }
         None

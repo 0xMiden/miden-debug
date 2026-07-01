@@ -21,7 +21,10 @@ use miden_processor::{
 
 use crate::{
     config::DebuggerConfig,
-    debug::{Breakpoint, BreakpointType, ReadMemoryExpr, ResolvedLocation, resolve_variable_value},
+    debug::{
+        Breakpoint, BreakpointType, OperationMatcher, ReadMemoryExpr, ResolvedLocation,
+        resolve_variable_value,
+    },
     exec::{DebugExecutor, Executor},
 };
 
@@ -408,6 +411,15 @@ impl State {
             let current_cycle = self.executor().cycle;
             let cycles_stepped = current_cycle - start_cycle;
             let has_internal_breakpoint = breakpoints.iter().any(|bp| bp.is_internal());
+            let current_op = self.executor().current_op;
+            let current_asmop_str = if breakpoints
+                .iter()
+                .any(|bp| matches!(&bp.ty, BreakpointType::Opcode(OperationMatcher::Asm(_))))
+            {
+                self.executor().current_asmop.as_ref().map(|asmop| asmop.op().to_string())
+            } else {
+                None
+            };
 
             breakpoints.retain_mut(|bp| {
                 if let Some(n) = bp.cycles_to_skip(current_cycle) {
@@ -449,6 +461,24 @@ impl State {
                 }
 
                 if has_internal_breakpoint && !bp.is_internal() {
+                    return true;
+                }
+
+                // Opcode breakpoints: raw operation matchers fire on the op just
+                // executed; assembly-level matchers compare against the current
+                // asmop at instruction boundaries.
+                if cycles_stepped > 0
+                    && (current_op.is_some_and(|op| bp.should_break_for(&op))
+                        || (is_op_boundary
+                            && matches!(
+                                (&bp.ty, current_asmop_str.as_deref()),
+                                (
+                                    BreakpointType::Opcode(OperationMatcher::Asm(expected)),
+                                    Some(current),
+                                ) if expected == current
+                            )))
+                {
+                    self.breakpoints_hit.push(bp.clone());
                     return true;
                 }
 

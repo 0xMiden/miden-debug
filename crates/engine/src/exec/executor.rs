@@ -365,9 +365,10 @@ impl Executor {
 
 fn missing_dependency_report(dependency: &Dependency) -> Report {
     Report::msg(format!(
-        "missing dependency '{}' (kind {}, version {}). Load it with `-l <path-to-{}.masp>` or \
-         configure the Miden toolchain/sysroot so the dependency can be found.",
-        dependency.name, dependency.kind, dependency.version, dependency.name
+        "missing dependency '{}' (kind {}, version {}). Load it with `-l {}` or `-l \
+         <path-to-{}.masp>`, or configure the Miden toolchain/sysroot so the dependency can be \
+         found.",
+        dependency.name, dependency.kind, dependency.version, dependency.name, dependency.name
     ))
 }
 
@@ -549,6 +550,7 @@ mod tests {
         assert!(result.is_err());
         let message = result.err().unwrap().to_string();
         assert!(message.contains("missing dependency 'miden-core'"));
+        assert!(message.contains("-l miden-core"));
         assert!(message.contains("-l <path-to-miden-core.masp>"));
     }
 }

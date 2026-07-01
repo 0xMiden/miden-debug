@@ -382,8 +382,11 @@ impl DapClient {
         loop {
             match self.next_message()? {
                 DapMessage::Event(Event::Stopped(_)) => {
-                    let snapshot = snapshot
-                        .expect("server must emit miden/uiState before stopped; this is a bug");
+                    let snapshot = snapshot.ok_or_else(|| {
+                        "DAP server sent 'stopped' without a preceding miden/uiState event; \
+                         the remote debugger does not appear to be a miden-debug DAP server"
+                            .to_string()
+                    })?;
                     return Ok(DapStopReason::Stopped(snapshot));
                 }
                 DapMessage::Event(Event::Terminated(body)) => {

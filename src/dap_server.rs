@@ -16,7 +16,7 @@ use crate::{DapConfig, DapExecutor, DebuggerConfig, InputFile};
 /// Start a DAP server for a local Miden program.
 ///
 /// This is the non-transaction counterpart to `miden-client exec --start-debug-adapter`.
-/// It accepts standalone MASM source files as well as compiled program artifacts.
+/// It accepts standalone MASM source files as well as compiled package artifacts.
 pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     let addr = config
         .start_debug_adapter
@@ -28,15 +28,27 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
 
     let source_manager = Arc::new(DefaultSourceManager::default());
     let inputs = crate::program_loader::execution_inputs(&config)?;
-    let libs = crate::program_loader::load_libraries(&config, source_manager.clone(), "dap")?;
-    let program = load_program(&config, source_manager.clone(), &libs)?;
-    let mut host = StandaloneDapHost::new(source_manager);
+    let mut host = StandaloneDapHost::new(source_manager.clone());
 
-    for lib in libs {
-        host.load_library(lib.mast_forest().clone()).map_err(|err| {
-            Report::msg(format!("failed to load linked library into DAP host: {err}"))
-        })?;
-    }
+    let program = if let Some(path) = masm_input_path(&config)? {
+        let libs = load_masm_libraries(&config, source_manager.clone(), "dap")?;
+        for lib in libs.iter() {
+            host.load_library(lib.mast_forest().clone()).map_err(|err| {
+                Report::msg(format!("failed to load linked library into DAP host: {err}"))
+            })?;
+        }
+        assemble_masm_program(path, source_manager.clone(), &libs)?
+    } else {
+        let packages = crate::program_loader::load_library_packages(&config, "dap")?;
+        let package = crate::program_loader::load_package(&config)?;
+        crate::program_loader::verify_package_dependencies(&package, &packages)?;
+        for package in packages {
+            host.load_library(package.mast.mast_forest().clone()).map_err(|err| {
+                Report::msg(format!("failed to load linked package into DAP host: {err}"))
+            })?;
+        }
+        package.unwrap_program()
+    };
 
     let executor = DapExecutor::new(inputs.inputs, inputs.advice_inputs, inputs.options);
     futures::executor::block_on(executor.execute_async(&program, &mut host))
@@ -119,24 +131,36 @@ impl Host for StandaloneDapHost {
     }
 }
 
-fn load_program(
+fn masm_input_path(config: &DebuggerConfig) -> Result<Option<&Path>, Report> {
+    let input = config.input.as_ref().ok_or_else(|| Report::msg("no input file specified"))?;
+    Ok(match input {
+        InputFile::Real(path) if path.extension().and_then(|ext| ext.to_str()) == Some("masm") => {
+            Some(path.as_path())
+        }
+        _ => None,
+    })
+}
+
+fn load_masm_libraries(
     config: &DebuggerConfig,
     source_manager: Arc<dyn SourceManager>,
-    libs: &[Arc<Library>],
-) -> Result<Program, Report> {
-    let input = config.input.as_ref().ok_or_else(|| Report::msg("no input file specified"))?;
-    if let InputFile::Real(path) = input
-        && path.extension().and_then(|ext| ext.to_str()) == Some("masm")
-    {
-        return assemble_masm_program(path, source_manager, libs);
+    log_target: &'static str,
+) -> Result<Vec<Arc<Library>>, Report> {
+    let mut libs = Vec::with_capacity(config.link_libraries.len());
+    for link_library in config.link_libraries.iter() {
+        log::debug!(target: log_target, "loading link library {}", link_library.name());
+        libs.push(link_library.load(config, source_manager.clone())?);
     }
 
-    let artifact = crate::program_loader::load_program_artifact(config)?;
-    if let Some(package) = artifact.package() {
-        crate::program_loader::verify_package_dependencies(package, libs)?;
+    if let Some(toolchain_dir) = config.toolchain_dir() {
+        libs.extend(
+            crate::program_loader::load_sysroot_packages(&toolchain_dir, log_target)?
+                .into_iter()
+                .map(|package| package.mast.clone()),
+        );
     }
 
-    Ok(artifact.into_program())
+    Ok(libs)
 }
 
 fn assemble_masm_program(

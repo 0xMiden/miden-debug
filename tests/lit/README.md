@@ -4,9 +4,9 @@ End-to-end tests that drive `miden-debug` over small Miden Assembly programs and
 check its output with [`litcheck`](https://crates.io/crates/litcheck) (a
 pure-Rust implementation of LLVM `lit` + `FileCheck`).
 
-The debugger only loads compiled artifacts. The lit harness uses `miden-vm
-compile` to assemble each `.masm` fixture into a temporary `.masb` program before
-running `miden-debug`.
+The debugger only loads compiled packages. The lit harness builds the local
+`compile-masm` helper and uses it to assemble each `.masm` fixture into a
+temporary `.masp` package before running `miden-debug`.
 
 ## Layout
 
@@ -35,8 +35,8 @@ A `.test` file is, at once:
 For example, `add.test`:
 
 ```text
-# RUN: miden-vm compile -a %S/add.masm -o %t.masb
-# RUN: miden-debug --commands %s %t.masb 2>&1 | filecheck %s
+# RUN: compile-masm %S/add.masm -o %t.masp
+# RUN: miden-debug --commands %s %t.masp 2>&1 | filecheck %s
 
 continue
 stack
@@ -57,9 +57,9 @@ operand stack.
 cargo make test-lit
 ```
 
-This installs the lit tools and `miden-vm`, builds `miden-debug` with the `repl`
-feature (needed for `--commands`), installs the binaries into `./bin`, and runs
-the suite via `litcheck lit run`.
+This installs the lit tools, builds `miden-debug` with the `repl` feature
+(needed for `--commands`), builds the local MASM-to-package helper, installs the
+binaries into `./bin`, and runs the suite via `litcheck lit run`.
 
 ## Adding a test
 

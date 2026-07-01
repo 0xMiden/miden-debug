@@ -313,24 +313,37 @@ args = [
     "${LOCAL_BIN_DIR}",
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/tests/lit",
 ]
-dependencies = ["litcheck", "miden-vm", "install-repl-locally"]
+dependencies = ["litcheck", "install-compile-masm-locally", "install-repl-locally"]
 
 [tasks.litcheck]
 category = "Test"
 description = "Set up the litcheck utility (provides `lit` and `filecheck`)"
 install_crate = { crate_name = "litcheck", binary = "litcheck", test_arg = "--help" }
 
-[tasks.miden-vm]
-category = "Test"
-description = "Set up the miden-vm executable used to compile MASM lit fixtures"
-install_crate = { crate_name = "miden-vm", binary = "miden-vm", test_arg = "--help", version = "0.23.4" }
-install_crate_args = ["--features", "executable", "--bin", "miden-vm"]
-
 [tasks.repl]
 category = "Build"
 description = "Builds miden-debug with the `repl` feature, required for `--commands` batch mode"
 command = "cargo"
 args = ["build", "--bin", "miden-debug", "--features", "repl", "${@}"]
+
+[tasks.compile-masm]
+category = "Build"
+description = "Builds the MASM-to-package helper used by lit tests"
+command = "cargo"
+args = ["build", "--example", "compile-masm", "--features", "std", "${@}"]
+
+[tasks.install-compile-masm-locally]
+category = "Install"
+description = "Builds the MASM-to-package helper and copies it into the local bin folder for lit tests"
+private = true
+dependencies = ["compile-masm"]
+script_runner = "@duckscript"
+script = '''
+mkdir ${LOCAL_BIN_DIR}
+src = concat ${CARGO_ARTIFACT_DIR} "/examples/compile-masm"
+dst = concat ${LOCAL_BIN_DIR} "/compile-masm"
+cp ${src} ${dst}
+'''
 
 [tasks.install-repl-locally]
 category = "Install"

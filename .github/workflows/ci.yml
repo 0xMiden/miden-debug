@@ -123,7 +123,7 @@ jobs:
             cargo install litcheck --locked
           fi
       - name: Test
-        # The lit harness compiles `.masm` fixtures with `miden-vm`, then
+        # The lit harness compiles `.masm` fixtures into `.masp` packages, then
         # checks debugger output with FileCheck.
         run: |
           cargo make test-lit

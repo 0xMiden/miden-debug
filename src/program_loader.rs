@@ -1,41 +1,15 @@
 use std::{path::Path, sync::Arc};
 
 use miden_assembly::SourceManager;
-use miden_assembly_syntax::{
-    Library,
-    diagnostics::{IntoDiagnostic, Report},
-};
-use miden_core::{
-    program::{Program, StackInputs},
-    serde::Deserializable,
-};
+use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
+use miden_core::{program::StackInputs, serde::Deserializable};
+use miden_mast_package::Package;
 
 use crate::{
     config::DebuggerConfig,
     exec::{DebugExecutor, ExecutionConfig, Executor},
     input::InputFile,
 };
-
-pub(crate) enum ProgramArtifact {
-    Package(Arc<miden_mast_package::Package>),
-    Program(Program),
-}
-
-impl ProgramArtifact {
-    pub(crate) fn package(&self) -> Option<&miden_mast_package::Package> {
-        match self {
-            Self::Package(package) => Some(package),
-            Self::Program(_) => None,
-        }
-    }
-
-    pub(crate) fn into_program(self) -> Program {
-        match self {
-            Self::Package(package) => package.unwrap_program(),
-            Self::Program(program) => program,
-        }
-    }
-}
 
 pub(crate) fn execution_inputs(config: &DebuggerConfig) -> Result<ExecutionConfig, Report> {
     let mut inputs = config.inputs.clone().unwrap_or_default();
@@ -55,82 +29,66 @@ pub(crate) fn load_debug_executor(
 ) -> Result<DebugExecutor, Report> {
     let inputs = execution_inputs(config)?;
     let args = inputs.inputs.iter().copied().collect::<Vec<_>>();
-    let artifact = load_program_artifact(config)?;
+    let package = load_package(config)?;
+    let packages = load_library_packages(config, log_target)?;
+    verify_package_dependencies(&package, &packages)?;
 
     let mut executor = Executor::new(args);
-    for lib in load_libraries(config, source_manager.clone(), log_target)? {
+    for package in packages {
+        let lib = package.mast.clone();
         executor.register_library_dependency(lib.clone());
         executor.with_library(lib);
     }
 
-    if let Some(package) = artifact.package() {
-        executor.with_dependencies(package.manifest.dependencies())?;
-    }
+    executor.with_dependencies(package.manifest.dependencies())?;
     executor.with_advice_inputs(inputs.advice_inputs);
 
-    let program = artifact.into_program();
+    let program = package.unwrap_program();
     Ok(executor.into_debug(&program, source_manager))
 }
 
-pub(crate) fn load_libraries(
+pub(crate) fn load_library_packages(
     config: &DebuggerConfig,
-    source_manager: Arc<dyn SourceManager>,
     log_target: &'static str,
-) -> Result<Vec<Arc<Library>>, Report> {
-    let mut libs = Vec::with_capacity(config.link_libraries.len());
+) -> Result<Vec<Arc<Package>>, Report> {
+    let mut packages = Vec::with_capacity(config.link_libraries.len());
     for link_library in config.link_libraries.iter() {
         log::debug!(target: log_target, "loading link library {}", link_library.name());
-        libs.push(link_library.load(config, source_manager.clone())?);
+        packages.push(link_library.load_package(config)?);
     }
 
     if let Some(toolchain_dir) = config.toolchain_dir() {
-        libs.extend(load_sysroot_libs(&toolchain_dir, log_target)?);
+        packages.extend(load_sysroot_packages(&toolchain_dir, log_target)?);
     }
 
-    Ok(libs)
+    Ok(packages)
 }
 
-pub(crate) fn load_program_artifact(config: &DebuggerConfig) -> Result<ProgramArtifact, Report> {
+pub(crate) fn load_package(config: &DebuggerConfig) -> Result<Arc<Package>, Report> {
     let input = config.input.as_ref().ok_or_else(|| Report::msg("no input file specified"))?;
-    let (bytes, source, extension) = match input {
+    let (bytes, source) = match input {
         InputFile::Real(path) => {
             let bytes = std::fs::read(path).into_diagnostic()?;
-            let extension = path.extension().and_then(|ext| ext.to_str()).map(str::to_owned);
-            (bytes, path.display().to_string(), extension)
+            (bytes, path.display().to_string())
         }
-        InputFile::Stdin(bytes) => (bytes.to_vec(), "stdin".to_string(), None),
+        InputFile::Stdin(bytes) => (bytes.to_vec(), "stdin".to_string()),
     };
 
-    let is_package = bytes.starts_with(b"MASP\0") || extension.as_deref() == Some("masp");
-    if is_package {
-        return load_package_from_bytes(&bytes, &source, config).map(ProgramArtifact::Package);
-    }
-
-    if config.entrypoint.is_some() {
-        return Err(Report::msg("--entrypoint requires a .masp package input"));
-    }
-
-    if extension.as_deref() == Some("masb") || matches!(input, InputFile::Stdin(_)) {
-        return Program::read_from_bytes(&bytes).map(ProgramArtifact::Program).map_err(|err| {
-            Report::msg(format!("failed to load Miden program from {source}: {err}"))
-        });
-    }
-
-    Err(Report::msg(format!(
-        "unsupported input artifact {source}: expected a .masp package or .masb compiled program; compile MASM sources with `miden-vm compile -a <file.masm> -o <file.masb>`"
-    )))
+    load_package_from_bytes(&bytes, &source, config)
 }
 
-#[cfg(feature = "dap")]
 pub(crate) fn verify_package_dependencies(
-    package: &miden_mast_package::Package,
-    libs: &[Arc<Library>],
+    package: &Package,
+    packages: &[Arc<Package>],
 ) -> Result<(), Report> {
-    let available = libs.iter().map(|lib| *lib.digest()).collect::<std::collections::BTreeSet<_>>();
+    let available = packages
+        .iter()
+        .map(|package| package.digest())
+        .collect::<std::collections::BTreeSet<_>>();
     for dependency in package.manifest.dependencies() {
         if !available.contains(&dependency.digest) {
             return Err(Report::msg(format!(
-                "dependency {dependency:?} not found in loaded libraries"
+                "dependency {dependency:?} not found in loaded packages"
             )));
         }
     }
@@ -138,17 +96,17 @@ pub(crate) fn verify_package_dependencies(
     Ok(())
 }
 
-fn load_sysroot_libs(
+pub(crate) fn load_sysroot_packages(
     toolchain_dir: &Path,
     log_target: &'static str,
-) -> Result<Vec<Arc<Library>>, Report> {
-    let mut libs = Vec::new();
+) -> Result<Vec<Arc<Package>>, Report> {
+    let mut packages = Vec::new();
 
     let entries = match std::fs::read_dir(toolchain_dir) {
         Ok(entries) => entries,
         Err(_) => {
             log::debug!(target: log_target, "could not read sysroot directory: {}", toolchain_dir.display());
-            return Ok(libs);
+            return Ok(packages);
         }
     };
 
@@ -162,33 +120,26 @@ fn load_sysroot_libs(
         if ext == "masp" {
             log::debug!(target: log_target, "loading package from sysroot: {}", path.display());
             let bytes = std::fs::read(&path).into_diagnostic()?;
-            let package = miden_mast_package::Package::read_from_bytes(&bytes).map_err(|err| {
+            let package = Package::read_from_bytes(&bytes).map_err(|err| {
                 Report::msg(format!("failed to load package '{}': {err}", path.display()))
             })?;
-            libs.push(package.mast.clone());
-        } else if ext == "masl" {
-            log::debug!(target: log_target, "loading library from sysroot: {}", path.display());
-            let bytes = std::fs::read(&path).into_diagnostic()?;
-            let lib = Library::read_from_bytes(&bytes).map_err(|err| {
-                Report::msg(format!("failed to load library '{}': {err}", path.display()))
-            })?;
-            libs.push(Arc::new(lib));
+            packages.push(Arc::new(package));
         }
     }
 
-    if libs.is_empty() {
-        log::debug!(target: log_target, "no libraries found in sysroot: {}", toolchain_dir.display());
+    if packages.is_empty() {
+        log::debug!(target: log_target, "no packages found in sysroot: {}", toolchain_dir.display());
     }
 
-    Ok(libs)
+    Ok(packages)
 }
 
 fn load_package_from_bytes(
     bytes: &[u8],
     source: &str,
     config: &DebuggerConfig,
-) -> Result<Arc<miden_mast_package::Package>, Report> {
-    let package = miden_mast_package::Package::read_from_bytes(bytes)
+) -> Result<Arc<Package>, Report> {
+    let package = Package::read_from_bytes(bytes)
         .map(Arc::new)
         .map_err(|err| Report::msg(format!("failed to load Miden package from {source}: {err}")))?;
 
@@ -201,7 +152,12 @@ fn load_package_from_bytes(
         }
 
         package.make_executable(&id).map(Arc::new)
-    } else {
+    } else if package.is_program() {
         Ok(package)
+    } else {
+        Err(Report::msg(format!(
+            "input package '{source}' is not executable; pass --entrypoint <module>::<procedure> \
+             to debug a library package"
+        )))
     }
 }

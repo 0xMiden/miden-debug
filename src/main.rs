@@ -39,6 +39,13 @@ pub fn main() -> Result<(), Report> {
     // Initialize logger, but do not install it, leave that up to the command handler
     let mut builder = env_logger::Builder::from_env("MIDENC_TRACE");
     builder.format_indent(Some(2));
+    // miden-core's deserializer logs advisory errors on every untrusted
+    // package load, even successful ones; real failures surface as errors in
+    // their own right. Keep the default output clean, but let an explicit
+    // MIDENC_TRACE spec re-enable the module.
+    if env::var("MIDENC_TRACE").is_err() {
+        builder.filter_module("miden_core::mast::serialization", log::LevelFilter::Off);
+    }
     if let Ok(precision) = env::var("MIDENC_TRACE_TIMING") {
         match precision.as_str() {
             "s" => builder.format_timestamp_secs(),

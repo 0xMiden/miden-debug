@@ -175,20 +175,32 @@ impl FromStr for BreakpointType {
         }
         match s.split_once(':') {
             Some((file, line)) => {
-                let pattern = Pattern::new(file.trim())
-                    .map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))?;
+                let pattern = file_pattern(file)?;
                 let line = line.trim().parse::<u32>().map_err(|err| {
                     format!("invalid breakpoint expression: could not parse line: {err}")
                 })?;
                 Ok(BreakpointType::Line { pattern, line })
             }
-            None => {
-                let pattern = Pattern::new(s.trim())
-                    .map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))?;
-                Ok(BreakpointType::File(pattern))
-            }
+            None => Ok(BreakpointType::File(file_pattern(s)?)),
         }
     }
+}
+
+/// Compile a user-provided file spec into a glob pattern.
+///
+/// Source locations in debug info are stored as absolute paths, so a relative
+/// spec like `src/lib.rs` would never match as-is. Anchor relative specs with
+/// a leading `**/` so they match by path suffix, like gdb's `break FILE:LINE`.
+fn file_pattern(spec: &str) -> Result<Pattern, String> {
+    let spec = spec.trim();
+    let anchored;
+    let spec = if spec.starts_with('/') || spec.starts_with('*') {
+        spec
+    } else {
+        anchored = format!("**/{spec}");
+        &anchored
+    };
+    Pattern::new(spec).map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

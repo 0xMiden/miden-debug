@@ -31,15 +31,15 @@ impl Breakpoint {
         }
     }
 
-    /// Return the number of cycles this breakpoint indicates we should skip, or `None` if the
-    /// number of cycles is context-specific, or the breakpoint is triggered by something other
-    /// than cycle count.
+    /// Return the number of cycles remaining, as of `current_cycle`, before this breakpoint
+    /// should trigger (zero means it should trigger now), or `None` if the breakpoint is
+    /// triggered by something other than cycle count, or its target cycle has already passed.
     pub fn cycles_to_skip(&self, current_cycle: usize) -> Option<usize> {
         let cycles_passed = current_cycle - self.creation_cycle;
         match &self.ty {
-            BreakpointType::Step => Some(1),
+            BreakpointType::Step => Some(1usize.saturating_sub(cycles_passed)),
             BreakpointType::StepN(n) => Some(n.saturating_sub(cycles_passed)),
-            BreakpointType::StepTo(to) if to >= &current_cycle => Some(to.abs_diff(current_cycle)),
+            BreakpointType::StepTo(to) if to >= &current_cycle => Some(to - current_cycle),
             _ => None,
         }
     }

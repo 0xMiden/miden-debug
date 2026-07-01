@@ -410,7 +410,7 @@ impl State {
 
             breakpoints.retain_mut(|bp| {
                 if let Some(n) = bp.cycles_to_skip(current_cycle) {
-                    if cycles_stepped >= n {
+                    if cycles_stepped > 0 && n == 0 {
                         let retained = !bp.is_one_shot();
                         if retained {
                             self.breakpoints_hit.push(bp.clone());

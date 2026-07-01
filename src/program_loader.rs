@@ -31,6 +31,9 @@ pub(crate) fn load_debug_executor(
     let args = inputs.inputs.iter().copied().collect::<Vec<_>>();
     let package = load_package(config)?;
     let packages = load_library_packages(config, log_target)?;
+    // TODO: When upgrading to miden-assembly/miden-mast-package 0.24, extract any embedded
+    // kernel package via `Package::try_embedded_kernel_package()` and register it if the
+    // dependency resolver does not already have it.
     verify_package_dependencies(&package, &packages)?;
 
     let mut executor = Executor::new(args);

@@ -340,13 +340,7 @@ impl CallFrame {
 
     pub fn last_location(&self) -> Option<&Location> {
         match self.context.back() {
-            Some(OpDetail::Full { location, .. }) => {
-                let loc = location.as_ref();
-                if loc.is_none() {
-                    dbg!(&self.context);
-                }
-                loc
-            }
+            Some(OpDetail::Full { location, .. }) => location.as_ref(),
             Some(OpDetail::Basic { .. }) => None,
             Some(OpDetail::Exec { .. }) => {
                 let op = self.context.iter().rev().nth(1)?;

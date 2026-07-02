@@ -386,6 +386,7 @@ impl State {
             });
         let mut previous_proc = self.current_procedure();
         let mut previous_source_loc = self.current_user_source_location();
+        let mut previous_internal_loc = self.current_internal_source_location();
         let mut pending_called_breakpoints = Vec::new();
         let mut breakpoints = core::mem::take(&mut self.breakpoints);
         self.breakpoints_hit.clear();
@@ -414,6 +415,7 @@ impl State {
 
             let is_op_boundary = self.executor().current_asmop.is_some();
             let user_source_loc = self.current_user_source_location();
+            let internal_source_loc = self.current_internal_source_location();
             let line_loc = self.current_display_location();
             let proc = self.current_procedure();
             let current_cycle = self.executor().cycle;
@@ -506,6 +508,25 @@ impl State {
                     return retained;
                 }
 
+                // The user-level position above intentionally skips frames executing
+                // compiler-internal code, so a breakpoint that explicitly targets an internal
+                // source file (e.g. a compiler intrinsic) is matched against the raw innermost
+                // position instead. Intrinsics stay debuggable like any other MASM, and since
+                // user source files never classify as internal, this cannot reintroduce
+                // mid-statement stops for user-level breakpoints.
+                if let Some(loc) = internal_source_loc.as_ref()
+                    && bp.should_break_at(loc)
+                    && !previous_internal_loc.as_ref().is_some_and(|prev| bp.should_break_at(prev))
+                {
+                    let retained = !bp.is_one_shot();
+                    if retained {
+                        self.breakpoints_hit.push(bp.clone());
+                    } else {
+                        self.breakpoints_hit.push(core::mem::take(bp));
+                    }
+                    return retained;
+                }
+
                 if matches!(&bp.ty, BreakpointType::Called(_))
                     && let Some(proc) = proc.as_deref()
                 {
@@ -568,6 +589,7 @@ impl State {
 
             previous_proc = proc;
             previous_source_loc = user_source_loc;
+            previous_internal_loc = internal_source_loc;
         };
 
         self.breakpoints = breakpoints;
@@ -682,6 +704,18 @@ impl State {
             }
         }
         None
+    }
+
+    /// The innermost resolvable source position, only when it refers to compiler-internal
+    /// code (intrinsics, the Rust standard library).
+    ///
+    /// [Self::current_user_source_location] intentionally skips such frames so that a user
+    /// statement calling into helpers reads as a single visit to its line; this accessor is the
+    /// counterpart that lets breakpoints explicitly targeting internal sources keep firing —
+    /// compiler intrinsics remain debuggable like any other MASM.
+    fn current_internal_source_location(&self) -> Option<ResolvedLocation> {
+        self.current_location()
+            .filter(|loc| crate::debug::is_internal_source_uri(loc.source_file.uri()))
     }
 
     pub fn is_next_source_line(

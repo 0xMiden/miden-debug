@@ -874,14 +874,18 @@ impl DapExecutor {
             .to_socket_addrs()
             .map_err(|e| format!("invalid listen address '{listen_addr}': {e}"))?
             .next()
-            .ok_or_else(|| format!("listen address '{listen_addr}' did not resolve to any address"))?;
+            .ok_or_else(|| {
+                format!("listen address '{listen_addr}' did not resolve to any address")
+            })?;
         let socket = Socket::new(Domain::for_address(addr), Type::STREAM, None)
             .map_err(|e| format!("failed to create socket: {e}"))?;
         socket.set_reuse_address(true).ok();
         socket
             .bind(&addr.into())
             .map_err(|e| format!("DAP server failed to bind to {addr}: {e}"))?;
-        socket.listen(1).map_err(|e| format!("DAP server failed to listen on {addr}: {e}"))?;
+        socket
+            .listen(1)
+            .map_err(|e| format!("DAP server failed to listen on {addr}: {e}"))?;
         Ok(socket.into())
     }
 

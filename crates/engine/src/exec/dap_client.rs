@@ -383,8 +383,8 @@ impl DapClient {
             match self.next_message()? {
                 DapMessage::Event(Event::Stopped(_)) => {
                     let snapshot = snapshot.ok_or_else(|| {
-                        "DAP server sent 'stopped' without a preceding miden/uiState event; \
-                         the remote debugger does not appear to be a miden-debug DAP server"
+                        "DAP server sent 'stopped' without a preceding miden/uiState event; the \
+                         remote debugger does not appear to be a miden-debug DAP server"
                             .to_string()
                     })?;
                     return Ok(DapStopReason::Stopped(snapshot));

@@ -1,5 +1,5 @@
 target/
-bin/miden-debug
+bin/
 .crates.toml
 .crates2.json
 

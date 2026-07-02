@@ -360,6 +360,14 @@ impl State {
         self.next_breakpoint_id = 0;
         self.stopped = true;
         for bp in breakpoints {
+            // Drop in-flight step breakpoints (next/next-line/finish): they
+            // refer to execution state (e.g. a frame flagged break-on-exit)
+            // that no longer exists after a restart. Carrying one over would
+            // also permanently suppress user breakpoints, since they are
+            // skipped while an internal breakpoint is pending.
+            if bp.is_internal() {
+                continue;
+            }
             self.create_breakpoint(bp.ty);
         }
         Ok(())

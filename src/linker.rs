@@ -11,6 +11,8 @@ use miden_assembly_syntax::{
     Library, Path as LibraryPath,
     diagnostics::{IntoDiagnostic, Report},
 };
+use miden_core::serde::Deserializable;
+use miden_mast_package::Package;
 
 use crate::config::DebuggerConfig;
 
@@ -21,7 +23,7 @@ pub struct LinkLibrary {
     ///
     /// If requested by name, e.g. `-l std`, the name is used as given.
     ///
-    /// If requested by path, e.g. `-l ./target/libs/miden-base.masl`, then the name of the library
+    /// If requested by path, e.g. `-l ./target/libs/miden-base.masp`, then the name of the library
     /// will be the basename of the file specified in the path.
     pub name: Cow<'static, str>,
     /// If specified, the path from which this library should be loaded
@@ -68,7 +70,7 @@ impl LinkLibrary {
         self.name.as_ref()
     }
 
-    pub fn load(
+    pub(crate) fn load(
         &self,
         config: &DebuggerConfig,
         source_manager: Arc<dyn SourceManager>,
@@ -81,6 +83,32 @@ impl LinkLibrary {
         let path = self.find(config)?;
 
         self.load_from_path(&path, source_manager)
+    }
+
+    pub(crate) fn load_package(&self, config: &DebuggerConfig) -> Result<Arc<Package>, Report> {
+        if self.kind != LibraryKind::Masp {
+            return Err(Report::msg(format!(
+                "source-form MASM library '{}' cannot be linked while debugging a package; pass a \
+                 compiled .masp package instead",
+                self.name
+            )));
+        }
+
+        let path = if let Some(path) = self.path.as_deref() {
+            path.to_path_buf()
+        } else {
+            self.find(config)?
+        };
+
+        let package = self.load_package_from_path(&path)?;
+        if !package.is_library() {
+            return Err(Report::msg(format!(
+                "link library '{}' resolved to executable package '{}'; expected a library package",
+                self.name, package.name
+            )));
+        }
+
+        Ok(package)
     }
 
     fn load_from_path(
@@ -104,18 +132,17 @@ impl LinkLibrary {
                 miden_assembly::Assembler::new(source_manager).assemble_library(modules)
             }
             LibraryKind::Masp => {
-                use miden_core::serde::Deserializable;
-                let bytes = std::fs::read(path).into_diagnostic()?;
-                let package =
-                    miden_mast_package::Package::read_from_bytes(&bytes).map_err(|e| {
-                        Report::msg(format!(
-                            "failed to load Miden package from {}: {e}",
-                            path.display()
-                        ))
-                    })?;
+                let package = self.load_package_from_path(path)?;
                 Ok(package.mast.clone())
             }
         }
+    }
+
+    fn load_package_from_path(&self, path: &FsPath) -> Result<Arc<Package>, Report> {
+        let bytes = std::fs::read(path).into_diagnostic()?;
+        Package::read_from_bytes(&bytes).map(Arc::new).map_err(|e| {
+            Report::msg(format!("failed to load Miden package from {}: {e}", path.display()))
+        })
     }
 
     fn find(&self, config: &DebuggerConfig) -> Result<PathBuf, Report> {

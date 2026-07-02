@@ -103,6 +103,15 @@ fn run_debugger(
     }
 
     #[cfg(feature = "repl")]
+    if let Some(commands) = config.commands.clone() {
+        // Batch mode: install the logger directly (no interactive frontend),
+        // then run the command script to completion and exit.
+        log::set_boxed_logger(_logger).ok();
+        log::set_max_level(_log_level);
+        return miden_debug::run_commands(config, &commands);
+    }
+
+    #[cfg(feature = "repl")]
     if config.repl {
         return run_repl(config, _logger, _log_level);
     }

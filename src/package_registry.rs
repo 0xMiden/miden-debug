@@ -10,7 +10,7 @@ use miden_assembly_syntax::{
     diagnostics::{IntoDiagnostic, Report},
 };
 use miden_core::{Word, serde::Deserializable};
-use miden_mast_package::{Dependency, Package};
+use miden_mast_package::{Dependency, Package, TargetType};
 use miden_package_registry::{
     PackageId, PackageProvider, PackageRecord, PackageRegistry, PackageVersions, Version,
     VersionRequirement,
@@ -21,14 +21,14 @@ use crate::{
     linker::{LibraryKind, load_local_package_from_path, load_package_from_path},
 };
 
-pub(crate) fn load_libraries(
+pub(crate) fn load_packages(
     config: &DebuggerConfig,
     source_manager: Arc<dyn SourceManager>,
     root_package: Option<&Package>,
     log_target: &'static str,
-) -> Result<Vec<Arc<Library>>, Report> {
+) -> Result<Vec<Arc<Package>>, Report> {
     let mut registry = LocalPackageRegistry::default();
-    let mut libs = Vec::new();
+    let mut packages = Vec::new();
     let mut seen = BTreeSet::new();
 
     if let Some(root_package) = root_package {
@@ -41,39 +41,61 @@ pub(crate) fn load_libraries(
             LibraryKind::Masp => {
                 let package = link_library.load_package(config)?;
                 registry.install_package(package.clone());
-                push_library(&mut libs, &mut seen, package.mast.clone());
+                push_package(&mut packages, &mut seen, package);
             }
             LibraryKind::Masm => {
                 let lib = link_library.load(config, source_manager.clone())?;
-                push_library(&mut libs, &mut seen, lib);
+                push_package(
+                    &mut packages,
+                    &mut seen,
+                    package_from_library(link_library.name.as_ref(), lib),
+                );
             }
         }
     }
 
     registry.discover(config, log_target)?;
     if let Some(root_package) = root_package {
-        for lib in registry.resolve_dependency_libraries(root_package)? {
-            push_library(&mut libs, &mut seen, lib);
+        for package in registry.resolve_dependency_packages(root_package)? {
+            push_package(&mut packages, &mut seen, package);
         }
     } else {
         for package in registry.library_packages() {
-            push_library(&mut libs, &mut seen, package.mast.clone());
+            push_package(&mut packages, &mut seen, package.clone());
         }
 
         if let Some(toolchain_dir) = config.toolchain_dir() {
-            for lib in load_legacy_libraries(&toolchain_dir, log_target)? {
-                push_library(&mut libs, &mut seen, lib);
+            for package in load_legacy_packages(&toolchain_dir, log_target)? {
+                push_package(&mut packages, &mut seen, package);
             }
         }
     }
 
-    Ok(libs)
+    Ok(packages)
 }
 
-fn push_library(libs: &mut Vec<Arc<Library>>, seen: &mut BTreeSet<Word>, lib: Arc<Library>) {
-    if seen.insert(*lib.digest()) {
-        libs.push(lib);
+fn push_package(
+    packages: &mut Vec<Arc<Package>>,
+    seen: &mut BTreeSet<Word>,
+    package: Arc<Package>,
+) {
+    if seen.insert(package.digest()) {
+        packages.push(package);
     }
+}
+
+/// Wrap a bare library in a synthetic library package, so the rest of the loading pipeline can
+/// work strictly in terms of packages. Used for source-form MASM link libraries and legacy
+/// `.masl` artifacts, which carry no package metadata of their own.
+fn package_from_library(name: &str, library: Arc<Library>) -> Arc<Package> {
+    Package::from_library(
+        name.into(),
+        "0.0.0".parse().expect("valid version"),
+        TargetType::Library,
+        library,
+        [],
+    )
+    .into()
 }
 
 #[derive(Default)]
@@ -239,22 +261,22 @@ impl LocalPackageRegistry {
         self.artifacts.values().filter(|package| package.is_library())
     }
 
-    fn resolve_dependency_libraries(&self, package: &Package) -> Result<Vec<Arc<Library>>, Report> {
-        let mut libs = Vec::new();
+    fn resolve_dependency_packages(&self, package: &Package) -> Result<Vec<Arc<Package>>, Report> {
+        let mut packages = Vec::new();
         let mut visited = BTreeSet::new();
 
         for dependency in package.manifest.dependencies() {
-            self.resolve_dependency(dependency, &mut visited, &mut libs)?;
+            self.resolve_dependency(dependency, &mut visited, &mut packages)?;
         }
 
-        Ok(libs)
+        Ok(packages)
     }
 
     fn resolve_dependency(
         &self,
         dependency: &Dependency,
         visited: &mut BTreeSet<(PackageId, Word)>,
-        libs: &mut Vec<Arc<Library>>,
+        packages: &mut Vec<Arc<Package>>,
     ) -> Result<(), Report> {
         if !visited.insert((dependency.name.clone(), dependency.digest)) {
             return Ok(());
@@ -274,11 +296,11 @@ impl LocalPackageRegistry {
         })?;
 
         for child in package.manifest.dependencies() {
-            self.resolve_dependency(child, visited, libs)?;
+            self.resolve_dependency(child, visited, packages)?;
         }
 
         if package.is_library() {
-            libs.push(package.mast.clone());
+            packages.push(package);
         }
 
         Ok(())
@@ -334,20 +356,20 @@ fn cargo_target_dirs(config: &DebuggerConfig) -> BTreeSet<PathBuf> {
     targets
 }
 
-fn load_legacy_libraries(
+fn load_legacy_packages(
     toolchain_dir: &Path,
     log_target: &'static str,
-) -> Result<Vec<Arc<Library>>, Report> {
-    let mut libs = Vec::new();
-    load_legacy_libraries_from_dir(&toolchain_dir.join("lib"), log_target, &mut libs)?;
-    load_legacy_libraries_from_dir(toolchain_dir, log_target, &mut libs)?;
-    Ok(libs)
+) -> Result<Vec<Arc<Package>>, Report> {
+    let mut packages = Vec::new();
+    load_legacy_packages_from_dir(&toolchain_dir.join("lib"), log_target, &mut packages)?;
+    load_legacy_packages_from_dir(toolchain_dir, log_target, &mut packages)?;
+    Ok(packages)
 }
 
-fn load_legacy_libraries_from_dir(
+fn load_legacy_packages_from_dir(
     dir: &Path,
     log_target: &'static str,
-    libs: &mut Vec<Arc<Library>>,
+    packages: &mut Vec<Arc<Package>>,
 ) -> Result<(), Report> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -365,7 +387,8 @@ fn load_legacy_libraries_from_dir(
         let lib = Library::read_from_bytes(&bytes).map_err(|err| {
             Report::msg(format!("failed to load library '{}': {err}", path.display()))
         })?;
-        libs.push(Arc::new(lib));
+        let name = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("legacy-library");
+        packages.push(package_from_library(name, Arc::new(lib)));
     }
 
     Ok(())
@@ -442,9 +465,9 @@ mod tests {
         registry.install_package(first);
         registry.install_package(second.clone());
 
-        let libs = registry.resolve_dependency_libraries(&root).unwrap();
+        let packages = registry.resolve_dependency_packages(&root).unwrap();
 
-        assert_eq!(libs.len(), 1);
-        assert_eq!(*libs[0].digest(), second.digest());
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].digest(), second.digest());
     }
 }

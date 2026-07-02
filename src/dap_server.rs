@@ -31,8 +31,9 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     let mut host = StandaloneDapHost::new(source_manager.clone());
 
     let program = if let Some(path) = masm_input_path(&config)? {
-        let libs =
-            crate::package_registry::load_libraries(&config, source_manager.clone(), None, "dap")?;
+        let packages =
+            crate::package_registry::load_packages(&config, source_manager.clone(), None, "dap")?;
+        let libs = packages.iter().map(|package| package.mast.clone()).collect::<Vec<_>>();
         for lib in libs.iter() {
             host.load_library(lib.mast_forest().clone()).map_err(|err| {
                 Report::msg(format!("failed to load linked library into DAP host: {err}"))
@@ -41,15 +42,15 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
         assemble_masm_program(path, source_manager.clone(), &libs)?
     } else {
         let package = crate::program_loader::load_package(&config)?;
-        let libs = crate::package_registry::load_libraries(
+        let packages = crate::package_registry::load_packages(
             &config,
             source_manager.clone(),
             Some(&package),
             "dap",
         )?;
-        for lib in libs {
-            host.load_library(lib.mast_forest().clone()).map_err(|err| {
-                Report::msg(format!("failed to load linked library into DAP host: {err}"))
+        for dependency in packages {
+            host.load_library(dependency.mast.mast_forest().clone()).map_err(|err| {
+                Report::msg(format!("failed to load linked package into DAP host: {err}"))
             })?;
         }
         package.unwrap_program()

@@ -37,7 +37,7 @@ pub(crate) fn load_debug_executor(
     // TODO: When upgrading to miden-assembly/miden-mast-package 0.24, extract any embedded
     // kernel package via `Package::try_embedded_kernel_package()` and register it if the
     // dependency resolver does not already have it.
-    let libs = crate::package_registry::load_libraries(
+    let packages = crate::package_registry::load_packages(
         config,
         source_manager.clone(),
         Some(&package),
@@ -45,7 +45,8 @@ pub(crate) fn load_debug_executor(
     )?;
 
     let mut executor = Executor::new(args);
-    for lib in libs {
+    for package in packages {
+        let lib = package.mast.clone();
         executor.register_library_dependency(lib.clone());
         executor.with_library(lib);
     }

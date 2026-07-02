@@ -903,11 +903,11 @@ impl DapExecutor {
         let listener = match Self::bind_listener(&self.config.listen_addr) {
             Ok(listener) => listener,
             Err(err) => {
-                eprintln!("{err}");
+                log::error!("{err}");
                 return Err(ExecutionError::Internal("failed to start DAP server"));
             }
         };
-        eprintln!(
+        log::info!(
             "DAP server listening on {}. Waiting for client connection...",
             self.config.listen_addr
         );
@@ -916,16 +916,16 @@ impl DapExecutor {
         let (stream, addr) = match listener.accept() {
             Ok(accepted) => accepted,
             Err(err) => {
-                eprintln!("DAP server accept failed: {err}");
+                log::error!("DAP server accept failed: {err}");
                 return Err(ExecutionError::Internal("DAP server accept failed"));
             }
         };
-        eprintln!("DAP client connected from {addr}");
+        log::info!("DAP client connected from {addr}");
 
         let reader = BufReader::new(match stream.try_clone() {
             Ok(stream) => stream,
             Err(err) => {
-                eprintln!("failed to clone TCP stream: {err}");
+                log::error!("failed to clone TCP stream: {err}");
                 return Err(ExecutionError::Internal("failed to clone TCP stream"));
             }
         });
@@ -1001,7 +1001,7 @@ impl DapExecutor {
                     Ok(Some(req)) => req,
                     Ok(None) => break,
                     Err(e) => {
-                        eprintln!("DAP protocol error: {e:#?}");
+                        log::error!("DAP protocol error: {e:#?}");
                         break;
                     }
                 };
@@ -1671,7 +1671,7 @@ impl DapExecutor {
             }
 
             if phase2_requested {
-                eprintln!("DAP Phase 2 restart: returning from execute() for recompilation...");
+                log::debug!("DAP Phase 2 restart: returning from execute() for recompilation...");
                 return Ok(ExecutionOutput {
                     stack: StackOutputs::new(&[]).expect("empty stack outputs"),
                     advice: Default::default(),
@@ -1682,14 +1682,14 @@ impl DapExecutor {
 
             if restart_requested {
                 is_restart = true;
-                eprintln!("DAP restart requested. Resetting processor...");
+                log::debug!("DAP restart requested. Resetting processor...");
                 // wrapper is dropped here, releasing the &mut H borrow.
                 // The outer loop creates a fresh processor and wrapper.
                 continue;
             }
 
             // Normal exit (disconnect or connection closed).
-            eprintln!("DAP session ended. Building execution output...");
+            log::debug!("DAP session ended. Building execution output...");
 
             // Run the program to completion if it hasn't finished.
             if let Some(ctx) = resume_ctx {

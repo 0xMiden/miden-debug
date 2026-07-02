@@ -116,6 +116,15 @@ fn run_debugger(
         return run_repl(config, _logger, _log_level);
     }
 
+    // The `--repl`/`--commands` flags exist whenever any interactive frontend is compiled in;
+    // if the REPL itself is not, fail loudly rather than silently launching the TUI.
+    #[cfg(all(not(feature = "repl"), any(feature = "tui", feature = "flamegraph")))]
+    if config.repl || config.commands.is_some() {
+        return Err(Report::msg(
+            "this build does not include the REPL; rebuild with `--features repl`",
+        ));
+    }
+
     #[cfg(feature = "tui")]
     return run(config, _logger, _log_level);
 

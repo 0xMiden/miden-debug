@@ -11,8 +11,10 @@ use miden_assembly_syntax::{
     Library, Path as LibraryPath,
     diagnostics::{IntoDiagnostic, Report},
 };
-use miden_core::serde::Deserializable;
-use miden_mast_package::Package;
+use miden_core::serde::{
+    BudgetedReader, ByteReader, Deserializable, DeserializationError, SliceReader,
+};
+use miden_mast_package::{Package, PackageId, PackageManifest, Section, TargetType};
 
 use crate::config::DebuggerConfig;
 
@@ -70,11 +72,15 @@ impl LinkLibrary {
         self.name.as_ref()
     }
 
-    pub(crate) fn load(
+    pub fn load(
         &self,
         config: &DebuggerConfig,
         source_manager: Arc<dyn SourceManager>,
     ) -> Result<Arc<Library>, Report> {
+        if matches!(self.kind, LibraryKind::Masp) {
+            return Ok(self.load_package(config)?.mast.clone());
+        }
+
         if let Some(path) = self.path.as_deref() {
             return self.load_from_path(path, source_manager);
         }
@@ -85,7 +91,10 @@ impl LinkLibrary {
         self.load_from_path(&path, source_manager)
     }
 
-    pub(crate) fn load_package(&self, config: &DebuggerConfig) -> Result<Arc<Package>, Report> {
+    pub(crate) fn load_package(
+        &self,
+        config: &DebuggerConfig,
+    ) -> Result<Arc<miden_mast_package::Package>, Report> {
         if self.kind != LibraryKind::Masp {
             return Err(Report::msg(format!(
                 "source-form MASM library '{}' cannot be linked while debugging a package; pass a \
@@ -94,13 +103,12 @@ impl LinkLibrary {
             )));
         }
 
-        let path = if let Some(path) = self.path.as_deref() {
-            path.to_path_buf()
-        } else {
-            self.find(config)?
+        let path = match self.path.as_deref() {
+            Some(path) => Cow::Borrowed(path),
+            None => Cow::Owned(self.find(config)?),
         };
 
-        let package = self.load_package_from_path(&path)?;
+        let package = load_package_from_path(&path)?;
         if !package.is_library() {
             return Err(Report::msg(format!(
                 "link library '{}' resolved to executable package '{}'; expected a library package",
@@ -132,25 +140,20 @@ impl LinkLibrary {
                 miden_assembly::Assembler::new(source_manager).assemble_library(modules)
             }
             LibraryKind::Masp => {
-                let package = self.load_package_from_path(path)?;
+                let package = load_package_from_path(path)?;
                 Ok(package.mast.clone())
             }
         }
-    }
-
-    fn load_package_from_path(&self, path: &FsPath) -> Result<Arc<Package>, Report> {
-        let bytes = std::fs::read(path).into_diagnostic()?;
-        Package::read_from_bytes(&bytes).map(Arc::new).map_err(|e| {
-            Report::msg(format!("failed to load Miden package from {}: {e}", path.display()))
-        })
     }
 
     fn find(&self, config: &DebuggerConfig) -> Result<PathBuf, Report> {
         use std::fs;
 
         let toolchain_dir = config.toolchain_dir();
-        let search_paths = toolchain_dir
+        let toolchain_lib_dir = toolchain_dir.as_ref().map(|dir| dir.join("lib"));
+        let search_paths = toolchain_lib_dir
             .iter()
+            .chain(toolchain_dir.iter())
             .chain(config.search_path.iter())
             .chain(config.working_dir.iter());
 
@@ -200,6 +203,100 @@ impl LinkLibrary {
             &self.name
         )))
     }
+}
+
+pub(crate) fn load_package_from_path(
+    path: &FsPath,
+) -> Result<Arc<miden_mast_package::Package>, Report> {
+    let bytes = std::fs::read(path).into_diagnostic()?;
+    load_package_from_bytes(&bytes, &path.display().to_string())
+}
+
+/// Load a package, preferring the unchecked reader: packages produced with debug info trip the
+/// untrusted deserializer's STRIPPED/HASHLESS expectations, which logs spurious errors on every
+/// load even though the read succeeds. The strict reader remains the fallback (and the source of
+/// the error message) for artifacts the unchecked reader does not understand.
+pub(crate) fn load_package_from_bytes(
+    bytes: &[u8],
+    source: &str,
+) -> Result<Arc<miden_mast_package::Package>, Report> {
+    match read_package_from_bytes_unchecked(bytes) {
+        Ok(package) => {
+            log::warn!(
+                "loading Miden package '{source}' without validating embedded MAST node hashes; \
+                 use only trusted local build artifacts"
+            );
+            Ok(Arc::new(package))
+        }
+        Err(_) => Package::read_from_bytes(bytes).map(Arc::new).map_err(|strict_error| {
+            Report::msg(format!("failed to load Miden package from {source}: {strict_error}"))
+        }),
+    }
+}
+
+pub(crate) fn load_local_package_from_path(path: &FsPath) -> Result<Arc<Package>, Report> {
+    let bytes = std::fs::read(path).into_diagnostic()?;
+    match read_package_from_bytes_unchecked(&bytes) {
+        Ok(package) => Ok(Arc::new(package)),
+        Err(unchecked_error) => {
+            Package::read_from_bytes(&bytes).map(Arc::new).map_err(|strict_error| {
+                Report::msg(format!(
+                    "failed to load local Miden package from {}: unchecked reader failed: {}; \
+                     strict reader failed: {}",
+                    path.display(),
+                    unchecked_error,
+                    strict_error
+                ))
+            })
+        }
+    }
+}
+
+fn read_package_from_bytes_unchecked(bytes: &[u8]) -> Result<Package, DeserializationError> {
+    const PACKAGE_BYTE_READ_BUDGET_MULTIPLIER: usize = 64;
+
+    let budget = bytes.len().saturating_mul(PACKAGE_BYTE_READ_BUDGET_MULTIPLIER);
+    let mut reader = BudgetedReader::new(SliceReader::new(bytes), budget);
+    read_package_unchecked(&mut reader)
+}
+
+fn read_package_unchecked<R: ByteReader>(source: &mut R) -> Result<Package, DeserializationError> {
+    let magic: [u8; 5] = source.read_array()?;
+    if magic != *b"MASP\0" {
+        return Err(DeserializationError::InvalidValue(format!(
+            "invalid magic bytes. Expected '{:?}', got '{magic:?}'",
+            b"MASP\0"
+        )));
+    }
+
+    let format_version: [u8; 3] = source.read_array()?;
+    if format_version != [4, 0, 0] {
+        return Err(DeserializationError::InvalidValue(format!(
+            "unsupported version. Got '{format_version:?}', but only '[4, 0, 0]' is supported"
+        )));
+    }
+
+    let name = PackageId::read_from(source)?;
+    let version = String::read_from(source)?
+        .parse()
+        .map_err(|err| DeserializationError::InvalidValue(format!("{err}")))?;
+    let description = Option::<String>::read_from(source)?;
+    let kind_tag = source.read_u8()?;
+    let kind = TargetType::try_from(kind_tag)
+        .map_err(|err| DeserializationError::InvalidValue(err.to_string()))?;
+    let mast = Arc::new(Library::read_from_unchecked(source)?);
+    let manifest = PackageManifest::read_from(source)?;
+    let sections = Vec::<Section>::read_from(source)?;
+
+    Ok(Package {
+        name,
+        version,
+        description,
+        kind,
+        mast,
+        manifest,
+        sections,
+    })
 }
 
 #[cfg(any(feature = "tui", feature = "flamegraph"))]

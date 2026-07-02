@@ -7,6 +7,7 @@ mod dap_server;
 pub mod flamegraph;
 mod input;
 mod linker;
+mod package_registry;
 mod program_loader;
 
 #[cfg(any(feature = "tui", feature = "repl"))]

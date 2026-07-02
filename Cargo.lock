@@ -1722,6 +1722,7 @@ dependencies = [
  "miden-debug-engine",
  "miden-debug-types",
  "miden-mast-package",
+ "miden-package-registry",
  "miden-processor",
  "ratatui",
  "rustyline",

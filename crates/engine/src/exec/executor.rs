@@ -118,7 +118,7 @@ impl Executor {
                     log::debug!("dependency {dep:?} resolved");
                     self.with_library(lib.clone());
                 }
-                None => panic!("{dep:?} not found in resolver"),
+                None => return Err(missing_dependency_report(dep)),
             }
         }
 
@@ -363,6 +363,15 @@ impl Executor {
     }
 }
 
+fn missing_dependency_report(dependency: &Dependency) -> Report {
+    Report::msg(format!(
+        "missing dependency '{}' (kind {}, version {}). Load it with `-l {}` or `-l \
+         <path-to-{}.masp>`, or configure the Miden toolchain/sysroot so the dependency can be \
+         found.",
+        dependency.name, dependency.kind, dependency.version, dependency.name, dependency.name
+    ))
+}
+
 #[derive(Debug, thiserror::Error)]
 enum PrintLnError {
     #[error("address should fit in u32")]
@@ -517,5 +526,31 @@ where
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use miden_mast_package::{PackageId, TargetType, Version};
+
+    use super::*;
+
+    #[test]
+    fn missing_dependency_returns_diagnostic() {
+        let dependency = Dependency {
+            name: PackageId::from("miden-core"),
+            kind: TargetType::Library,
+            version: Version::new(0, 0, 0),
+            digest: Word::default(),
+        };
+        let mut executor = Executor::new(Vec::new());
+
+        let result = executor.with_dependencies(core::iter::once(&dependency));
+
+        assert!(result.is_err());
+        let message = result.err().unwrap().to_string();
+        assert!(message.contains("missing dependency 'miden-core'"));
+        assert!(message.contains("-l miden-core"));
+        assert!(message.contains("-l <path-to-miden-core.masp>"));
     }
 }

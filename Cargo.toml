@@ -92,7 +92,7 @@ name = "flamegraph_profile"
 required-features = ["flamegraph"]
 
 [features]
-default = ["tui", "dap"]
+default = ["tui", "dap", "repl"]
 flamegraph = ["std", "dep:env_logger", "dep:inferno", "miden-debug-engine/tui"]
 tui = ["std", "flamegraph", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect", "miden-debug-engine/tui"]
 repl = ["std", "dep:env_logger", "dep:rustyline", "miden-debug-engine/tui"]

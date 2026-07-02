@@ -209,20 +209,27 @@ pub(crate) fn load_package_from_path(
     path: &FsPath,
 ) -> Result<Arc<miden_mast_package::Package>, Report> {
     let bytes = std::fs::read(path).into_diagnostic()?;
-    match read_package_from_bytes_unchecked(&bytes) {
+    load_package_from_bytes(&bytes, &path.display().to_string())
+}
+
+/// Load a package, preferring the unchecked reader: packages produced with debug info trip the
+/// untrusted deserializer's STRIPPED/HASHLESS expectations, which logs spurious errors on every
+/// load even though the read succeeds. The strict reader remains the fallback (and the source of
+/// the error message) for artifacts the unchecked reader does not understand.
+pub(crate) fn load_package_from_bytes(
+    bytes: &[u8],
+    source: &str,
+) -> Result<Arc<miden_mast_package::Package>, Report> {
+    match read_package_from_bytes_unchecked(bytes) {
         Ok(package) => {
             log::warn!(
-                "loading Miden package '{}' without validating embedded MAST node hashes; use \
-                 only trusted local build artifacts",
-                path.display()
+                "loading Miden package '{source}' without validating embedded MAST node hashes; \
+                 use only trusted local build artifacts"
             );
             Ok(Arc::new(package))
         }
-        Err(_) => Package::read_from_bytes(&bytes).map(Arc::new).map_err(|strict_error| {
-            Report::msg(format!(
-                "failed to load Miden package from {}: {strict_error}",
-                path.display()
-            ))
+        Err(_) => Package::read_from_bytes(bytes).map(Arc::new).map_err(|strict_error| {
+            Report::msg(format!("failed to load Miden package from {source}: {strict_error}"))
         }),
     }
 }

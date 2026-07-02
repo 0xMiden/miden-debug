@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use miden_assembly::SourceManager;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
-use miden_core::{program::StackInputs, serde::Deserializable};
+use miden_core::program::StackInputs;
 use miden_mast_package::Package;
 
 use crate::{
@@ -76,9 +76,7 @@ fn load_package_from_bytes(
     source: &str,
     config: &DebuggerConfig,
 ) -> Result<Arc<Package>, Report> {
-    let package = Package::read_from_bytes(bytes)
-        .map(Arc::new)
-        .map_err(|err| Report::msg(format!("failed to load Miden package from {source}: {err}")))?;
+    let package = crate::linker::load_package_from_bytes(bytes, source)?;
 
     if let Some(entry) = config.entrypoint.as_ref() {
         let id = entry

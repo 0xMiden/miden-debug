@@ -28,7 +28,7 @@ use miden_processor::{
     trace::RowIndex,
 };
 
-use super::{TraceEvent, state::extract_current_op};
+use super::{EventMutationRecorder, TraceEvent, state::extract_current_op};
 use crate::debug::{
     DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, resolve_variable_value,
     snapshot_transient_debug_values,
@@ -113,14 +113,19 @@ struct DapHostWrapper<'a, H: Host> {
     inner: &'a mut H,
     call_depth: usize,
     frames: Vec<DapCallFrame>,
+    /// When set, the advice mutations produced by each `on_event` invocation of the inner host
+    /// are recorded here, in execution order, so they can be replayed later (e.g. transaction
+    /// debugging with event replay).
+    event_recorder: Option<EventMutationRecorder>,
 }
 
 impl<'a, H: Host> DapHostWrapper<'a, H> {
-    fn new(inner: &'a mut H) -> Self {
+    fn new(inner: &'a mut H, event_recorder: Option<EventMutationRecorder>) -> Self {
         Self {
             inner,
             call_depth: 0,
             frames: Vec::new(),
+            event_recorder,
         }
     }
 }
@@ -179,7 +184,17 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
         &mut self,
         process: &ProcessorState<'_>,
     ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
-        self.inner.on_event(process)
+        // Every invocation is recorded, including empty mutation sets: event replay pops one
+        // entry per event, so the log must stay aligned with the event stream.
+        let recorder = self.event_recorder.clone();
+        let fut = self.inner.on_event(process);
+        async move {
+            let result = fut.await;
+            if let (Some(recorder), Ok(mutations)) = (&recorder, &result) {
+                recorder.record(crate::exec::clone_advice_mutations(mutations));
+            }
+            result
+        }
     }
 }
 
@@ -820,6 +835,7 @@ pub struct DapExecutor {
     advice_inputs: AdviceInputs,
     options: ExecutionOptions,
     config: DapConfig,
+    event_recorder: Option<EventMutationRecorder>,
 }
 
 /// Variables reference IDs for scopes.
@@ -851,7 +867,22 @@ impl DapExecutor {
             advice_inputs,
             options,
             config,
+            event_recorder: None,
         }
+    }
+
+    /// Record the advice mutations produced by each event handler invocation of the wrapped
+    /// host during execution.
+    ///
+    /// Returns a handle to the shared log. One entry is recorded per `on_event` invocation, in
+    /// execution order, including empty mutation sets, so the log can be fed directly into an
+    /// event replay queue (e.g. `Executor::into_debug_with_replay` or
+    /// `State::new_for_transaction`) to debug the same execution later without access to the
+    /// original host. The log is cleared automatically whenever the DAP session restarts
+    /// execution from the beginning, so after execution completes it always describes the final
+    /// run.
+    pub fn record_event_mutations(&mut self) -> EventMutationRecorder {
+        self.event_recorder.get_or_insert_with(EventMutationRecorder::new).clone()
     }
 
     pub fn execute_async<H: Host + Send>(
@@ -945,7 +976,12 @@ impl DapExecutor {
                     .expect("advice inputs should fit advice map limits");
 
             let resume_ctx = processor.get_initial_resume_context(program)?;
-            let mut wrapper = DapHostWrapper::new(host);
+            // Each pass through this loop starts execution from the beginning, so any
+            // mutations recorded by a previous (restarted) run no longer apply.
+            if let Some(recorder) = self.event_recorder.as_ref() {
+                recorder.clear();
+            }
+            let mut wrapper = DapHostWrapper::new(host, self.event_recorder.clone());
 
             let mut resume_ctx = Some(resume_ctx);
             let mut cycle: usize = 0;
@@ -2097,7 +2133,75 @@ enum StepResult {
 
 #[cfg(test)]
 mod tests {
+    use miden_assembly::DefaultSourceManager;
+    use miden_core::{
+        Felt,
+        events::{EventId, EventName},
+    };
+    use miden_processor::event::EventHandler;
+
     use super::*;
+    use crate::exec::{DebuggerHost, EventMutationRecorder};
+
+    struct PushSeven;
+
+    impl EventHandler for PushSeven {
+        fn on_event(
+            &self,
+            _process: &ProcessorState<'_>,
+        ) -> Result<Vec<AdviceMutation>, EventError> {
+            Ok(vec![AdviceMutation::ExtendStack {
+                values: vec![Felt::from(7u32)],
+            }])
+        }
+    }
+
+    /// The DAP host wrapper is what a client-provided host (e.g. a transaction executor host)
+    /// is driven through; recording must capture the mutations its event handlers produce.
+    #[test]
+    fn dap_host_wrapper_records_event_mutations() {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let event_name = "miden-debug::test::dap-record";
+        let event_id = EventId::from_name(event_name).as_u64();
+        let program = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program(format!("begin push.{event_id} emit drop adv_push drop end"))
+            .expect("failed to assemble test program");
+
+        let mut host = DebuggerHost::new(source_manager);
+        host.register_event_handler(
+            EventName::from_string(event_name.to_string()),
+            Arc::new(PushSeven),
+        )
+        .expect("failed to register event handler");
+
+        let recorder = EventMutationRecorder::new();
+        let mut wrapper = DapHostWrapper::new(&mut host, Some(recorder.clone()));
+
+        let mut processor = FastProcessor::new_with_options(
+            StackInputs::new(&[]).unwrap(),
+            AdviceInputs::default(),
+            ExecutionOptions::default().with_debugging(true).with_tracing(true),
+        )
+        .expect("invalid inputs");
+        let mut resume_ctx =
+            Some(processor.get_initial_resume_context(&program).expect("invalid program"));
+        while let Some(ctx) = resume_ctx.take() {
+            match poll_immediately(processor.step(&mut wrapper, ctx)).expect("execution failed") {
+                Some(next) => resume_ctx = Some(next),
+                None => break,
+            }
+        }
+
+        assert_eq!(recorder.len(), 1, "expected one recorded entry for the emitted event");
+        let batches = recorder.take();
+        match batches[0].as_slice() {
+            [AdviceMutation::ExtendStack { values }] => {
+                assert_eq!(values.as_slice(), &[Felt::from(7u32)]);
+            }
+            _ => panic!("unexpected mutations recorded"),
+        }
+        assert!(recorder.is_empty(), "take() should leave the recorder empty");
+    }
 
     #[test]
     fn source_paths_match_only_uses_declared_trim_prefixes() {

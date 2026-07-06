@@ -25,8 +25,8 @@ use miden_processor::{
 };
 
 use super::{
-    DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent,
-    query::read_memory_bytes, trace_event::TRACE_PRINT_LN,
+    DebugExecutor, DebuggerHost, EventMutationRecorder, ExecutionConfig, ExecutionTrace,
+    TraceEvent, query::read_memory_bytes, trace_event::TRACE_PRINT_LN,
 };
 use crate::{
     debug::{CallStack, DebugVarTracker, NativePtr},
@@ -54,6 +54,7 @@ pub struct Executor {
     libraries: Vec<Arc<Library>>,
     event_handlers: Vec<(EventName, Arc<dyn EventHandler>)>,
     dependency_resolver: BTreeMap<Word, Arc<Library>>,
+    event_recorder: Option<EventMutationRecorder>,
 }
 impl Executor {
     /// Construct an executor with the given arguments on the operand stack
@@ -85,6 +86,7 @@ impl Executor {
             libraries: Default::default(),
             event_handlers: Default::default(),
             dependency_resolver,
+            event_recorder: None,
         }
     }
 
@@ -139,6 +141,19 @@ impl Executor {
         self
     }
 
+    /// Record the advice mutations produced by each event handler invocation.
+    ///
+    /// Returns a handle to the shared log; the same handle keeps accumulating entries during
+    /// execution and can be read after the program completes. The recorded log can be fed back
+    /// into [Executor::into_debug_with_replay] to debug the same execution later without the
+    /// original event handlers (e.g. transaction debugging with event replay).
+    ///
+    /// Mutations are only recorded for live event handling; nothing is recorded while an event
+    /// replay queue is being consumed.
+    pub fn record_event_mutations(&mut self) -> EventMutationRecorder {
+        self.event_recorder.get_or_insert_with(EventMutationRecorder::new).clone()
+    }
+
     /// Register a VM event handler to be available during execution.
     pub fn register_event_handler(
         &mut self,
@@ -165,6 +180,9 @@ impl Executor {
         for (event, handler) in core::mem::take(&mut self.event_handlers) {
             host.register_event_handler(event, handler)
                 .expect("failed to register debug executor event handler");
+        }
+        if let Some(recorder) = self.event_recorder.take() {
+            host.set_event_recorder(recorder);
         }
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
@@ -552,5 +570,89 @@ mod tests {
         assert!(message.contains("missing dependency 'miden-core'"));
         assert!(message.contains("-l miden-core"));
         assert!(message.contains("-l <path-to-miden-core.masp>"));
+    }
+
+    /// One entry per `on_event` invocation, in execution order, and the recorded log replays to
+    /// an identical result without the original event handlers.
+    #[test]
+    fn records_event_mutations_and_replays_them() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use miden_assembly::DefaultSourceManager;
+        use miden_core::events::EventId;
+        use miden_processor::{ProcessorState, advice::AdviceMutation, event::EventError};
+
+        struct CountingHandler {
+            calls: AtomicU64,
+        }
+
+        impl EventHandler for CountingHandler {
+            fn on_event(
+                &self,
+                _process: &ProcessorState<'_>,
+            ) -> Result<Vec<AdviceMutation>, EventError> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![AdviceMutation::ExtendStack {
+                    values: vec![Felt::from(100u32 + call as u32)],
+                }])
+            }
+        }
+
+        let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
+        let event_name = "miden-debug::test::record-replay";
+        let event_id = EventId::from_name(event_name).as_u64();
+        // Each emit invokes the handler, which pushes one value onto the advice stack;
+        // adv_push moves it to the operand stack, and the sum of both values is the result.
+        let source = format!(
+            "begin push.{event_id} emit drop adv_push push.{event_id} emit drop adv_push add swap \
+             drop end"
+        );
+        let program = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program(source)
+            .expect("failed to assemble test program");
+
+        let mut executor = Executor::new(Vec::new());
+        executor
+            .register_event_handler(
+                EventName::from_string(event_name.to_string()),
+                Arc::new(CountingHandler {
+                    calls: AtomicU64::new(0),
+                }),
+            )
+            .expect("failed to register event handler");
+        let recorder = executor.record_event_mutations();
+
+        let trace = executor.execute(&program, source_manager.clone());
+        let recorded_result: u32 = trace.parse_result().expect("invalid result");
+        assert_eq!(recorded_result, 201);
+
+        assert_eq!(recorder.len(), 2, "expected one recorded entry per emit");
+        let recorded = recorder.snapshot();
+        for (index, batch) in recorded.iter().enumerate() {
+            match batch.as_slice() {
+                [AdviceMutation::ExtendStack { values }] => {
+                    assert_eq!(values.as_slice(), &[Felt::from(100u32 + index as u32)]);
+                }
+                _ => panic!("unexpected mutations recorded for event {index}"),
+            }
+        }
+
+        // Replay the recorded mutations without any event handlers registered: execution must
+        // reach the same result, proving the log is sufficient for event replay.
+        let replay_executor = Executor::new(Vec::new());
+        let mut debug_executor = replay_executor.into_debug_with_replay(
+            &program,
+            source_manager,
+            Vec::new(),
+            recorder.take().into(),
+        );
+        while !debug_executor.stopped {
+            debug_executor.step().expect("replay step failed");
+        }
+        let replayed_result: u32 = debug_executor
+            .into_execution_trace()
+            .parse_result()
+            .expect("invalid replay result");
+        assert_eq!(replayed_result, recorded_result);
     }
 }

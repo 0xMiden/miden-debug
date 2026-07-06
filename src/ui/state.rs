@@ -36,27 +36,10 @@ pub enum DebugMode {
     Remote,
 }
 
-fn clone_advice_mutation(mutation: &AdviceMutation) -> AdviceMutation {
-    match mutation {
-        AdviceMutation::ExtendStack { values } => AdviceMutation::ExtendStack {
-            values: values.clone(),
-        },
-        AdviceMutation::ExtendMap { other } => AdviceMutation::ExtendMap {
-            other: other.clone(),
-        },
-        AdviceMutation::ExtendMerkleStore { infos } => AdviceMutation::ExtendMerkleStore {
-            infos: infos.clone(),
-        },
-        AdviceMutation::ExtendPrecompileRequests { data } => {
-            AdviceMutation::ExtendPrecompileRequests { data: data.clone() }
-        }
-    }
-}
-
 fn clone_event_replay_queue(event_replay: &[Vec<AdviceMutation>]) -> VecDeque<Vec<AdviceMutation>> {
     event_replay
         .iter()
-        .map(|batch| batch.iter().map(clone_advice_mutation).collect())
+        .map(|batch| crate::exec::clone_advice_mutations(batch))
         .collect()
 }
 

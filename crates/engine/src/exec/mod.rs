@@ -24,7 +24,7 @@ pub use self::{
     config::ExecutionConfig,
     diagnostic::DiagnosticExecutor,
     executor::Executor,
-    host::DebuggerHost,
+    host::{DebuggerHost, EventMutationRecorder, clone_advice_mutation, clone_advice_mutations},
     query::DebugQuery,
     state::DebugExecutor,
     trace::{ExecutionTrace, TraceHandler},

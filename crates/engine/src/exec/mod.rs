@@ -1,3 +1,4 @@
+mod advice;
 mod config;
 #[cfg(feature = "dap")]
 mod dap;
@@ -21,10 +22,11 @@ pub use self::dap_client::{DapClient, DapStopReason, SCOPE_MEMORY, SCOPE_STACK};
 #[cfg(feature = "dap")]
 pub use self::dap_types::{DapUiFrame, DapUiState};
 pub use self::{
+    advice::{EventMutationRecorder, clone_advice_mutation, clone_advice_mutations},
     config::ExecutionConfig,
     diagnostic::DiagnosticExecutor,
     executor::Executor,
-    host::{DebuggerHost, EventMutationRecorder, clone_advice_mutation, clone_advice_mutations},
+    host::DebuggerHost,
     query::DebugQuery,
     state::DebugExecutor,
     trace::{ExecutionTrace, TraceHandler},

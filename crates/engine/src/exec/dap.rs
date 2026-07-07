@@ -51,6 +51,9 @@ pub struct DapConfig {
     /// Shared flag: set by the server when a Phase 2 restart (terminate-and-reconnect) is
     /// requested, read by the caller to decide whether to recompile and re-enter.
     restart_requested: Arc<AtomicBool>,
+    /// When set, the advice mutations produced by the host's event handlers are recorded into
+    /// this shared log during the session. See [DapConfig::record_event_mutations].
+    event_recorder: Option<EventMutationRecorder>,
 }
 
 impl DapConfig {
@@ -59,6 +62,7 @@ impl DapConfig {
             listen_addr: listen_addr.into(),
             source_path_prefixes: Vec::new(),
             restart_requested: Arc::new(AtomicBool::new(false)),
+            event_recorder: None,
         }
     }
 
@@ -69,6 +73,23 @@ impl DapConfig {
             .filter(|prefix| !prefix.is_empty())
             .collect();
         self
+    }
+
+    /// Record the advice mutations produced by the host's event handlers during the session.
+    ///
+    /// Returns a shared handle that outlives the executor: the [DapExecutor] is constructed
+    /// internally (e.g. by a transaction executor) from the global configuration and consumed
+    /// by execution, so the handle obtained here — by whoever installs the configuration via
+    /// [DapConfig::set_global] — is how the recorded log is read once execution returns.
+    ///
+    /// One entry is recorded per `on_event` invocation, in execution order, including empty
+    /// mutation sets. The log always describes the final run (it is cleared whenever the
+    /// session restarts execution from the beginning) and can be fed into an event-replay
+    /// debugging session (e.g. `Executor::into_debug_with_replay` or
+    /// `State::new_for_transaction`) to re-execute the same program without the original
+    /// host's event handlers.
+    pub fn record_event_mutations(&mut self) -> EventMutationRecorder {
+        self.event_recorder.get_or_insert_with(EventMutationRecorder::new).clone()
     }
 
     /// Returns `true` if the server has signalled a Phase 2 restart.
@@ -862,25 +883,30 @@ impl DapExecutor {
         options: ExecutionOptions,
     ) -> Self {
         let config = DAP_CONFIG.get().cloned().unwrap_or_default();
+        let event_recorder = config.event_recorder.clone();
         DapExecutor {
             stack_inputs,
             advice_inputs,
             options,
             config,
-            event_recorder: None,
+            event_recorder,
         }
     }
 
     /// Record the advice mutations produced by each event handler invocation of the wrapped
     /// host during execution.
     ///
-    /// Returns a handle to the shared log. One entry is recorded per `on_event` invocation, in
-    /// execution order, including empty mutation sets, so the log can be fed directly into an
-    /// event replay queue (e.g. `Executor::into_debug_with_replay` or
-    /// `State::new_for_transaction`) to debug the same execution later without access to the
-    /// original host. The log is cleared automatically whenever the DAP session restarts
-    /// execution from the beginning, so after execution completes it always describes the final
-    /// run.
+    /// Returns a handle to the shared log. When recording was enabled on the installed
+    /// [DapConfig] (see [DapConfig::record_event_mutations]), this is the same log, so
+    /// embedders that never see the executor instance read the recording through their config
+    /// handle instead.
+    ///
+    /// One entry is recorded per `on_event` invocation, in execution order, including empty
+    /// mutation sets, so the log can be fed directly into an event replay queue (e.g.
+    /// `Executor::into_debug_with_replay` or `State::new_for_transaction`) to debug the same
+    /// execution later without access to the original host. The log is cleared automatically
+    /// whenever the DAP session restarts execution from the beginning, so after execution
+    /// completes it always describes the final run.
     pub fn record_event_mutations(&mut self) -> EventMutationRecorder {
         self.event_recorder.get_or_insert_with(EventMutationRecorder::new).clone()
     }
@@ -2201,6 +2227,29 @@ mod tests {
             _ => panic!("unexpected mutations recorded"),
         }
         assert!(recorder.is_empty(), "take() should leave the recorder empty");
+    }
+
+    /// The executor is constructed internally (e.g. by a transaction executor) and consumed by
+    /// execution, so embedders read the recording through the handle obtained from the global
+    /// [DapConfig] before execution: both must share one log.
+    #[test]
+    fn dap_config_recorder_is_shared_with_the_executor() {
+        let mut config = DapConfig::new("127.0.0.1:0");
+        let config_handle = config.record_event_mutations();
+        DapConfig::set_global(config);
+
+        let mut executor = DapExecutor::new(
+            StackInputs::new(&[]).unwrap(),
+            AdviceInputs::default(),
+            ExecutionOptions::default(),
+        );
+        executor.record_event_mutations().record(vec![]);
+
+        assert_eq!(
+            config_handle.len(),
+            1,
+            "recording through the executor must be visible through the config handle"
+        );
     }
 
     #[test]

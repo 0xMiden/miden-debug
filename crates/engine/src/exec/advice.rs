@@ -48,6 +48,12 @@ pub struct EventMutationRecorder {
     log: Arc<Mutex<Vec<Vec<AdviceMutation>>>>,
 }
 
+impl core::fmt::Debug for EventMutationRecorder {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("EventMutationRecorder").field("events", &self.len()).finish()
+    }
+}
+
 impl EventMutationRecorder {
     /// Create a new, empty recorder.
     pub fn new() -> Self {

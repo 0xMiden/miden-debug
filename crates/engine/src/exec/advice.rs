@@ -37,10 +37,12 @@ pub fn clone_advice_mutations(mutations: &[AdviceMutation]) -> Vec<AdviceMutatio
 /// mutation sets**: event replay pops exactly one entry per event, so the log must stay aligned
 /// with the event stream of the recorded execution.
 ///
-/// Attach a recorder to a live execution (see `DebuggerHost::set_event_recorder` or
-/// `DapExecutor::record_event_mutations`), run the program to completion, and feed the recorded
-/// log into `DebuggerHost::set_event_replay` (or `Executor::into_debug_with_replay`) to debug
-/// the same execution later without access to the original host's event handlers.
+/// This handle exists for executors that are consumed by execution and whose return type cannot
+/// carry the log (see `DapExecutor::record_event_mutations`): obtain it before running, read it
+/// once execution completes, and feed the recorded log into `DebuggerHost::set_event_replay`
+/// (or `Executor::into_debug_with_replay`) to debug the same execution later without access to
+/// the original host's event handlers. Hosts owned by the caller record internally instead; see
+/// `DebuggerHost::with_event_advice_mutations_recording`.
 #[derive(Clone, Default)]
 pub struct EventMutationRecorder {
     log: Arc<Mutex<Vec<Vec<AdviceMutation>>>>,

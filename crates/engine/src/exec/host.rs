@@ -18,10 +18,7 @@ use miden_processor::{
     mast::MastForest,
 };
 
-use super::{
-    TraceEvent, TraceHandler,
-    advice::{EventMutationRecorder, clone_advice_mutations},
-};
+use super::{TraceEvent, TraceHandler, advice::clone_advice_mutations};
 
 /// This is an implementation of [Host] which is essentially [miden_processor::DefaultHost],
 /// but extended with additional functionality for debugging, in particular it manages trace
@@ -33,7 +30,7 @@ pub struct DebuggerHost<S: SourceManager + ?Sized> {
     on_assert_failed: Option<Box<TraceHandler>>,
     source_manager: Arc<S>,
     event_replay: VecDeque<Vec<AdviceMutation>>,
-    event_recorder: Option<EventMutationRecorder>,
+    event_recording: Option<Vec<Vec<AdviceMutation>>>,
 }
 impl<S> DebuggerHost<S>
 where
@@ -48,7 +45,7 @@ where
             on_assert_failed: None,
             source_manager,
             event_replay: VecDeque::new(),
-            event_recorder: None,
+            event_recording: None,
         }
     }
 
@@ -61,12 +58,26 @@ where
         self.event_replay = events;
     }
 
-    /// Record the advice mutations produced by each event handler invocation into `recorder`.
+    /// Record the advice mutations produced by each event handler invocation.
+    ///
+    /// One entry is recorded per `on_event` invocation, in execution order, **including empty
+    /// mutation sets**, so the recorded log can be fed directly back into
+    /// [DebuggerHost::set_event_replay] to replay this execution later. Take the log with
+    /// [DebuggerHost::take_recorded_event_mutations] once execution completes.
     ///
     /// Mutations are only recorded for live event handling; nothing is recorded while an event
     /// replay queue is being consumed.
-    pub fn set_event_recorder(&mut self, recorder: EventMutationRecorder) {
-        self.event_recorder = Some(recorder);
+    pub fn with_event_advice_mutations_recording(mut self) -> Self {
+        self.event_recording = Some(Vec::new());
+        self
+    }
+
+    /// Returns the advice mutations recorded so far, leaving the recording empty.
+    ///
+    /// Returns an empty log when recording was not enabled via
+    /// [DebuggerHost::with_event_advice_mutations_recording].
+    pub fn take_recorded_event_mutations(&mut self) -> Vec<Vec<AdviceMutation>> {
+        self.event_recording.as_mut().map(core::mem::take).unwrap_or_default()
     }
 
     /// Register a trace handler for `event`
@@ -175,8 +186,8 @@ where
             }
             Err(err) => Err(err),
         };
-        if let (Some(recorder), Ok(mutations)) = (&self.event_recorder, &result) {
-            recorder.record(clone_advice_mutations(mutations));
+        if let (Some(log), Ok(mutations)) = (self.event_recording.as_mut(), &result) {
+            log.push(clone_advice_mutations(mutations));
         }
         std::future::ready(result)
     }

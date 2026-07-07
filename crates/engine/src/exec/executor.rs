@@ -25,8 +25,8 @@ use miden_processor::{
 };
 
 use super::{
-    DebugExecutor, DebuggerHost, EventMutationRecorder, ExecutionConfig, ExecutionTrace,
-    TraceEvent, query::read_memory_bytes, trace_event::TRACE_PRINT_LN,
+    DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent,
+    query::read_memory_bytes, trace_event::TRACE_PRINT_LN,
 };
 use crate::{
     debug::{CallStack, DebugVarTracker, NativePtr},
@@ -54,7 +54,7 @@ pub struct Executor {
     libraries: Vec<Arc<Library>>,
     event_handlers: Vec<(EventName, Arc<dyn EventHandler>)>,
     dependency_resolver: BTreeMap<Word, Arc<Library>>,
-    event_recorder: Option<EventMutationRecorder>,
+    record_event_mutations: bool,
 }
 impl Executor {
     /// Construct an executor with the given arguments on the operand stack
@@ -86,7 +86,7 @@ impl Executor {
             libraries: Default::default(),
             event_handlers: Default::default(),
             dependency_resolver,
-            event_recorder: None,
+            record_event_mutations: false,
         }
     }
 
@@ -141,17 +141,19 @@ impl Executor {
         self
     }
 
-    /// Record the advice mutations produced by each event handler invocation.
+    /// Record the advice mutations produced by each event handler invocation during execution.
     ///
-    /// Returns a handle to the shared log; the same handle keeps accumulating entries during
-    /// execution and can be read after the program completes. The recorded log can be fed back
-    /// into [Executor::into_debug_with_replay] to debug the same execution later without the
-    /// original event handlers (e.g. transaction debugging with event replay).
+    /// Recording is a private detail of the debug host created by [Executor::into_debug]: once
+    /// the program completes, take the log via [DebuggerHost::take_recorded_event_mutations] on
+    /// the [DebugExecutor]'s host, and feed it back into [Executor::into_debug_with_replay] to
+    /// debug the same execution later without the original event handlers (e.g. transaction
+    /// debugging with event replay).
     ///
     /// Mutations are only recorded for live event handling; nothing is recorded while an event
     /// replay queue is being consumed.
-    pub fn record_event_mutations(&mut self) -> EventMutationRecorder {
-        self.event_recorder.get_or_insert_with(EventMutationRecorder::new).clone()
+    pub fn with_event_advice_mutations_recording(&mut self) -> &mut Self {
+        self.record_event_mutations = true;
+        self
     }
 
     /// Register a VM event handler to be available during execution.
@@ -181,8 +183,8 @@ impl Executor {
             host.register_event_handler(event, handler)
                 .expect("failed to register debug executor event handler");
         }
-        if let Some(recorder) = self.event_recorder.take() {
-            host.set_event_recorder(recorder);
+        if self.record_event_mutations {
+            host = host.with_event_advice_mutations_recording();
         }
 
         let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
@@ -620,14 +622,20 @@ mod tests {
                 }),
             )
             .expect("failed to register event handler");
-        let recorder = executor.record_event_mutations();
+        executor.with_event_advice_mutations_recording();
 
-        let trace = executor.execute(&program, source_manager.clone());
-        let recorded_result: u32 = trace.parse_result().expect("invalid result");
+        // Run to completion through the debug executor: recording is an internal detail of its
+        // host, and the log is taken from the host once execution finishes.
+        let mut debug_executor = executor.into_debug(&program, source_manager.clone());
+        while !debug_executor.stopped {
+            debug_executor.step().expect("recording step failed");
+        }
+        let recorded = debug_executor.host.take_recorded_event_mutations();
+        let recorded_result: u32 =
+            debug_executor.into_execution_trace().parse_result().expect("invalid result");
         assert_eq!(recorded_result, 201);
 
-        assert_eq!(recorder.len(), 2, "expected one recorded entry per emit");
-        let recorded = recorder.snapshot();
+        assert_eq!(recorded.len(), 2, "expected one recorded entry per emit");
         for (index, batch) in recorded.iter().enumerate() {
             match batch.as_slice() {
                 [AdviceMutation::ExtendStack { values }] => {
@@ -644,7 +652,7 @@ mod tests {
             &program,
             source_manager,
             Vec::new(),
-            recorder.take().into(),
+            recorded.into(),
         );
         while !debug_executor.stopped {
             debug_executor.step().expect("replay step failed");

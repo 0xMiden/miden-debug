@@ -1259,6 +1259,17 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = self.config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(
+                                        path,
+                                        self.event_recorder.as_ref(),
+                                        self.forest_recorder.as_ref(),
+                                        program,
+                                        stack_inputs,
+                                        &advice_inputs,
+                                    );
+                                }
                                 return Err(e);
                             }
                         }
@@ -1313,6 +1324,17 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = self.config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(
+                                        path,
+                                        self.event_recorder.as_ref(),
+                                        self.forest_recorder.as_ref(),
+                                        program,
+                                        stack_inputs,
+                                        &advice_inputs,
+                                    );
+                                }
                                 return Err(e);
                             }
                         }
@@ -1349,6 +1371,17 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = self.config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(
+                                        path,
+                                        self.event_recorder.as_ref(),
+                                        self.forest_recorder.as_ref(),
+                                        program,
+                                        stack_inputs,
+                                        &advice_inputs,
+                                    );
+                                }
                                 return Err(e);
                             }
                         }
@@ -1385,6 +1418,17 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = self.config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(
+                                        path,
+                                        self.event_recorder.as_ref(),
+                                        self.forest_recorder.as_ref(),
+                                        program,
+                                        stack_inputs,
+                                        &advice_inputs,
+                                    );
+                                }
                                 return Err(e);
                             }
                         }
@@ -1806,7 +1850,20 @@ impl DapExecutor {
                             ctx = Some(new_ctx);
                         }
                         Ok(None) => break,
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            // Capture the run up to the failure so it can still be replayed.
+                            if let Some(path) = self.config.snapshot_path.as_ref() {
+                                write_replay_snapshot(
+                                    path,
+                                    self.event_recorder.as_ref(),
+                                    self.forest_recorder.as_ref(),
+                                    program,
+                                    stack_inputs,
+                                    &advice_inputs,
+                                );
+                            }
+                            return Err(e);
+                        }
                     }
                 }
             }

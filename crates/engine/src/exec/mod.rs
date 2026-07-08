@@ -32,7 +32,10 @@ pub use self::{
     executor::Executor,
     host::DebuggerHost,
     query::DebugQuery,
-    snapshot::{MastForestRecorder, ReplaySnapshot, ReplaySnapshotError},
+    snapshot::{
+        MastForestRecorder, ReplaySnapshot, ReplaySnapshotError, ReplaySnapshotRecorder,
+        ReplaySnapshotWrite, ReplaySnapshotWriteError,
+    },
     state::DebugExecutor,
     trace::{ExecutionTrace, TraceHandler},
     trace_event::{TRACE_PRINT_LN, TraceEvent},

@@ -10,7 +10,7 @@
 //! `State::new_for_transaction`).
 
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -19,7 +19,10 @@ use miden_core::{
     program::{Program, StackInputs},
     serde::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
 };
-use miden_processor::advice::{AdviceInputs, AdviceMutation};
+use miden_processor::{
+    ExecutionOptions,
+    advice::{AdviceInputs, AdviceMutation},
+};
 
 use super::advice::{read_event_log, write_event_log};
 
@@ -59,6 +62,51 @@ impl MastForestRecorder {
     }
 }
 
+/// Successful replay snapshot write metadata.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplaySnapshotWrite {
+    pub path: PathBuf,
+    pub event_count: usize,
+    pub forest_count: usize,
+}
+
+/// Error metadata for a failed replay snapshot write.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("failed to write replay snapshot to {}: {}", path.display(), message)]
+pub struct ReplaySnapshotWriteError {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+/// Shared status handle for a configured replay snapshot write.
+#[derive(Clone, Debug, Default)]
+pub struct ReplaySnapshotRecorder {
+    status: Arc<Mutex<Option<Result<ReplaySnapshotWrite, ReplaySnapshotWriteError>>>>,
+}
+
+impl ReplaySnapshotRecorder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the last snapshot write status, leaving the handle empty.
+    pub fn take(&self) -> Option<Result<ReplaySnapshotWrite, ReplaySnapshotWriteError>> {
+        self.status.lock().expect("replay snapshot status poisoned").take()
+    }
+
+    pub(crate) fn record_success(&self, write: ReplaySnapshotWrite) {
+        *self.status.lock().expect("replay snapshot status poisoned") = Some(Ok(write));
+    }
+
+    pub(crate) fn record_error(&self, path: PathBuf, err: impl ToString) {
+        *self.status.lock().expect("replay snapshot status poisoned") =
+            Some(Err(ReplaySnapshotWriteError {
+                path,
+                message: err.to_string(),
+            }));
+    }
+}
+
 /// Magic bytes identifying a replay snapshot file, followed by a format version. Bumping the
 /// version invalidates older snapshots, whose serialized shape may differ.
 const SNAPSHOT_MAGIC: [u8; 6] = *b"MDNSNP";
@@ -72,6 +120,8 @@ pub struct ReplaySnapshot {
     pub stack_inputs: StackInputs,
     /// The advice inputs the program started with.
     pub advice_inputs: AdviceInputs,
+    /// The VM execution options used by the recorded run.
+    pub options: ExecutionOptions,
     /// The MAST forests resolved by the host during execution (account code, note scripts, ...),
     /// which the replay host must be able to resolve for the same `call`/`dyncall` targets.
     pub mast_forests: Vec<Arc<MastForest>>,
@@ -113,6 +163,7 @@ impl Serializable for ReplaySnapshot {
         self.program.write_into(target);
         self.stack_inputs.write_into(target);
         self.advice_inputs.write_into(target);
+        write_execution_options(&self.options, target);
         target.write_usize(self.mast_forests.len());
         for forest in &self.mast_forests {
             forest.as_ref().write_into(target);
@@ -138,6 +189,7 @@ impl Deserializable for ReplaySnapshot {
         let program = Program::read_from(source)?;
         let stack_inputs = StackInputs::read_from(source)?;
         let advice_inputs = AdviceInputs::read_from(source)?;
+        let options = read_execution_options(source)?;
         let forest_count = source.read_usize()?;
         let mut mast_forests = Vec::with_capacity(forest_count);
         for _ in 0..forest_count {
@@ -148,10 +200,59 @@ impl Deserializable for ReplaySnapshot {
             program,
             stack_inputs,
             advice_inputs,
+            options,
             mast_forests,
             event_log,
         })
     }
+}
+
+fn write_execution_options<W: ByteWriter>(options: &ExecutionOptions, target: &mut W) {
+    target.write_u32(options.max_cycles());
+    target.write_u32(options.expected_cycles());
+    target.write_usize(options.core_trace_fragment_size());
+    target.write_bool(options.enable_tracing());
+    target.write_bool(options.enable_debugging());
+    target.write_usize(options.max_adv_map_value_size());
+    target.write_usize(options.max_adv_map_elements());
+    target.write_usize(options.max_hash_len_bytes());
+    target.write_usize(options.max_num_continuations());
+    target.write_usize(options.max_stack_depth());
+}
+
+fn read_execution_options<R: ByteReader>(
+    source: &mut R,
+) -> Result<ExecutionOptions, DeserializationError> {
+    let max_cycles = source.read_u32()?;
+    let expected_cycles = source.read_u32()?;
+    let core_trace_fragment_size = source.read_usize()?;
+    let enable_tracing = source.read_bool()?;
+    let enable_debugging = source.read_bool()?;
+    let max_adv_map_value_size = source.read_usize()?;
+    let max_adv_map_elements = source.read_usize()?;
+    let max_hash_len_bytes = source.read_usize()?;
+    let max_num_continuations = source.read_usize()?;
+    let max_stack_depth = source.read_usize()?;
+
+    ExecutionOptions::new(
+        Some(max_cycles),
+        expected_cycles,
+        core_trace_fragment_size,
+        enable_tracing,
+        enable_debugging,
+    )
+    .map_err(|err| DeserializationError::InvalidValue(format!("invalid execution options: {err}")))
+    .and_then(|options| {
+        options
+            .with_max_adv_map_value_size(max_adv_map_value_size)
+            .with_max_adv_map_elements(max_adv_map_elements)
+            .with_max_hash_len_bytes(max_hash_len_bytes)
+            .with_max_num_continuations(max_num_continuations)
+            .with_max_stack_depth(max_stack_depth)
+            .map_err(|err| {
+                DeserializationError::InvalidValue(format!("invalid execution options: {err}"))
+            })
+    })
 }
 
 /// Error reading a [ReplaySnapshot] from a file.
@@ -198,6 +299,14 @@ mod tests {
             program: program.clone(),
             stack_inputs: StackInputs::new(&[Felt::from(42u32), Felt::from(43u32)]).unwrap(),
             advice_inputs: AdviceInputs::default().with_stack([Felt::from(99u32)]),
+            options: ExecutionOptions::new(Some(100_000), 32, 1024, true, true)
+                .unwrap()
+                .with_max_adv_map_value_size(64)
+                .with_max_adv_map_elements(256)
+                .with_max_hash_len_bytes(512)
+                .with_max_num_continuations(128)
+                .with_max_stack_depth(128)
+                .unwrap(),
             mast_forests: vec![forest],
             event_log,
         };
@@ -208,6 +317,7 @@ mod tests {
         assert_eq!(restored.program.hash(), snapshot.program.hash());
         assert_eq!(restored.stack_inputs, snapshot.stack_inputs);
         assert_eq!(restored.advice_inputs, snapshot.advice_inputs);
+        assert_eq!(restored.options, snapshot.options);
         assert_eq!(restored.mast_forests.len(), 1);
         assert_eq!(restored.event_log.len(), 3);
         assert_eq!(restored.event_log[1].len(), 0, "empty event batch must survive");

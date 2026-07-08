@@ -74,6 +74,7 @@ pub fn run_replay_and_log_level(
         Arc::new(snapshot.program),
         snapshot.stack_inputs,
         snapshot.advice_inputs,
+        snapshot.options,
         source_manager,
         snapshot.mast_forests,
         snapshot.event_log,

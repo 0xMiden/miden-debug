@@ -697,15 +697,21 @@ mod tests {
         let event_name = "miden-debug::test::snapshot-replay";
         let event_id = EventId::from_name(event_name).as_u64();
         let source = format!(
-            "begin push.{event_id} emit drop adv_push push.{event_id} emit drop adv_push add swap \
-             drop end"
+            "begin push.{event_id} emit drop adv_push push.{event_id} emit drop adv_push add add end"
         );
         let program = miden_assembly::Assembler::new(source_manager.clone())
             .assemble_program(source)
             .expect("failed to assemble test program");
+        let stack_inputs = StackInputs::new(&[Felt::from(7u32)]).unwrap();
+        let advice_inputs = AdviceInputs::default();
+        let options = ExecutionOptions::default().with_debugging(true).with_tracing(true);
 
         // Record the event mutations by running to completion with a live handler.
-        let mut executor = Executor::new(Vec::new());
+        let mut executor = Executor::from_config(ExecutionConfig {
+            inputs: stack_inputs,
+            advice_inputs: advice_inputs.clone(),
+            options,
+        });
         executor
             .register_event_handler(
                 EventName::from_string(event_name.to_string()),
@@ -726,8 +732,9 @@ mod tests {
         // Persist the recording as a snapshot and read it back from its serialized bytes.
         let snapshot = ReplaySnapshot {
             program: program.clone(),
-            stack_inputs: StackInputs::default(),
-            advice_inputs: AdviceInputs::default(),
+            stack_inputs,
+            advice_inputs,
+            options,
             mast_forests: vec![program.mast_forest().clone()],
             event_log,
         };
@@ -735,7 +742,12 @@ mod tests {
             .expect("snapshot failed to deserialize");
 
         // Replay from the deserialized snapshot, with no event handlers registered.
-        let mut debug_executor = Executor::new(Vec::new()).into_debug_with_replay(
+        let replay_executor = Executor::from_config(ExecutionConfig {
+            inputs: restored.stack_inputs,
+            advice_inputs: restored.advice_inputs,
+            options: restored.options,
+        });
+        let mut debug_executor = replay_executor.into_debug_with_replay(
             &restored.program,
             source_manager,
             restored.mast_forests,
@@ -749,6 +761,6 @@ mod tests {
             .parse_result()
             .expect("invalid replay result");
         assert_eq!(replayed_result, recorded_result);
-        assert_eq!(replayed_result, 201);
+        assert_eq!(replayed_result, 208);
     }
 }

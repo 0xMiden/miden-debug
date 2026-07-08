@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::{BufReader, BufWriter},
     net::TcpListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::{
         Arc, OnceLock,
@@ -29,8 +29,8 @@ use miden_processor::{
 };
 
 use super::{
-    EventMutationRecorder, MastForestRecorder, ReplaySnapshot, TraceEvent,
-    state::extract_current_op,
+    EventMutationRecorder, MastForestRecorder, ReplaySnapshot, ReplaySnapshotRecorder,
+    ReplaySnapshotWrite, TraceEvent, state::extract_current_op,
 };
 use crate::debug::{
     DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, resolve_variable_value,
@@ -60,6 +60,8 @@ pub struct DapConfig {
     /// When set, a [ReplaySnapshot] of the session is written to this path once execution
     /// completes. See [DapConfig::record_snapshot].
     snapshot_path: Option<PathBuf>,
+    /// Shared status for the configured replay snapshot write.
+    snapshot_recorder: Option<ReplaySnapshotRecorder>,
 }
 
 impl DapConfig {
@@ -70,6 +72,7 @@ impl DapConfig {
             restart_requested: Arc::new(AtomicBool::new(false)),
             event_recorder: None,
             snapshot_path: None,
+            snapshot_recorder: None,
         }
     }
 
@@ -106,8 +109,9 @@ impl DapConfig {
     /// to re-execute the same program later without the original host (e.g.
     /// `miden-debug --replay <path>`). It always describes the final run, since the recorded state
     /// is reset whenever the session restarts execution from the beginning.
-    pub fn record_snapshot(&mut self, path: impl Into<PathBuf>) {
+    pub fn record_snapshot(&mut self, path: impl Into<PathBuf>) -> ReplaySnapshotRecorder {
         self.snapshot_path = Some(path.into());
+        self.snapshot_recorder.get_or_insert_with(ReplaySnapshotRecorder::new).clone()
     }
 
     /// Returns `true` if the server has signalled a Phase 2 restart.
@@ -1261,14 +1265,16 @@ impl DapExecutor {
                                 server.send_event(Event::Terminated(None)).ok();
                                 // Capture the failed run so it can still be replayed offline.
                                 if let Some(path) = self.config.snapshot_path.as_ref() {
-                                    write_replay_snapshot(
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
                                         path,
-                                        self.event_recorder.as_ref(),
-                                        self.forest_recorder.as_ref(),
+                                        snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
                                         program,
                                         stack_inputs,
-                                        &advice_inputs,
-                                    );
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
                                 }
                                 return Err(e);
                             }
@@ -1326,14 +1332,16 @@ impl DapExecutor {
                                 server.send_event(Event::Terminated(None)).ok();
                                 // Capture the failed run so it can still be replayed offline.
                                 if let Some(path) = self.config.snapshot_path.as_ref() {
-                                    write_replay_snapshot(
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
                                         path,
-                                        self.event_recorder.as_ref(),
-                                        self.forest_recorder.as_ref(),
+                                        snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
                                         program,
                                         stack_inputs,
-                                        &advice_inputs,
-                                    );
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
                                 }
                                 return Err(e);
                             }
@@ -1373,14 +1381,16 @@ impl DapExecutor {
                                 server.send_event(Event::Terminated(None)).ok();
                                 // Capture the failed run so it can still be replayed offline.
                                 if let Some(path) = self.config.snapshot_path.as_ref() {
-                                    write_replay_snapshot(
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
                                         path,
-                                        self.event_recorder.as_ref(),
-                                        self.forest_recorder.as_ref(),
+                                        snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
                                         program,
                                         stack_inputs,
-                                        &advice_inputs,
-                                    );
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
                                 }
                                 return Err(e);
                             }
@@ -1420,14 +1430,16 @@ impl DapExecutor {
                                 server.send_event(Event::Terminated(None)).ok();
                                 // Capture the failed run so it can still be replayed offline.
                                 if let Some(path) = self.config.snapshot_path.as_ref() {
-                                    write_replay_snapshot(
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
                                         path,
-                                        self.event_recorder.as_ref(),
-                                        self.forest_recorder.as_ref(),
+                                        snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
                                         program,
                                         stack_inputs,
-                                        &advice_inputs,
-                                    );
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
                                 }
                                 return Err(e);
                             }
@@ -1853,14 +1865,16 @@ impl DapExecutor {
                         Err(e) => {
                             // Capture the run up to the failure so it can still be replayed.
                             if let Some(path) = self.config.snapshot_path.as_ref() {
-                                write_replay_snapshot(
+                                write_replay_snapshot(ReplaySnapshotWriteContext {
                                     path,
-                                    self.event_recorder.as_ref(),
-                                    self.forest_recorder.as_ref(),
+                                    snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                                    event_recorder: self.event_recorder.as_ref(),
+                                    forest_recorder: self.forest_recorder.as_ref(),
                                     program,
                                     stack_inputs,
-                                    &advice_inputs,
-                                );
+                                    advice_inputs: &advice_inputs,
+                                    options,
+                                });
                             }
                             return Err(e);
                         }
@@ -1871,14 +1885,16 @@ impl DapExecutor {
             // If a snapshot path is configured, persist a self-contained replay snapshot of this
             // (final) run: program, inputs, resolved forests, and the recorded event log.
             if let Some(path) = self.config.snapshot_path.as_ref() {
-                write_replay_snapshot(
+                write_replay_snapshot(ReplaySnapshotWriteContext {
                     path,
-                    self.event_recorder.as_ref(),
-                    self.forest_recorder.as_ref(),
+                    snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                    event_recorder: self.event_recorder.as_ref(),
+                    forest_recorder: self.forest_recorder.as_ref(),
                     program,
                     stack_inputs,
-                    &advice_inputs,
-                );
+                    advice_inputs: &advice_inputs,
+                    options,
+                });
             }
 
             // Build ExecutionOutput from the processor's final state.
@@ -1903,31 +1919,52 @@ impl DapExecutor {
 /// reads the shared event recorder afterwards — e.g. an embedder reporting how many mutation sets
 /// were recorded — still sees the full log. Called on every terminal outcome, clean exit or a
 /// failed step, so a failing transaction is captured and replayable too.
-fn write_replay_snapshot(
-    path: &std::path::Path,
-    event_recorder: Option<&EventMutationRecorder>,
-    forest_recorder: Option<&MastForestRecorder>,
-    program: &Program,
+struct ReplaySnapshotWriteContext<'a> {
+    path: &'a Path,
+    snapshot_recorder: Option<&'a ReplaySnapshotRecorder>,
+    event_recorder: Option<&'a EventMutationRecorder>,
+    forest_recorder: Option<&'a MastForestRecorder>,
+    program: &'a Program,
     stack_inputs: StackInputs,
-    advice_inputs: &AdviceInputs,
-) {
-    let event_log = event_recorder.map(EventMutationRecorder::snapshot).unwrap_or_default();
-    let mast_forests = forest_recorder.map(MastForestRecorder::snapshot).unwrap_or_default();
+    advice_inputs: &'a AdviceInputs,
+    options: ExecutionOptions,
+}
+
+fn write_replay_snapshot(context: ReplaySnapshotWriteContext<'_>) {
+    let event_log = context.event_recorder.map(EventMutationRecorder::snapshot).unwrap_or_default();
+    let mast_forests =
+        context.forest_recorder.map(MastForestRecorder::snapshot).unwrap_or_default();
     let snapshot = ReplaySnapshot {
-        program: program.clone(),
-        stack_inputs,
-        advice_inputs: advice_inputs.clone(),
+        program: context.program.clone(),
+        stack_inputs: context.stack_inputs,
+        advice_inputs: context.advice_inputs.clone(),
+        options: context.options,
         mast_forests,
         event_log,
     };
-    match snapshot.write_to_file(path) {
-        Ok(()) => eprintln!(
-            "Wrote replay snapshot ({} event(s), {} forest(s)) to {}",
-            snapshot.event_log.len(),
-            snapshot.mast_forests.len(),
-            path.display()
-        ),
-        Err(err) => eprintln!("Failed to write replay snapshot to {}: {err}", path.display()),
+    match snapshot.write_to_file(context.path) {
+        Ok(()) => {
+            let write = ReplaySnapshotWrite {
+                path: context.path.to_path_buf(),
+                event_count: snapshot.event_log.len(),
+                forest_count: snapshot.mast_forests.len(),
+            };
+            if let Some(recorder) = context.snapshot_recorder {
+                recorder.record_success(write.clone());
+            }
+            eprintln!(
+                "Wrote replay snapshot ({} event(s), {} forest(s)) to {}",
+                write.event_count,
+                write.forest_count,
+                write.path.display()
+            );
+        }
+        Err(err) => {
+            if let Some(recorder) = context.snapshot_recorder {
+                recorder.record_error(context.path.to_path_buf(), err.to_string());
+            }
+            eprintln!("Failed to write replay snapshot to {}: {err}", context.path.display());
+        }
     }
 }
 

@@ -48,6 +48,39 @@ pub fn run_with_state_and_log_level(
     rt.block_on(async move { start_ui_with_state(state, logger, max_level).await })
 }
 
+/// Replay a recorded execution snapshot in the TUI debugger.
+///
+/// Reads a [`ReplaySnapshot`](crate::exec::ReplaySnapshot) written during a recorded DAP session
+/// (e.g. `miden-client exec --start-debug-adapter ... --record <FILE>`) and re-runs the same
+/// program with its captured inputs, forests, and event log fed back through the event-replay
+/// host — so the transaction can be stepped through offline, without the original host.
+pub fn run_replay_and_log_level(
+    snapshot_path: &std::path::Path,
+    logger: Box<dyn log::Log>,
+    max_level: LevelFilter,
+) -> Result<(), Report> {
+    use std::sync::Arc;
+
+    use miden_assembly::DefaultSourceManager;
+
+    use crate::exec::ReplaySnapshot;
+
+    let snapshot = ReplaySnapshot::read_from_file(snapshot_path)
+        .map_err(|err| Report::msg(format!("{err}")))?;
+    // The snapshot does not carry source files; the debugger falls back to disassembly, exactly
+    // as it does for a raw program with no debug info.
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let state = State::new_for_transaction(
+        Arc::new(snapshot.program),
+        snapshot.stack_inputs,
+        snapshot.advice_inputs,
+        source_manager,
+        snapshot.mast_forests,
+        snapshot.event_log,
+    )?;
+    run_with_state_and_log_level(state, logger, max_level)
+}
+
 #[allow(dead_code)]
 pub async fn start_ui(
     config: Box<DebuggerConfig>,

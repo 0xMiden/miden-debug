@@ -211,6 +211,7 @@ impl FlamegraphArgs {
             link_libraries: self.link_libraries,
             repl: false,
             commands: None,
+            replay: None,
         }
     }
 }

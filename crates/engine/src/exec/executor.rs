@@ -663,4 +663,92 @@ mod tests {
             .expect("invalid replay result");
         assert_eq!(replayed_result, recorded_result);
     }
+
+    /// A recorded execution serialized into a [ReplaySnapshot](crate::exec::ReplaySnapshot) and
+    /// read back from bytes replays to the same result — the offline record→replay path, end to
+    /// end, exactly what `miden-debug --replay <snapshot>` drives.
+    #[test]
+    fn replays_from_a_serialized_snapshot() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use miden_assembly::DefaultSourceManager;
+        use miden_core::events::EventId;
+        use miden_processor::{ProcessorState, advice::AdviceMutation, event::EventError};
+
+        use crate::exec::ReplaySnapshot;
+
+        struct CountingHandler {
+            calls: AtomicU64,
+        }
+
+        impl EventHandler for CountingHandler {
+            fn on_event(
+                &self,
+                _process: &ProcessorState<'_>,
+            ) -> Result<Vec<AdviceMutation>, EventError> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![AdviceMutation::ExtendStack {
+                    values: vec![Felt::from(100u32 + call as u32)],
+                }])
+            }
+        }
+
+        let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
+        let event_name = "miden-debug::test::snapshot-replay";
+        let event_id = EventId::from_name(event_name).as_u64();
+        let source = format!(
+            "begin push.{event_id} emit drop adv_push push.{event_id} emit drop adv_push add swap \
+             drop end"
+        );
+        let program = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program(source)
+            .expect("failed to assemble test program");
+
+        // Record the event mutations by running to completion with a live handler.
+        let mut executor = Executor::new(Vec::new());
+        executor
+            .register_event_handler(
+                EventName::from_string(event_name.to_string()),
+                Arc::new(CountingHandler {
+                    calls: AtomicU64::new(0),
+                }),
+            )
+            .expect("failed to register event handler");
+        executor.with_event_advice_mutations_recording();
+        let mut debug_executor = executor.into_debug(&program, source_manager.clone());
+        while !debug_executor.stopped {
+            debug_executor.step().expect("recording step failed");
+        }
+        let event_log = debug_executor.host.take_recorded_event_mutations();
+        let recorded_result: u32 =
+            debug_executor.into_execution_trace().parse_result().expect("invalid result");
+
+        // Persist the recording as a snapshot and read it back from its serialized bytes.
+        let snapshot = ReplaySnapshot {
+            program: program.clone(),
+            stack_inputs: StackInputs::default(),
+            advice_inputs: AdviceInputs::default(),
+            mast_forests: vec![program.mast_forest().clone()],
+            event_log,
+        };
+        let restored = ReplaySnapshot::read_from_bytes(&snapshot.to_bytes())
+            .expect("snapshot failed to deserialize");
+
+        // Replay from the deserialized snapshot, with no event handlers registered.
+        let mut debug_executor = Executor::new(Vec::new()).into_debug_with_replay(
+            &restored.program,
+            source_manager,
+            restored.mast_forests,
+            restored.event_log.into(),
+        );
+        while !debug_executor.stopped {
+            debug_executor.step().expect("replay step failed");
+        }
+        let replayed_result: u32 = debug_executor
+            .into_execution_trace()
+            .parse_result()
+            .expect("invalid replay result");
+        assert_eq!(replayed_result, recorded_result);
+        assert_eq!(replayed_result, 201);
+    }
 }

@@ -10,6 +10,8 @@ use miden_debug::flamegraph::FlamegraphArgs;
 #[cfg(feature = "repl")]
 use miden_debug::run_repl_with_log_level as run_repl;
 #[cfg(feature = "tui")]
+use miden_debug::run_replay_and_log_level;
+#[cfg(feature = "tui")]
 use miden_debug::run_with_log_level as run;
 #[cfg(feature = "dap")]
 use miden_debug::{State, run_with_state_and_log_level as run_with_state};
@@ -87,6 +89,11 @@ fn run_debugger(
             .wrap_err("could not read current working directory")?;
 
         config.working_dir = Some(cwd);
+    }
+
+    #[cfg(feature = "tui")]
+    if let Some(snapshot_path) = config.replay.clone() {
+        return run_replay_and_log_level(&snapshot_path, _logger, _log_level);
     }
 
     #[cfg(feature = "dap")]

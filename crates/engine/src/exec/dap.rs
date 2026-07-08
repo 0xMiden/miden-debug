@@ -28,7 +28,10 @@ use miden_processor::{
     trace::RowIndex,
 };
 
-use super::{EventMutationRecorder, TraceEvent, state::extract_current_op};
+use super::{
+    EventMutationRecorder, MastForestRecorder, ReplaySnapshot, TraceEvent,
+    state::extract_current_op,
+};
 use crate::debug::{
     DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, resolve_variable_value,
     snapshot_transient_debug_values,
@@ -54,6 +57,9 @@ pub struct DapConfig {
     /// When set, the advice mutations produced by the host's event handlers are recorded into
     /// this shared log during the session. See [DapConfig::record_event_mutations].
     event_recorder: Option<EventMutationRecorder>,
+    /// When set, a [ReplaySnapshot] of the session is written to this path once execution
+    /// completes. See [DapConfig::record_snapshot].
+    snapshot_path: Option<PathBuf>,
 }
 
 impl DapConfig {
@@ -63,6 +69,7 @@ impl DapConfig {
             source_path_prefixes: Vec::new(),
             restart_requested: Arc::new(AtomicBool::new(false)),
             event_recorder: None,
+            snapshot_path: None,
         }
     }
 
@@ -90,6 +97,17 @@ impl DapConfig {
     /// host's event handlers.
     pub fn record_event_mutations(&mut self) -> EventMutationRecorder {
         self.event_recorder.get_or_insert_with(EventMutationRecorder::new).clone()
+    }
+
+    /// Write a [ReplaySnapshot] of the session to `path` once execution completes.
+    ///
+    /// The snapshot captures the program, its stack and advice inputs, the MAST forests the host
+    /// resolved, and the recorded event log — everything an event-replay debugging session needs
+    /// to re-execute the same program later without the original host (e.g.
+    /// `miden-debug --replay <path>`). It always describes the final run, since the recorded state
+    /// is reset whenever the session restarts execution from the beginning.
+    pub fn record_snapshot(&mut self, path: impl Into<PathBuf>) {
+        self.snapshot_path = Some(path.into());
     }
 
     /// Returns `true` if the server has signalled a Phase 2 restart.
@@ -138,15 +156,23 @@ struct DapHostWrapper<'a, H: Host> {
     /// are recorded here, in execution order, so they can be replayed later (e.g. transaction
     /// debugging with event replay).
     event_recorder: Option<EventMutationRecorder>,
+    /// When set, the MAST forests the inner host resolves are recorded here, so a replay session
+    /// can load the same code for `call`/`dyncall` targets.
+    forest_recorder: Option<MastForestRecorder>,
 }
 
 impl<'a, H: Host> DapHostWrapper<'a, H> {
-    fn new(inner: &'a mut H, event_recorder: Option<EventMutationRecorder>) -> Self {
+    fn new(
+        inner: &'a mut H,
+        event_recorder: Option<EventMutationRecorder>,
+        forest_recorder: Option<MastForestRecorder>,
+    ) -> Self {
         Self {
             inner,
             call_depth: 0,
             frames: Vec::new(),
             event_recorder,
+            forest_recorder,
         }
     }
 }
@@ -198,7 +224,17 @@ impl<H: Host> BaseHost for DapHostWrapper<'_, H> {
 
 impl<H: Host> Host for DapHostWrapper<'_, H> {
     fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
-        self.inner.get_mast_forest(node_digest)
+        // Record every forest the inner host resolves, so a replay session can load the same
+        // code for `call`/`dyncall` targets. The recorder deduplicates.
+        let forest_recorder = self.forest_recorder.clone();
+        let fut = self.inner.get_mast_forest(node_digest);
+        async move {
+            let forest = fut.await;
+            if let (Some(recorder), Some(forest)) = (&forest_recorder, &forest) {
+                recorder.record(forest.clone());
+            }
+            forest
+        }
     }
 
     fn on_event(
@@ -857,6 +893,7 @@ pub struct DapExecutor {
     options: ExecutionOptions,
     config: DapConfig,
     event_recorder: Option<EventMutationRecorder>,
+    forest_recorder: Option<MastForestRecorder>,
 }
 
 /// Variables reference IDs for scopes.
@@ -883,13 +920,24 @@ impl DapExecutor {
         options: ExecutionOptions,
     ) -> Self {
         let config = DAP_CONFIG.get().cloned().unwrap_or_default();
-        let event_recorder = config.event_recorder.clone();
+        // Writing a snapshot requires both the event log and the resolved forests. Ensure an
+        // event recorder exists (reusing the config's shared one if present) and turn on forest
+        // recording whenever a snapshot path is configured.
+        let (event_recorder, forest_recorder) = if config.snapshot_path.is_some() {
+            (
+                Some(config.event_recorder.clone().unwrap_or_default()),
+                Some(MastForestRecorder::new()),
+            )
+        } else {
+            (config.event_recorder.clone(), None)
+        };
         DapExecutor {
             stack_inputs,
             advice_inputs,
             options,
             config,
             event_recorder,
+            forest_recorder,
         }
     }
 
@@ -1002,12 +1050,19 @@ impl DapExecutor {
                     .expect("advice inputs should fit advice map limits");
 
             let resume_ctx = processor.get_initial_resume_context(program)?;
-            // Each pass through this loop starts execution from the beginning, so any
-            // mutations recorded by a previous (restarted) run no longer apply.
+            // Each pass through this loop starts execution from the beginning, so any mutations
+            // or forests recorded by a previous (restarted) run no longer apply.
             if let Some(recorder) = self.event_recorder.as_ref() {
                 recorder.clear();
             }
-            let mut wrapper = DapHostWrapper::new(host, self.event_recorder.clone());
+            if let Some(recorder) = self.forest_recorder.as_ref() {
+                recorder.clear();
+            }
+            let mut wrapper = DapHostWrapper::new(
+                host,
+                self.event_recorder.clone(),
+                self.forest_recorder.clone(),
+            );
 
             let mut resume_ctx = Some(resume_ctx);
             let mut cycle: usize = 0;
@@ -1756,6 +1811,39 @@ impl DapExecutor {
                 }
             }
 
+            // If a snapshot path is configured, persist a self-contained replay snapshot of this
+            // (final) run: program, inputs, resolved forests, and the recorded event log.
+            if let Some(path) = self.config.snapshot_path.as_ref() {
+                let event_log = self
+                    .event_recorder
+                    .as_ref()
+                    .map(EventMutationRecorder::take)
+                    .unwrap_or_default();
+                let mast_forests = self
+                    .forest_recorder
+                    .as_ref()
+                    .map(MastForestRecorder::snapshot)
+                    .unwrap_or_default();
+                let snapshot = ReplaySnapshot {
+                    program: program.clone(),
+                    stack_inputs,
+                    advice_inputs: advice_inputs.clone(),
+                    mast_forests,
+                    event_log,
+                };
+                match snapshot.write_to_file(path) {
+                    Ok(()) => eprintln!(
+                        "Wrote replay snapshot ({} event(s), {} forest(s)) to {}",
+                        snapshot.event_log.len(),
+                        snapshot.mast_forests.len(),
+                        path.display()
+                    ),
+                    Err(err) => {
+                        eprintln!("Failed to write replay snapshot to {}: {err}", path.display())
+                    }
+                }
+            }
+
             // Build ExecutionOutput from the processor's final state.
             let stack_top: Vec<_> = processor.stack_top().iter().rev().copied().collect();
             let stack = StackOutputs::new(&stack_top)
@@ -2201,7 +2289,7 @@ mod tests {
         .expect("failed to register event handler");
 
         let recorder = EventMutationRecorder::new();
-        let mut wrapper = DapHostWrapper::new(&mut host, Some(recorder.clone()));
+        let mut wrapper = DapHostWrapper::new(&mut host, Some(recorder.clone()), None);
 
         let mut processor = FastProcessor::new_with_options(
             StackInputs::new(&[]).unwrap(),

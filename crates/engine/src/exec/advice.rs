@@ -1,9 +1,15 @@
-//! Support utilities for working with [AdviceMutation]s, in particular cloning and recording
-//! the mutations produced by event handlers so they can be replayed later.
+//! Support utilities for working with [AdviceMutation]s, in particular cloning, recording, and
+//! (de)serializing the mutations produced by event handlers so they can be replayed later.
 
 use std::sync::{Arc, Mutex};
 
-use miden_processor::advice::AdviceMutation;
+use miden_core::{
+    Felt, Word,
+    crypto::merkle::InnerNodeInfo,
+    precompile::PrecompileRequest,
+    serde::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
+};
+use miden_processor::advice::{AdviceMap, AdviceMutation};
 
 /// Clone a single [AdviceMutation].
 ///
@@ -29,6 +35,102 @@ pub fn clone_advice_mutation(mutation: &AdviceMutation) -> AdviceMutation {
 /// Clone a batch of [AdviceMutation]s. See [clone_advice_mutation].
 pub fn clone_advice_mutations(mutations: &[AdviceMutation]) -> Vec<AdviceMutation> {
     mutations.iter().map(clone_advice_mutation).collect()
+}
+
+// SERIALIZATION
+// ================================================================================================
+
+// Variant tags for the manual [AdviceMutation] encoding. [AdviceMutation] does not implement the
+// serialization traits upstream, so — as with cloning — each variant is (de)serialized by hand.
+const TAG_EXTEND_STACK: u8 = 0;
+const TAG_EXTEND_MAP: u8 = 1;
+const TAG_EXTEND_MERKLE_STORE: u8 = 2;
+const TAG_EXTEND_PRECOMPILE_REQUESTS: u8 = 3;
+
+/// Serialize a single [AdviceMutation] into `target`.
+pub fn write_advice_mutation<W: ByteWriter>(mutation: &AdviceMutation, target: &mut W) {
+    match mutation {
+        AdviceMutation::ExtendStack { values } => {
+            target.write_u8(TAG_EXTEND_STACK);
+            values.write_into(target);
+        }
+        AdviceMutation::ExtendMap { other } => {
+            target.write_u8(TAG_EXTEND_MAP);
+            other.write_into(target);
+        }
+        AdviceMutation::ExtendMerkleStore { infos } => {
+            target.write_u8(TAG_EXTEND_MERKLE_STORE);
+            target.write_usize(infos.len());
+            for info in infos {
+                info.value.write_into(target);
+                info.left.write_into(target);
+                info.right.write_into(target);
+            }
+        }
+        AdviceMutation::ExtendPrecompileRequests { data } => {
+            target.write_u8(TAG_EXTEND_PRECOMPILE_REQUESTS);
+            data.write_into(target);
+        }
+    }
+}
+
+/// Deserialize a single [AdviceMutation] from `source`.
+pub fn read_advice_mutation<R: ByteReader>(
+    source: &mut R,
+) -> Result<AdviceMutation, DeserializationError> {
+    match source.read_u8()? {
+        TAG_EXTEND_STACK => Ok(AdviceMutation::ExtendStack {
+            values: Vec::<Felt>::read_from(source)?,
+        }),
+        TAG_EXTEND_MAP => Ok(AdviceMutation::ExtendMap {
+            other: AdviceMap::read_from(source)?,
+        }),
+        TAG_EXTEND_MERKLE_STORE => {
+            let len = source.read_usize()?;
+            let mut infos = Vec::with_capacity(len);
+            for _ in 0..len {
+                let value = Word::read_from(source)?;
+                let left = Word::read_from(source)?;
+                let right = Word::read_from(source)?;
+                infos.push(InnerNodeInfo { value, left, right });
+            }
+            Ok(AdviceMutation::ExtendMerkleStore { infos })
+        }
+        TAG_EXTEND_PRECOMPILE_REQUESTS => Ok(AdviceMutation::ExtendPrecompileRequests {
+            data: Vec::<PrecompileRequest>::read_from(source)?,
+        }),
+        other => Err(DeserializationError::InvalidValue(format!(
+            "unknown AdviceMutation variant tag: {other}"
+        ))),
+    }
+}
+
+/// Serialize a recorded event log (one entry per `on_event` invocation) into `target`.
+pub fn write_event_log<W: ByteWriter>(log: &[Vec<AdviceMutation>], target: &mut W) {
+    target.write_usize(log.len());
+    for batch in log {
+        target.write_usize(batch.len());
+        for mutation in batch {
+            write_advice_mutation(mutation, target);
+        }
+    }
+}
+
+/// Deserialize a recorded event log from `source`.
+pub fn read_event_log<R: ByteReader>(
+    source: &mut R,
+) -> Result<Vec<Vec<AdviceMutation>>, DeserializationError> {
+    let batches = source.read_usize()?;
+    let mut log = Vec::with_capacity(batches);
+    for _ in 0..batches {
+        let len = source.read_usize()?;
+        let mut batch = Vec::with_capacity(len);
+        for _ in 0..len {
+            batch.push(read_advice_mutation(source)?);
+        }
+        log.push(batch);
+    }
+    Ok(log)
 }
 
 /// A shared, cloneable log of the advice mutations produced by event handlers.

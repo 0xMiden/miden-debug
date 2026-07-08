@@ -34,8 +34,8 @@ WALLET=$(HOME="$STORE" miden-client account -l | grep -oE '0x[0-9a-f]+' | head -
 echo "Fund THIS exact ID at the faucet: $WALLET"
 ```
 
-Go to <https://faucet.testnet.miden.io/>, paste `$WALLET`, and click **Send Public
-Note**. The faucet sends a P2ID note to your wallet.
+Go to the [Miden testnet faucet](https://faucet.testnet.miden.io/), paste `$WALLET`, and
+click **Send Public Note**. The faucet sends a P2ID note to your wallet.
 
 > Keep using the same absolute `HOME="$STORE"` on every command — it pins the client's
 > store to one location. And fund the *exact* ID that `account -l` prints; a P2ID note

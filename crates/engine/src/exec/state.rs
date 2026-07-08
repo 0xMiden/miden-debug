@@ -22,6 +22,7 @@ use crate::{
         CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo,
         snapshot_transient_debug_values,
     },
+    profiling::Profiler,
 };
 
 /// Resolve a future that is expected to complete immediately (synchronous host methods).
@@ -84,6 +85,8 @@ pub struct DebugExecutor {
     pub cycle: usize,
     /// Whether or not execution has terminated
     pub stopped: bool,
+    /// The profiler used by this executor
+    pub profiler: Profiler,
 }
 
 impl super::query::DebugQuery for DebugExecutor {
@@ -292,6 +295,7 @@ impl DebugExecutor {
                         self.recent.pop_front();
                     }
                     self.recent.push_back(op);
+                    self.profiler.on_operation_execution_cycle(op);
                 }
 
                 // Update call stack
@@ -324,6 +328,9 @@ impl DebugExecutor {
                 let len = self.current_stack.len().min(16);
                 self.stack_outputs =
                     StackOutputs::new(&self.current_stack[..len]).expect("invalid stack outputs");
+
+                // Write profiling reports in case its enabled
+                self.profiler.write_reports();
                 Ok(None)
             }
             Err(err) => {

@@ -214,6 +214,7 @@ impl FlamegraphArgs {
             replay: None,
             #[cfg(feature = "python")]
             no_user_python_init: true,
+            profiler_cli_args: Default::default(), // disable profiling
         }
     }
 }

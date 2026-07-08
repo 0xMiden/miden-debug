@@ -30,6 +30,7 @@ use crate::{
     HybridPackageRegistry,
     debug::{CallStack, DebugVarTracker, NativePtr},
     felt::FromMidenRepr,
+    profiling::{Profiler, ProfilerConfig},
 };
 
 /// Maximum number of bytes for a single `println` output.
@@ -53,6 +54,7 @@ pub struct Executor {
     event_handlers: Vec<(EventName, Arc<dyn EventHandler>)>,
     registry: HybridPackageRegistry,
     record_event_mutations: bool,
+    profiler_config: ProfilerConfig,
 }
 
 impl Executor {
@@ -83,6 +85,7 @@ impl Executor {
             event_handlers: Default::default(),
             registry: HybridPackageRegistry::empty(),
             record_event_mutations: false,
+            profiler_config: Default::default(),
         }
     }
 
@@ -127,6 +130,12 @@ impl Executor {
     ) -> Result<&mut Self, ExecutionError> {
         self.event_handlers.push((event, handler));
         Ok(self)
+    }
+
+    /// Set the profiler configuration for this executor.
+    pub fn with_profiler_config(&mut self, profiler_config: ProfilerConfig) -> &mut Self {
+        self.profiler_config = profiler_config;
+        self
     }
 
     /// Convert this [Executor] into a [DebugExecutor], which captures much more information
@@ -187,6 +196,7 @@ impl Executor {
             recent: VecDeque::with_capacity(5),
             cycle: 0,
             stopped: false,
+            profiler: Profiler::from_config(self.profiler_config),
         }
     }
 
@@ -252,6 +262,7 @@ impl Executor {
             recent: VecDeque::with_capacity(5),
             cycle: 0,
             stopped: false,
+            profiler: Profiler::from_config(self.profiler_config),
         }
     }
 

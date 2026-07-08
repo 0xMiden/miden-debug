@@ -4,7 +4,7 @@ use std::{
     str::FromStr,
 };
 
-use miden_debug_engine::LinkLibrary;
+use miden_debug_engine::{LinkLibrary, profiling::ProfilerCliArgs};
 
 use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile};
 
@@ -194,6 +194,12 @@ pub struct DebuggerConfig {
     #[cfg(feature = "python")]
     #[cfg_attr(feature = "python", arg(long, help_heading = "Scripting"))]
     pub no_user_python_init: bool,
+    /// Profiler configuration.
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl", feature = "flamegraph"),
+        command(flatten)
+    )]
+    pub profiler_cli_args: ProfilerCliArgs,
 }
 
 /// ColorChoice represents the color preferences of an end user.

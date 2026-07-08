@@ -2,6 +2,7 @@ pub mod debug;
 pub mod exec;
 pub mod felt;
 mod linker;
+pub mod profiling;
 mod registry;
 #[cfg(test)]
 mod test_utils;

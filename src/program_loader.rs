@@ -39,7 +39,9 @@ pub(crate) fn load_debug_executor(
     let package = load_package(config)?;
 
     let mut executor = Executor::new(args).with_registry(registry);
-    executor.with_advice_inputs(inputs.advice_inputs);
+    executor
+        .with_profiler_config(config.profiler_cli_args.clone().into())
+        .with_advice_inputs(inputs.advice_inputs);
 
     Ok(executor.into_debug(package, source_manager))
 }

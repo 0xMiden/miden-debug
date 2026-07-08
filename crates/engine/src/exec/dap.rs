@@ -1814,34 +1814,14 @@ impl DapExecutor {
             // If a snapshot path is configured, persist a self-contained replay snapshot of this
             // (final) run: program, inputs, resolved forests, and the recorded event log.
             if let Some(path) = self.config.snapshot_path.as_ref() {
-                let event_log = self
-                    .event_recorder
-                    .as_ref()
-                    .map(EventMutationRecorder::take)
-                    .unwrap_or_default();
-                let mast_forests = self
-                    .forest_recorder
-                    .as_ref()
-                    .map(MastForestRecorder::snapshot)
-                    .unwrap_or_default();
-                let snapshot = ReplaySnapshot {
-                    program: program.clone(),
+                write_replay_snapshot(
+                    path,
+                    self.event_recorder.as_ref(),
+                    self.forest_recorder.as_ref(),
+                    program,
                     stack_inputs,
-                    advice_inputs: advice_inputs.clone(),
-                    mast_forests,
-                    event_log,
-                };
-                match snapshot.write_to_file(path) {
-                    Ok(()) => eprintln!(
-                        "Wrote replay snapshot ({} event(s), {} forest(s)) to {}",
-                        snapshot.event_log.len(),
-                        snapshot.mast_forests.len(),
-                        path.display()
-                    ),
-                    Err(err) => {
-                        eprintln!("Failed to write replay snapshot to {}: {err}", path.display())
-                    }
-                }
+                    &advice_inputs,
+                );
             }
 
             // Build ExecutionOutput from the processor's final state.
@@ -1857,6 +1837,40 @@ impl DapExecutor {
                 final_precompile_transcript,
             });
         } // end outer restart loop
+    }
+}
+
+/// Build and write a [ReplaySnapshot] of the current run to `path`.
+///
+/// Reads the recorders without draining them (via their `snapshot()`), so a caller that also
+/// reads the shared event recorder afterwards — e.g. an embedder reporting how many mutation sets
+/// were recorded — still sees the full log. Called on every terminal outcome, clean exit or a
+/// failed step, so a failing transaction is captured and replayable too.
+fn write_replay_snapshot(
+    path: &std::path::Path,
+    event_recorder: Option<&EventMutationRecorder>,
+    forest_recorder: Option<&MastForestRecorder>,
+    program: &Program,
+    stack_inputs: StackInputs,
+    advice_inputs: &AdviceInputs,
+) {
+    let event_log = event_recorder.map(EventMutationRecorder::snapshot).unwrap_or_default();
+    let mast_forests = forest_recorder.map(MastForestRecorder::snapshot).unwrap_or_default();
+    let snapshot = ReplaySnapshot {
+        program: program.clone(),
+        stack_inputs,
+        advice_inputs: advice_inputs.clone(),
+        mast_forests,
+        event_log,
+    };
+    match snapshot.write_to_file(path) {
+        Ok(()) => eprintln!(
+            "Wrote replay snapshot ({} event(s), {} forest(s)) to {}",
+            snapshot.event_log.len(),
+            snapshot.mast_forests.len(),
+            path.display()
+        ),
+        Err(err) => eprintln!("Failed to write replay snapshot to {}: {err}", path.display()),
     }
 }
 

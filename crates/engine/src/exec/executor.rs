@@ -697,7 +697,8 @@ mod tests {
         let event_name = "miden-debug::test::snapshot-replay";
         let event_id = EventId::from_name(event_name).as_u64();
         let source = format!(
-            "begin push.{event_id} emit drop adv_push push.{event_id} emit drop adv_push add add end"
+            "begin push.{event_id} emit drop adv_push push.{event_id} emit drop adv_push add add \
+             end"
         );
         let program = miden_assembly::Assembler::new(source_manager.clone())
             .assemble_program(source)

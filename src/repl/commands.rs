@@ -185,7 +185,8 @@ Breakpoints:
 
 Inspection:
   stack              Show operand stack
-  mem <addr> [type]  Show memory at address (e.g., mem 0x100 u32)
+  mem <addr> [opts]  Show memory at address (e.g., mem 0x100 -t u32)
+                     Options: -t TYPE, -c N, -m word|byte, -f decimal|hex|binary
   locals             Show local variables
   vars [all]         Show source variables; include compiler locals with `all`
   where              Show current source location

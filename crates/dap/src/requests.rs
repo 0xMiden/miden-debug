@@ -1128,7 +1128,7 @@ impl Request {
                 request_seq: self.seq,
                 success: true,
                 message: None,
-                body: Some(ResponseBody::Next),
+                body: Some(ResponseBody::Restart),
                 error: None,
             }),
             Command::RestartFrame(_) => Ok(Response {

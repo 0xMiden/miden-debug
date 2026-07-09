@@ -370,7 +370,8 @@ impl DebugExecutor {
             let current_cycle = self.cycle;
             let cycles_stepped = current_cycle - start_cycle;
             if let Some(n) = breakpoint.cycles_to_skip(current_cycle)
-                && cycles_stepped >= n
+                && cycles_stepped > 0
+                && n == 0
             {
                 return Ok(());
             }

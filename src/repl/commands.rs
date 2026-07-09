@@ -115,7 +115,9 @@ impl FromStr for ReplCommand {
 impl ReplCommand {
     /// Returns the help text for all commands.
     pub fn help_text() -> &'static str {
-        r#"Available commands:
+        #[cfg(feature = "python")]
+        {
+            r#"Available commands:
 
 Execution:
   s, step [N]        Execute one (or N) VM cycle(s)
@@ -134,6 +136,57 @@ Breakpoints:
 Inspection:
   stack              Show operand stack
   mem <addr> [type]  Show memory at address (e.g., mem 0x100 u32)
+  locals             Show local variables
+  vars [all]         Show source variables; include compiler locals with `all`
+  where              Show current source location
+  l, list            Show recent instructions
+  bt, backtrace      Show call stack
+
+Scripting:
+  script <code>      Execute one Python snippet
+  script             Enter the embedded Python console
+  command script import <file.py>
+                     Import a Python module and run its initializer if present
+  command script add <name> -f module.function
+                     Register a Python-backed debugger command
+  command script list
+                     List Python-backed debugger commands
+  command script delete <name>
+                     Delete a Python-backed debugger command
+  breakpoint command add <id> -f module.function
+                     Register a Python callback for a breakpoint
+  breakpoint command list
+                     List Python breakpoint callbacks
+  breakpoint command delete [id]
+                     Delete one or all Python breakpoint callbacks
+
+Other:
+  h, help            Show this help
+  q, quit            Exit debugger
+"#
+        }
+
+        #[cfg(not(feature = "python"))]
+        r#"Available commands:
+
+Execution:
+  s, step [N]        Execute one (or N) VM cycle(s)
+  n, next            Execute until next instruction boundary
+  nl, next-line      Execute until next source line
+  c, continue        Run until breakpoint or end
+  e, finish          Run until current function returns
+  reload             Restart program execution
+
+Breakpoints:
+  b, break <spec>    Set a breakpoint
+                     Specs: at <cycle>, after <N>, in <proc>, <file>:<line>, <file>
+  bp, breakpoints    List all breakpoints
+  d, delete [id]     Delete breakpoint by id, or all if no id given
+
+Inspection:
+  stack              Show operand stack
+  mem <addr> [opts]  Show memory at address (e.g., mem 0x100 -t u32)
+                     Options: -t TYPE, -c N, -m word|byte, -f decimal|hex|binary
   locals             Show local variables
   vars [all]         Show source variables; include compiler locals with `all`
   where              Show current source location

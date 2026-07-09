@@ -188,6 +188,10 @@ pub struct DebuggerConfig {
         )
     )]
     pub commands: Option<PathBuf>,
+    /// Do not auto-load the project-local `.miden-debug.py` file.
+    #[cfg(feature = "python")]
+    #[cfg_attr(feature = "python", arg(long, help_heading = "Scripting"))]
+    pub no_user_python_init: bool,
 }
 
 /// ColorChoice represents the color preferences of an end user.

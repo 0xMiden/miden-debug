@@ -21,7 +21,10 @@ use miden_processor::{
 
 use crate::{
     config::DebuggerConfig,
-    debug::{Breakpoint, BreakpointType, ReadMemoryExpr, ResolvedLocation, resolve_variable_value},
+    debug::{
+        Breakpoint, BreakpointType, OperationMatcher, ReadMemoryExpr, ResolvedLocation,
+        resolve_variable_value,
+    },
     exec::{DebugExecutor, ExecutionConfig, Executor},
 };
 
@@ -62,6 +65,23 @@ pub enum InputMode {
     #[allow(dead_code)]
     Insert,
     Command,
+}
+
+/// Source location attached to a source-level debug variable declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugVariableSource {
+    pub path: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// Structured view of a variable visible to debugger frontends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugVariableValue {
+    pub name: String,
+    pub value: Option<Felt>,
+    pub location: String,
+    pub source: Option<DebugVariableSource>,
 }
 
 struct LocalState {
@@ -262,6 +282,30 @@ impl State {
         Ok(Self::new_local(source_manager, config, DebugMode::Program, local))
     }
 
+    /// Create a debugger state directly from inline Miden Assembly source.
+    ///
+    /// This is used by the scripting API for tests and small programmatic
+    /// debugging harnesses, where there is no compiled package to load.
+    pub fn from_masm_source(source: &str, args: Vec<Felt>) -> Result<Self, Report> {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let program =
+            miden_assembly::Assembler::new(source_manager.clone()).assemble_program(source)?;
+        // CLI/test args model sequential pushes, but the executor expects the
+        // top-of-stack element first.
+        let args = args.into_iter().rev().collect::<Vec<_>>();
+        let executor = Executor::new(args).into_debug(&program, source_manager.clone());
+
+        Ok(Self::new_local(
+            source_manager,
+            Box::<DebuggerConfig>::default(),
+            DebugMode::Program,
+            LocalState {
+                executor,
+                execution_failed: None,
+            },
+        ))
+    }
+
     /// Create a new debugger state for transaction debugging.
     ///
     /// This uses pre-recorded event mutations to replay host events during
@@ -342,6 +386,14 @@ impl State {
         self.next_breakpoint_id = 0;
         self.stopped = true;
         for bp in breakpoints {
+            // Drop in-flight step breakpoints (next/next-line/finish): they
+            // refer to execution state (e.g. a frame flagged break-on-exit)
+            // that no longer exists after a restart. Carrying one over would
+            // also permanently suppress user breakpoints, since they are
+            // skipped while an internal breakpoint is pending.
+            if bp.is_internal() {
+                continue;
+            }
             self.create_breakpoint(bp.ty);
         }
         Ok(())
@@ -359,6 +411,8 @@ impl State {
                 self.minimum_source_line_for_proc(proc, loc.source_file.uri().as_str())
             });
         let mut previous_proc = self.current_procedure();
+        let mut previous_source_loc = self.current_user_source_location();
+        let mut previous_internal_loc = self.current_internal_source_location();
         let mut pending_called_breakpoints = Vec::new();
         let mut breakpoints = core::mem::take(&mut self.breakpoints);
         self.breakpoints_hit.clear();
@@ -386,16 +440,26 @@ impl State {
             }
 
             let is_op_boundary = self.executor().current_asmop.is_some();
-            let loc = self.current_location();
+            let user_source_loc = self.current_user_source_location();
+            let internal_source_loc = self.current_internal_source_location();
             let line_loc = self.current_display_location();
             let proc = self.current_procedure();
             let current_cycle = self.executor().cycle;
             let cycles_stepped = current_cycle - start_cycle;
             let has_internal_breakpoint = breakpoints.iter().any(|bp| bp.is_internal());
+            let current_op = self.executor().current_op;
+            let current_asmop_str = if breakpoints
+                .iter()
+                .any(|bp| matches!(&bp.ty, BreakpointType::Opcode(OperationMatcher::Asm(_))))
+            {
+                self.executor().current_asmop.as_ref().map(|asmop| asmop.op().to_string())
+            } else {
+                None
+            };
 
             breakpoints.retain_mut(|bp| {
                 if let Some(n) = bp.cycles_to_skip(current_cycle) {
-                    if cycles_stepped >= n {
+                    if cycles_stepped > 0 && n == 0 {
                         let retained = !bp.is_one_shot();
                         if retained {
                             self.breakpoints_hit.push(bp.clone());
@@ -436,8 +500,49 @@ impl State {
                     return true;
                 }
 
-                if let Some(loc) = loc.as_ref()
+                // Opcode breakpoints: raw operation matchers fire on the op just
+                // executed; assembly-level matchers compare against the current
+                // asmop at instruction boundaries.
+                if cycles_stepped > 0
+                    && (current_op.is_some_and(|op| bp.should_break_for(&op))
+                        || (is_op_boundary
+                            && matches!(
+                                (&bp.ty, current_asmop_str.as_deref()),
+                                (
+                                    BreakpointType::Opcode(OperationMatcher::Asm(expected)),
+                                    Some(current),
+                                ) if expected == current
+                            )))
+                {
+                    self.breakpoints_hit.push(bp.clone());
+                    return true;
+                }
+
+                // Line/File breakpoints fire on the transition onto a matching
+                // source position, so that a breakpoint inside a loop fires once
+                // per iteration and `continue` from a stop can leave the line.
+                if let Some(loc) = user_source_loc.as_ref()
                     && bp.should_break_at(loc)
+                    && !previous_source_loc.as_ref().is_some_and(|prev| bp.should_break_at(prev))
+                {
+                    let retained = !bp.is_one_shot();
+                    if retained {
+                        self.breakpoints_hit.push(bp.clone());
+                    } else {
+                        self.breakpoints_hit.push(core::mem::take(bp));
+                    }
+                    return retained;
+                }
+
+                // The user-level position above intentionally skips frames executing
+                // compiler-internal code, so a breakpoint that explicitly targets an internal
+                // source file (e.g. a compiler intrinsic) is matched against the raw innermost
+                // position instead. Intrinsics stay debuggable like any other MASM, and since
+                // user source files never classify as internal, this cannot reintroduce
+                // mid-statement stops for user-level breakpoints.
+                if let Some(loc) = internal_source_loc.as_ref()
+                    && bp.should_break_at(loc)
+                    && !previous_internal_loc.as_ref().is_some_and(|prev| bp.should_break_at(prev))
                 {
                     let retained = !bp.is_one_shot();
                     if retained {
@@ -509,6 +614,8 @@ impl State {
             }
 
             previous_proc = proc;
+            previous_source_loc = user_source_loc;
+            previous_internal_loc = internal_source_loc;
         };
 
         self.breakpoints = breakpoints;
@@ -598,6 +705,43 @@ impl State {
             }
         }
         None
+    }
+
+    /// Return the current source position as seen from the nearest non-internal
+    /// (user) call frame.
+    ///
+    /// Excursions into compiler intrinsics do not change this position, which
+    /// makes it suitable for matching source-level (line/file) breakpoints: a
+    /// statement that calls into `::intrinsics::*` helpers mid-line still reads
+    /// as a single visit to that line.
+    fn current_user_source_location(&self) -> Option<ResolvedLocation> {
+        for frame in self.executor().callstack.frames().iter().rev() {
+            for detail in frame.recent().iter().rev() {
+                if let Some(location) = detail.location()
+                    && let Some(resolved) = self.resolve_op_location(location)
+                {
+                    if crate::debug::is_internal_source_uri(resolved.source_file.uri()) {
+                        // This frame is executing compiler-internal code; its
+                        // caller carries the user-source position.
+                        break;
+                    }
+                    return Some(resolved);
+                }
+            }
+        }
+        None
+    }
+
+    /// The innermost resolvable source position, only when it refers to compiler-internal
+    /// code (intrinsics, the Rust standard library).
+    ///
+    /// [Self::current_user_source_location] intentionally skips such frames so that a user
+    /// statement calling into helpers reads as a single visit to its line; this accessor is the
+    /// counterpart that lets breakpoints explicitly targeting internal sources keep firing —
+    /// compiler intrinsics remain debuggable like any other MASM.
+    fn current_internal_source_location(&self) -> Option<ResolvedLocation> {
+        self.current_location()
+            .filter(|loc| crate::debug::is_internal_source_uri(loc.source_file.uri()))
     }
 
     pub fn is_next_source_line(
@@ -783,8 +927,8 @@ macro_rules! write_with_format_type {
     ($out:ident, $read_expr:ident, $value:expr) => {
         match $read_expr.format {
             crate::debug::FormatType::Decimal => write!(&mut $out, "{}", $value).unwrap(),
-            crate::debug::FormatType::Hex => write!(&mut $out, "{:0x}", $value).unwrap(),
-            crate::debug::FormatType::Binary => write!(&mut $out, "{:0b}", $value).unwrap(),
+            crate::debug::FormatType::Hex => write!(&mut $out, "{:#x}", $value).unwrap(),
+            crate::debug::FormatType::Binary => write!(&mut $out, "{:#b}", $value).unwrap(),
         }
     };
 }
@@ -920,17 +1064,14 @@ impl State {
         Ok(output)
     }
 
-    /// Format the current debug variables as a string for display.
+    /// Collect the current debug variables as structured records.
     ///
     /// When `show_all` is false, compiler-generated locals (named `local0`, `local1`, etc.)
     /// are hidden. Use `show_all` = true (`:vars all`) to include them.
-    pub fn format_variables(&self, show_all: bool) -> String {
-        use core::fmt::Write;
-
+    pub fn current_variables(&self, show_all: bool) -> Vec<DebugVariableValue> {
         let executor = self.executor();
         let debug_vars = &executor.debug_vars;
 
-        let mut output = String::new();
         let stack = executor.current_stack.clone();
         let context = executor.current_context;
 
@@ -950,9 +1091,7 @@ impl State {
         };
         let source_path_prefixes = self.source_path_prefixes();
 
-        if !debug_vars.has_variables() {
-            return "No debug variables tracked".to_string();
-        }
+        let mut variables = Vec::new();
 
         for var_snapshot in debug_vars.current_variables() {
             let name = var_snapshot.info.name();
@@ -974,10 +1113,6 @@ impl State {
                 continue;
             }
 
-            if !output.is_empty() {
-                output.push_str(", ");
-            }
-
             let location = var_snapshot.info.value_location();
 
             let value = resolve_variable_value(location, &stack, read_mem, |offset| {
@@ -988,19 +1123,54 @@ impl State {
                 read_mem(addr)
             });
 
-            match value {
-                Some(felt) => {
-                    write!(&mut output, "{name}={}", felt.as_canonical_u64()).unwrap();
-                }
-                None => {
-                    write!(&mut output, "{name}={location}").unwrap();
-                }
-            }
+            let source = var_snapshot.info.location().map(|loc| DebugVariableSource {
+                path: loc.uri.as_str().to_string(),
+                line: loc.line.to_u32(),
+                column: loc.column.to_u32(),
+            });
+
+            variables.push(DebugVariableValue {
+                name: name.to_string(),
+                value,
+                location: location.to_string(),
+                source,
+            });
         }
 
-        if output.is_empty() {
+        variables
+    }
+
+    /// Format the current debug variables as a string for display.
+    ///
+    /// When `show_all` is false, compiler-generated locals (named `local0`, `local1`, etc.)
+    /// are hidden. Use `show_all` = true (`:vars all`) to include them.
+    pub fn format_variables(&self, show_all: bool) -> String {
+        use core::fmt::Write;
+
+        if !self.executor().debug_vars.has_variables() {
+            return "No debug variables tracked".to_string();
+        }
+
+        let variables = self.current_variables(show_all);
+        if variables.is_empty() {
             "No source-level variables (use ':vars all' to show compiler locals)".to_string()
         } else {
+            let mut output = String::new();
+            for variable in variables {
+                if !output.is_empty() {
+                    output.push_str(", ");
+                }
+
+                match variable.value {
+                    Some(felt) => {
+                        write!(&mut output, "{}={}", variable.name, felt.as_canonical_u64())
+                            .unwrap();
+                    }
+                    None => {
+                        write!(&mut output, "{}={}", variable.name, variable.location).unwrap();
+                    }
+                }
+            }
             output
         }
     }

@@ -338,7 +338,7 @@ impl Executor {
                         && let (Some(op), Some(asmop)) =
                             (executor.current_op, executor.current_asmop.as_ref())
                     {
-                        dbg!(&executor.current_stack);
+                        log::trace!(target: "executor", "stack: {:?}", executor.current_stack);
                         let source_loc = asmop.location().map(|loc| {
                             let path = std::path::Path::new(loc.uri().path());
                             let file = source_manager.load_file(path).unwrap();

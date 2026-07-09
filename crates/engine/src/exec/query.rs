@@ -50,7 +50,9 @@ pub trait DebugQuery {
         let size = <T as FromMidenRepr>::size_in_felts();
         let mut felts = SmallVec::<[_; 4]>::with_capacity(size);
         for index in 0..(size as u32) {
-            felts.push(self.read_memory_element(ptr.addr + index).unwrap_or_default());
+            // Untouched memory reads as zero in the VM, so a missing element defaults; address
+            // overflow, on the other hand, is a failed read.
+            felts.push(self.read_memory_element(ptr.addr.checked_add(index)?).unwrap_or_default());
         }
         Some(T::from_felts(&felts))
     }

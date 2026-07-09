@@ -77,19 +77,20 @@ impl Pane for DebugPane {
         let added = self.logger.take_captured();
         self.entries.extend(added);
         match action {
+            Action::Down | Action::Up if self.entries.is_empty() => {
+                self.selected_entry = None;
+                return Ok(Some(Action::Update));
+            }
             Action::Down => {
-                let selected_entry = self
-                    .selected_entry
-                    .map(|s| s.saturating_add(1) % self.entries.len())
-                    .unwrap_or(self.entries.len().saturating_sub(1));
+                let len = self.entries.len();
+                let selected_entry = self.selected_entry.map(|s| (s + 1) % len).unwrap_or(len - 1);
                 self.selected_entry = Some(selected_entry);
                 return Ok(Some(Action::Update));
             }
             Action::Up => {
-                let selected_entry = self
-                    .selected_entry
-                    .map(|s| s.wrapping_sub(1) % self.entries.len())
-                    .unwrap_or(self.entries.len().saturating_sub(1));
+                let len = self.entries.len();
+                let selected_entry =
+                    self.selected_entry.map(|s| (s + len - 1) % len).unwrap_or(len - 1);
                 self.selected_entry = Some(selected_entry);
                 return Ok(Some(Action::Update));
             }

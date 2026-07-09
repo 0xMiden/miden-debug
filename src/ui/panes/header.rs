@@ -24,7 +24,7 @@ impl Pane for HeaderPane {
                     format!("[ Miden Debugger {} ", symbols::DOT),
                     Style::default().fg(Color::Blue),
                 ),
-                Span::styled("0.1.0", Style::default().fg(Color::LightCyan)),
+                Span::styled(env!("CARGO_PKG_VERSION"), Style::default().fg(Color::LightCyan)),
                 Span::styled("]", Style::default().fg(Color::Blue)),
             ])
             .right_aligned(),

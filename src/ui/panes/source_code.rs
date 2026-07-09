@@ -60,7 +60,7 @@ impl SourceCodePane {
         let last_line = content.last_line_index();
         let max_line_no = last_line.number().to_usize();
         let gutter_width = max_line_no.ilog10() as u8;
-        let lines = (0..(max_line_no - 1))
+        let lines = (0..max_line_no)
             .map(|line_index| {
                 let line_index = miden_debug_types::LineIndex::from(line_index as u32);
                 let span = content.line_range(line_index).expect("invalid line index");
@@ -329,8 +329,12 @@ impl Pane for SourceCodePane {
 
         // Get the cached (highlighted) lines for the current source file
         let mut lines = current_file.lines.clone();
-        // Extract the current selected line as a vector of raw syntect parts
-        let selected_line = self.selected_line.saturating_sub(1) as usize;
+        if lines.is_empty() {
+            return Ok(());
+        }
+        // Extract the current selected line as a vector of raw syntect parts,
+        // clamping to the file in case debug info points past the last line
+        let selected_line = (self.selected_line.saturating_sub(1) as usize).min(lines.len() - 1);
         let selected_line_deconstructed = lines[selected_line]
             .iter()
             .map(|span| {

@@ -137,10 +137,19 @@ impl Read {
             .disable_colored_help(true)
             .no_binary_name(true);
 
-        let mut matches = command.try_get_matches_from(argv).map_err(|err| err.to_string())?;
+        let mut matches =
+            command.try_get_matches_from(argv).map_err(|err| render_clap_error(&err))?;
         <Self as clap::FromArgMatches>::from_arg_matches_mut(&mut matches)
-            .map_err(|err| err.to_string())
+            .map_err(|err| render_clap_error(&err))
     }
+}
+
+/// Render a clap error as a plain message, without clap's own `error: ` prefix
+/// (callers add their own) or trailing usage/help boilerplate.
+fn render_clap_error(err: &clap::Error) -> String {
+    let rendered = err.to_string();
+    let message = rendered.lines().next().unwrap_or_default();
+    message.strip_prefix("error: ").unwrap_or(message).to_string()
 }
 
 #[doc(hidden)]

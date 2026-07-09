@@ -17,6 +17,8 @@ mod ui;
 
 #[cfg(feature = "repl")]
 mod repl;
+#[cfg(feature = "repl")]
+pub mod script;
 
 #[cfg(feature = "dap")]
 pub use self::dap_server::run as run_dap_server;

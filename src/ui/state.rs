@@ -84,6 +84,23 @@ pub enum InputMode {
     Command,
 }
 
+/// Source location attached to a source-level debug variable declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugVariableSource {
+    pub path: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// Structured view of a variable visible to debugger frontends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DebugVariableValue {
+    pub name: String,
+    pub value: Option<Felt>,
+    pub location: String,
+    pub source: Option<DebugVariableSource>,
+}
+
 struct LocalState {
     executor: DebugExecutor,
     execution_failed: Option<miden_processor::ExecutionError>,
@@ -280,6 +297,30 @@ impl State {
         let local = create_local_state(&config, source_manager.clone())?;
 
         Ok(Self::new_local(source_manager, config, DebugMode::Program, local))
+    }
+
+    /// Create a debugger state directly from inline Miden Assembly source.
+    ///
+    /// This is used by the scripting API for tests and small programmatic
+    /// debugging harnesses, where there is no compiled package to load.
+    pub fn from_masm_source(source: &str, args: Vec<Felt>) -> Result<Self, Report> {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let program =
+            miden_assembly::Assembler::new(source_manager.clone()).assemble_program(source)?;
+        // CLI/test args model sequential pushes, but the executor expects the
+        // top-of-stack element first.
+        let args = args.into_iter().rev().collect::<Vec<_>>();
+        let executor = Executor::new(args).into_debug(&program, source_manager.clone());
+
+        Ok(Self::new_local(
+            source_manager,
+            Box::<DebuggerConfig>::default(),
+            DebugMode::Program,
+            LocalState {
+                executor,
+                execution_failed: None,
+            },
+        ))
     }
 
     /// Create a new debugger state for transaction debugging.
@@ -1038,17 +1079,14 @@ impl State {
         Ok(output)
     }
 
-    /// Format the current debug variables as a string for display.
+    /// Collect the current debug variables as structured records.
     ///
     /// When `show_all` is false, compiler-generated locals (named `local0`, `local1`, etc.)
     /// are hidden. Use `show_all` = true (`:vars all`) to include them.
-    pub fn format_variables(&self, show_all: bool) -> String {
-        use core::fmt::Write;
-
+    pub fn current_variables(&self, show_all: bool) -> Vec<DebugVariableValue> {
         let executor = self.executor();
         let debug_vars = &executor.debug_vars;
 
-        let mut output = String::new();
         let stack = executor.current_stack.clone();
         let context = executor.current_context;
 
@@ -1068,9 +1106,7 @@ impl State {
         };
         let source_path_prefixes = self.source_path_prefixes();
 
-        if !debug_vars.has_variables() {
-            return "No debug variables tracked".to_string();
-        }
+        let mut variables = Vec::new();
 
         for var_snapshot in debug_vars.current_variables() {
             let name = var_snapshot.info.name();
@@ -1092,10 +1128,6 @@ impl State {
                 continue;
             }
 
-            if !output.is_empty() {
-                output.push_str(", ");
-            }
-
             let location = var_snapshot.info.value_location();
 
             let value = resolve_variable_value(location, &stack, read_mem, |offset| {
@@ -1106,19 +1138,54 @@ impl State {
                 read_mem(addr)
             });
 
-            match value {
-                Some(felt) => {
-                    write!(&mut output, "{name}={}", felt.as_canonical_u64()).unwrap();
-                }
-                None => {
-                    write!(&mut output, "{name}={location}").unwrap();
-                }
-            }
+            let source = var_snapshot.info.location().map(|loc| DebugVariableSource {
+                path: loc.uri.as_str().to_string(),
+                line: loc.line.to_u32(),
+                column: loc.column.to_u32(),
+            });
+
+            variables.push(DebugVariableValue {
+                name: name.to_string(),
+                value,
+                location: location.to_string(),
+                source,
+            });
         }
 
-        if output.is_empty() {
-            "No source-level variables (use 'vars all' to show compiler locals)".to_string()
+        variables
+    }
+
+    /// Format the current debug variables as a string for display.
+    ///
+    /// When `show_all` is false, compiler-generated locals (named `local0`, `local1`, etc.)
+    /// are hidden. Use `show_all` = true (`:vars all`) to include them.
+    pub fn format_variables(&self, show_all: bool) -> String {
+        use core::fmt::Write;
+
+        if !self.executor().debug_vars.has_variables() {
+            return "No debug variables tracked".to_string();
+        }
+
+        let variables = self.current_variables(show_all);
+        if variables.is_empty() {
+            "No source-level variables (use ':vars all' to show compiler locals)".to_string()
         } else {
+            let mut output = String::new();
+            for variable in variables {
+                if !output.is_empty() {
+                    output.push_str(", ");
+                }
+
+                match variable.value {
+                    Some(felt) => {
+                        write!(&mut output, "{}={}", variable.name, felt.as_canonical_u64())
+                            .unwrap();
+                    }
+                    None => {
+                        write!(&mut output, "{}={}", variable.name, variable.location).unwrap();
+                    }
+                }
+            }
             output
         }
     }

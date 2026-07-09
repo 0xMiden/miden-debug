@@ -1,5 +1,7 @@
 mod commands;
-mod engine;
+pub(crate) mod engine;
+#[cfg(feature = "python")]
+mod python;
 mod script;
 mod session;
 

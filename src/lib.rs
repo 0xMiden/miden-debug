@@ -28,7 +28,8 @@ pub use self::repl::{
 };
 #[cfg(feature = "tui")]
 pub use self::ui::{
-    DebugMode, State, run, run_with_log_level, run_with_state, run_with_state_and_log_level,
+    DebugMode, State, run, run_replay_and_log_level, run_with_log_level, run_with_state,
+    run_with_state_and_log_level,
 };
 pub use self::{
     config::{ColorChoice, DebuggerConfig},

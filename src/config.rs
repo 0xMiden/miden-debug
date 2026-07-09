@@ -120,6 +120,17 @@ pub struct DebuggerConfig {
         )
     )]
     pub source_path_prefixes: Vec<PathBuf>,
+    /// Replay a recorded execution snapshot in the TUI debugger.
+    ///
+    /// FILE is a snapshot written during a recorded debug session (e.g.
+    /// `miden-client exec --start-debug-adapter <ADDR> --record <FILE>`). The recorded program,
+    /// inputs, resolved code, and event log are replayed so the same execution can be stepped
+    /// through offline, without the original host.
+    #[cfg_attr(
+        feature = "tui",
+        arg(long, value_name = "FILE", help_heading = "Execution")
+    )]
+    pub replay: Option<PathBuf>,
     /// Specify one or more search paths for link libraries requested via `-l`
     #[cfg_attr(
         any(feature = "tui", feature = "flamegraph"),

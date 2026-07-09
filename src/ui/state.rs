@@ -25,7 +25,7 @@ use crate::{
         Breakpoint, BreakpointType, OperationMatcher, ReadMemoryExpr, ResolvedLocation,
         resolve_variable_value,
     },
-    exec::{DebugExecutor, Executor},
+    exec::{DebugExecutor, ExecutionConfig, Executor},
 };
 
 /// Whether the debugger is debugging a plain program or a transaction.
@@ -39,27 +39,10 @@ pub enum DebugMode {
     Remote,
 }
 
-fn clone_advice_mutation(mutation: &AdviceMutation) -> AdviceMutation {
-    match mutation {
-        AdviceMutation::ExtendStack { values } => AdviceMutation::ExtendStack {
-            values: values.clone(),
-        },
-        AdviceMutation::ExtendMap { other } => AdviceMutation::ExtendMap {
-            other: other.clone(),
-        },
-        AdviceMutation::ExtendMerkleStore { infos } => AdviceMutation::ExtendMerkleStore {
-            infos: infos.clone(),
-        },
-        AdviceMutation::ExtendPrecompileRequests { data } => {
-            AdviceMutation::ExtendPrecompileRequests { data: data.clone() }
-        }
-    }
-}
-
 fn clone_event_replay_queue(event_replay: &[Vec<AdviceMutation>]) -> VecDeque<Vec<AdviceMutation>> {
     event_replay
         .iter()
-        .map(|batch| batch.iter().map(clone_advice_mutation).collect())
+        .map(|batch| crate::exec::clone_advice_mutations(batch))
         .collect()
 }
 
@@ -332,15 +315,17 @@ impl State {
         program: Arc<Program>,
         stack_inputs: StackInputs,
         advice_inputs: AdviceInputs,
+        options: miden_processor::ExecutionOptions,
         source_manager: Arc<dyn SourceManager>,
         mast_forests: Vec<Arc<MastForest>>,
         event_replay: Vec<Vec<AdviceMutation>>,
     ) -> Result<Self, Report> {
-        let args = stack_inputs.iter().copied().rev().collect::<Vec<_>>();
-
-        // Create debug executor with event replay
-        let mut executor = Executor::new(args);
-        executor.with_advice_inputs(advice_inputs);
+        // Create debug executor with the exact recorded inputs and options.
+        let executor = Executor::from_config(ExecutionConfig {
+            inputs: stack_inputs,
+            advice_inputs,
+            options,
+        });
         let debug_executor = executor.into_debug_with_replay(
             &program,
             source_manager.clone(),

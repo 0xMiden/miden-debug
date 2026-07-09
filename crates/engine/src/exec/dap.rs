@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::{BufReader, BufWriter},
     net::TcpListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::{
         Arc, OnceLock,
@@ -28,7 +28,10 @@ use miden_processor::{
     trace::RowIndex,
 };
 
-use super::{TraceEvent, state::extract_current_op};
+use super::{
+    EventMutationRecorder, MastForestRecorder, ReplaySnapshot, ReplaySnapshotRecorder,
+    ReplaySnapshotWrite, TraceEvent, state::extract_current_op,
+};
 use crate::debug::{
     DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, resolve_variable_value,
     snapshot_transient_debug_values,
@@ -51,6 +54,14 @@ pub struct DapConfig {
     /// Shared flag: set by the server when a Phase 2 restart (terminate-and-reconnect) is
     /// requested, read by the caller to decide whether to recompile and re-enter.
     restart_requested: Arc<AtomicBool>,
+    /// When set, the advice mutations produced by the host's event handlers are recorded into
+    /// this shared log during the session. See [DapConfig::record_event_mutations].
+    event_recorder: Option<EventMutationRecorder>,
+    /// When set, a [ReplaySnapshot] of the session is written to this path once execution
+    /// completes. See [DapConfig::record_snapshot].
+    snapshot_path: Option<PathBuf>,
+    /// Shared status for the configured replay snapshot write.
+    snapshot_recorder: Option<ReplaySnapshotRecorder>,
 }
 
 impl DapConfig {
@@ -59,6 +70,9 @@ impl DapConfig {
             listen_addr: listen_addr.into(),
             source_path_prefixes: Vec::new(),
             restart_requested: Arc::new(AtomicBool::new(false)),
+            event_recorder: None,
+            snapshot_path: None,
+            snapshot_recorder: None,
         }
     }
 
@@ -69,6 +83,35 @@ impl DapConfig {
             .filter(|prefix| !prefix.is_empty())
             .collect();
         self
+    }
+
+    /// Record the advice mutations produced by the host's event handlers during the session.
+    ///
+    /// Returns a shared handle that outlives the executor: the [DapExecutor] is constructed
+    /// internally (e.g. by a transaction executor) from the global configuration and consumed
+    /// by execution, so the handle obtained here — by whoever installs the configuration via
+    /// [DapConfig::set_global] — is how the recorded log is read once execution returns.
+    ///
+    /// One entry is recorded per `on_event` invocation, in execution order, including empty
+    /// mutation sets. The log always describes the final run (it is cleared whenever the
+    /// session restarts execution from the beginning) and can be fed into an event-replay
+    /// debugging session (e.g. `Executor::into_debug_with_replay` or
+    /// `State::new_for_transaction`) to re-execute the same program without the original
+    /// host's event handlers.
+    pub fn record_event_mutations(&mut self) -> EventMutationRecorder {
+        self.event_recorder.get_or_insert_with(EventMutationRecorder::new).clone()
+    }
+
+    /// Write a [ReplaySnapshot] of the session to `path` once execution completes.
+    ///
+    /// The snapshot captures the program, its stack and advice inputs, the MAST forests the host
+    /// resolved, and the recorded event log — everything an event-replay debugging session needs
+    /// to re-execute the same program later without the original host (e.g.
+    /// `miden-debug --replay <path>`). It always describes the final run, since the recorded state
+    /// is reset whenever the session restarts execution from the beginning.
+    pub fn record_snapshot(&mut self, path: impl Into<PathBuf>) -> ReplaySnapshotRecorder {
+        self.snapshot_path = Some(path.into());
+        self.snapshot_recorder.get_or_insert_with(ReplaySnapshotRecorder::new).clone()
     }
 
     /// Returns `true` if the server has signalled a Phase 2 restart.
@@ -113,14 +156,27 @@ struct DapHostWrapper<'a, H: Host> {
     inner: &'a mut H,
     call_depth: usize,
     frames: Vec<DapCallFrame>,
+    /// When set, the advice mutations produced by each `on_event` invocation of the inner host
+    /// are recorded here, in execution order, so they can be replayed later (e.g. transaction
+    /// debugging with event replay).
+    event_recorder: Option<EventMutationRecorder>,
+    /// When set, the MAST forests the inner host resolves are recorded here, so a replay session
+    /// can load the same code for `call`/`dyncall` targets.
+    forest_recorder: Option<MastForestRecorder>,
 }
 
 impl<'a, H: Host> DapHostWrapper<'a, H> {
-    fn new(inner: &'a mut H) -> Self {
+    fn new(
+        inner: &'a mut H,
+        event_recorder: Option<EventMutationRecorder>,
+        forest_recorder: Option<MastForestRecorder>,
+    ) -> Self {
         Self {
             inner,
             call_depth: 0,
             frames: Vec::new(),
+            event_recorder,
+            forest_recorder,
         }
     }
 }
@@ -172,14 +228,34 @@ impl<H: Host> BaseHost for DapHostWrapper<'_, H> {
 
 impl<H: Host> Host for DapHostWrapper<'_, H> {
     fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
-        self.inner.get_mast_forest(node_digest)
+        // Record every forest the inner host resolves, so a replay session can load the same
+        // code for `call`/`dyncall` targets. The recorder deduplicates.
+        let forest_recorder = self.forest_recorder.clone();
+        let fut = self.inner.get_mast_forest(node_digest);
+        async move {
+            let forest = fut.await;
+            if let (Some(recorder), Some(forest)) = (&forest_recorder, &forest) {
+                recorder.record(forest.clone());
+            }
+            forest
+        }
     }
 
     fn on_event(
         &mut self,
         process: &ProcessorState<'_>,
     ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
-        self.inner.on_event(process)
+        // Every invocation is recorded, including empty mutation sets: event replay pops one
+        // entry per event, so the log must stay aligned with the event stream.
+        let recorder = self.event_recorder.clone();
+        let fut = self.inner.on_event(process);
+        async move {
+            let result = fut.await;
+            if let (Some(recorder), Ok(mutations)) = (&recorder, &result) {
+                recorder.record(crate::exec::clone_advice_mutations(mutations));
+            }
+            result
+        }
     }
 }
 
@@ -820,6 +896,8 @@ pub struct DapExecutor {
     advice_inputs: AdviceInputs,
     options: ExecutionOptions,
     config: DapConfig,
+    event_recorder: Option<EventMutationRecorder>,
+    forest_recorder: Option<MastForestRecorder>,
 }
 
 /// Variables reference IDs for scopes.
@@ -846,12 +924,43 @@ impl DapExecutor {
         options: ExecutionOptions,
     ) -> Self {
         let config = DAP_CONFIG.get().cloned().unwrap_or_default();
+        // Writing a snapshot requires both the event log and the resolved forests. Ensure an
+        // event recorder exists (reusing the config's shared one if present) and turn on forest
+        // recording whenever a snapshot path is configured.
+        let (event_recorder, forest_recorder) = if config.snapshot_path.is_some() {
+            (
+                Some(config.event_recorder.clone().unwrap_or_default()),
+                Some(MastForestRecorder::new()),
+            )
+        } else {
+            (config.event_recorder.clone(), None)
+        };
         DapExecutor {
             stack_inputs,
             advice_inputs,
             options,
             config,
+            event_recorder,
+            forest_recorder,
         }
+    }
+
+    /// Record the advice mutations produced by each event handler invocation of the wrapped
+    /// host during execution.
+    ///
+    /// Returns a handle to the shared log. When recording was enabled on the installed
+    /// [DapConfig] (see [DapConfig::record_event_mutations]), this is the same log, so
+    /// embedders that never see the executor instance read the recording through their config
+    /// handle instead.
+    ///
+    /// One entry is recorded per `on_event` invocation, in execution order, including empty
+    /// mutation sets, so the log can be fed directly into an event replay queue (e.g.
+    /// `Executor::into_debug_with_replay` or `State::new_for_transaction`) to debug the same
+    /// execution later without access to the original host. The log is cleared automatically
+    /// whenever the DAP session restarts execution from the beginning, so after execution
+    /// completes it always describes the final run.
+    pub fn record_event_mutations(&mut self) -> EventMutationRecorder {
+        self.event_recorder.get_or_insert_with(EventMutationRecorder::new).clone()
     }
 
     pub fn execute_async<H: Host + Send>(
@@ -956,7 +1065,19 @@ impl DapExecutor {
                     .expect("advice inputs should fit advice map limits");
 
             let resume_ctx = processor.get_initial_resume_context(program)?;
-            let mut wrapper = DapHostWrapper::new(host);
+            // Each pass through this loop starts execution from the beginning, so any mutations
+            // or forests recorded by a previous (restarted) run no longer apply.
+            if let Some(recorder) = self.event_recorder.as_ref() {
+                recorder.clear();
+            }
+            if let Some(recorder) = self.forest_recorder.as_ref() {
+                recorder.clear();
+            }
+            let mut wrapper = DapHostWrapper::new(
+                host,
+                self.event_recorder.clone(),
+                self.forest_recorder.clone(),
+            );
 
             let mut resume_ctx = Some(resume_ctx);
             let mut cycle: usize = 0;
@@ -1153,6 +1274,19 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = self.config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
+                                        path,
+                                        snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
+                                        program,
+                                        stack_inputs,
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
+                                }
                                 return Err(e);
                             }
                         }
@@ -1207,6 +1341,19 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = self.config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
+                                        path,
+                                        snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
+                                        program,
+                                        stack_inputs,
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
+                                }
                                 return Err(e);
                             }
                         }
@@ -1243,6 +1390,19 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = self.config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
+                                        path,
+                                        snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
+                                        program,
+                                        stack_inputs,
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
+                                }
                                 return Err(e);
                             }
                         }
@@ -1279,6 +1439,19 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = self.config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
+                                        path,
+                                        snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
+                                        program,
+                                        stack_inputs,
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
+                                }
                                 return Err(e);
                             }
                         }
@@ -1700,9 +1873,39 @@ impl DapExecutor {
                             ctx = Some(new_ctx);
                         }
                         Ok(None) => break,
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            // Capture the run up to the failure so it can still be replayed.
+                            if let Some(path) = self.config.snapshot_path.as_ref() {
+                                write_replay_snapshot(ReplaySnapshotWriteContext {
+                                    path,
+                                    snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                                    event_recorder: self.event_recorder.as_ref(),
+                                    forest_recorder: self.forest_recorder.as_ref(),
+                                    program,
+                                    stack_inputs,
+                                    advice_inputs: &advice_inputs,
+                                    options,
+                                });
+                            }
+                            return Err(e);
+                        }
                     }
                 }
+            }
+
+            // If a snapshot path is configured, persist a self-contained replay snapshot of this
+            // (final) run: program, inputs, resolved forests, and the recorded event log.
+            if let Some(path) = self.config.snapshot_path.as_ref() {
+                write_replay_snapshot(ReplaySnapshotWriteContext {
+                    path,
+                    snapshot_recorder: self.config.snapshot_recorder.as_ref(),
+                    event_recorder: self.event_recorder.as_ref(),
+                    forest_recorder: self.forest_recorder.as_ref(),
+                    program,
+                    stack_inputs,
+                    advice_inputs: &advice_inputs,
+                    options,
+                });
             }
 
             // Build ExecutionOutput from the processor's final state.
@@ -1718,6 +1921,61 @@ impl DapExecutor {
                 final_precompile_transcript,
             });
         } // end outer restart loop
+    }
+}
+
+/// Build and write a [ReplaySnapshot] of the current run to `path`.
+///
+/// Reads the recorders without draining them (via their `snapshot()`), so a caller that also
+/// reads the shared event recorder afterwards — e.g. an embedder reporting how many mutation sets
+/// were recorded — still sees the full log. Called on every terminal outcome, clean exit or a
+/// failed step, so a failing transaction is captured and replayable too.
+struct ReplaySnapshotWriteContext<'a> {
+    path: &'a Path,
+    snapshot_recorder: Option<&'a ReplaySnapshotRecorder>,
+    event_recorder: Option<&'a EventMutationRecorder>,
+    forest_recorder: Option<&'a MastForestRecorder>,
+    program: &'a Program,
+    stack_inputs: StackInputs,
+    advice_inputs: &'a AdviceInputs,
+    options: ExecutionOptions,
+}
+
+fn write_replay_snapshot(context: ReplaySnapshotWriteContext<'_>) {
+    let event_log = context.event_recorder.map(EventMutationRecorder::snapshot).unwrap_or_default();
+    let mast_forests =
+        context.forest_recorder.map(MastForestRecorder::snapshot).unwrap_or_default();
+    let snapshot = ReplaySnapshot {
+        program: context.program.clone(),
+        stack_inputs: context.stack_inputs,
+        advice_inputs: context.advice_inputs.clone(),
+        options: context.options,
+        mast_forests,
+        event_log,
+    };
+    match snapshot.write_to_file(context.path) {
+        Ok(()) => {
+            let write = ReplaySnapshotWrite {
+                path: context.path.to_path_buf(),
+                event_count: snapshot.event_log.len(),
+                forest_count: snapshot.mast_forests.len(),
+            };
+            if let Some(recorder) = context.snapshot_recorder {
+                recorder.record_success(write.clone());
+            }
+            eprintln!(
+                "Wrote replay snapshot ({} event(s), {} forest(s)) to {}",
+                write.event_count,
+                write.forest_count,
+                write.path.display()
+            );
+        }
+        Err(err) => {
+            if let Some(recorder) = context.snapshot_recorder {
+                recorder.record_error(context.path.to_path_buf(), err.to_string());
+            }
+            eprintln!("Failed to write replay snapshot to {}: {err}", context.path.display());
+        }
     }
 }
 
@@ -2108,7 +2366,98 @@ enum StepResult {
 
 #[cfg(test)]
 mod tests {
+    use miden_assembly::DefaultSourceManager;
+    use miden_core::{
+        Felt,
+        events::{EventId, EventName},
+    };
+    use miden_processor::event::EventHandler;
+
     use super::*;
+    use crate::exec::{DebuggerHost, EventMutationRecorder};
+
+    struct PushSeven;
+
+    impl EventHandler for PushSeven {
+        fn on_event(
+            &self,
+            _process: &ProcessorState<'_>,
+        ) -> Result<Vec<AdviceMutation>, EventError> {
+            Ok(vec![AdviceMutation::ExtendStack {
+                values: vec![Felt::from(7u32)],
+            }])
+        }
+    }
+
+    /// The DAP host wrapper is what a client-provided host (e.g. a transaction executor host)
+    /// is driven through; recording must capture the mutations its event handlers produce.
+    #[test]
+    fn dap_host_wrapper_records_event_mutations() {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let event_name = "miden-debug::test::dap-record";
+        let event_id = EventId::from_name(event_name).as_u64();
+        let program = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program(format!("begin push.{event_id} emit drop adv_push drop end"))
+            .expect("failed to assemble test program");
+
+        let mut host = DebuggerHost::new(source_manager);
+        host.register_event_handler(
+            EventName::from_string(event_name.to_string()),
+            Arc::new(PushSeven),
+        )
+        .expect("failed to register event handler");
+
+        let recorder = EventMutationRecorder::new();
+        let mut wrapper = DapHostWrapper::new(&mut host, Some(recorder.clone()), None);
+
+        let mut processor = FastProcessor::new_with_options(
+            StackInputs::new(&[]).unwrap(),
+            AdviceInputs::default(),
+            ExecutionOptions::default().with_debugging(true).with_tracing(true),
+        )
+        .expect("invalid inputs");
+        let mut resume_ctx =
+            Some(processor.get_initial_resume_context(&program).expect("invalid program"));
+        while let Some(ctx) = resume_ctx.take() {
+            match poll_immediately(processor.step(&mut wrapper, ctx)).expect("execution failed") {
+                Some(next) => resume_ctx = Some(next),
+                None => break,
+            }
+        }
+
+        assert_eq!(recorder.len(), 1, "expected one recorded entry for the emitted event");
+        let batches = recorder.take();
+        match batches[0].as_slice() {
+            [AdviceMutation::ExtendStack { values }] => {
+                assert_eq!(values.as_slice(), &[Felt::from(7u32)]);
+            }
+            _ => panic!("unexpected mutations recorded"),
+        }
+        assert!(recorder.is_empty(), "take() should leave the recorder empty");
+    }
+
+    /// The executor is constructed internally (e.g. by a transaction executor) and consumed by
+    /// execution, so embedders read the recording through the handle obtained from the global
+    /// [DapConfig] before execution: both must share one log.
+    #[test]
+    fn dap_config_recorder_is_shared_with_the_executor() {
+        let mut config = DapConfig::new("127.0.0.1:0");
+        let config_handle = config.record_event_mutations();
+        DapConfig::set_global(config);
+
+        let mut executor = DapExecutor::new(
+            StackInputs::new(&[]).unwrap(),
+            AdviceInputs::default(),
+            ExecutionOptions::default(),
+        );
+        executor.record_event_mutations().record(vec![]);
+
+        assert_eq!(
+            config_handle.len(),
+            1,
+            "recording through the executor must be visible through the config handle"
+        );
+    }
 
     #[test]
     fn source_paths_match_only_uses_declared_trim_prefixes() {

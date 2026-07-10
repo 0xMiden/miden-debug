@@ -6,8 +6,6 @@ mod dap_server;
 #[cfg(feature = "flamegraph")]
 pub mod flamegraph;
 mod input;
-mod linker;
-mod package_registry;
 mod program_loader;
 
 #[cfg(any(feature = "tui", feature = "repl"))]
@@ -39,5 +37,4 @@ pub use self::{
         Felt, FromMidenRepr, RawFelt, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack,
     },
     input::InputFile,
-    linker::{LibraryKind, LinkLibrary},
 };

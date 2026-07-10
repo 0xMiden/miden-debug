@@ -3,6 +3,7 @@ use std::sync::Arc;
 use miden_assembly::SourceManager;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 use miden_core::program::StackInputs;
+use miden_debug_engine::HybridPackageRegistry;
 use miden_mast_package::Package;
 
 use crate::{
@@ -25,37 +26,22 @@ pub(crate) fn execution_inputs(config: &DebuggerConfig) -> Result<ExecutionConfi
 pub(crate) fn load_debug_executor(
     config: &DebuggerConfig,
     source_manager: Arc<dyn SourceManager>,
-    log_target: &'static str,
+    _log_target: &'static str,
 ) -> Result<DebugExecutor, Report> {
     let inputs = execution_inputs(config)?;
     let args = inputs.inputs.iter().copied().collect::<Vec<_>>();
-    let package = load_package(config)?;
-    // The registry indexes explicitly linked libraries, the toolchain sysroot, and local build
-    // artifacts, then resolves the package's manifest dependencies against that index, so
-    // missing dependencies are reported before execution with a hint on how to provide them.
-    //
-    // TODO: When upgrading to miden-assembly/miden-mast-package 0.24, extract any embedded
-    // kernel package via `Package::try_embedded_kernel_package()` and register it if the
-    // dependency resolver does not already have it.
-    let packages = crate::package_registry::load_packages(
-        config,
-        source_manager.clone(),
-        Some(&package),
-        log_target,
+
+    let registry = HybridPackageRegistry::new(
+        config.sysroot.as_deref(),
+        &config.search_path,
+        &config.link_libraries,
     )?;
+    let package = load_package(config)?;
 
-    let mut executor = Executor::new(args);
-    for package in packages {
-        let lib = package.mast.clone();
-        executor.register_library_dependency(lib.clone());
-        executor.with_library(lib);
-    }
-
-    executor.with_dependencies(package.manifest.dependencies())?;
+    let mut executor = Executor::new(args).with_registry(registry);
     executor.with_advice_inputs(inputs.advice_inputs);
 
-    let program = package.unwrap_program();
-    Ok(executor.into_debug(&program, source_manager))
+    Ok(executor.into_debug(package, source_manager))
 }
 
 pub(crate) fn load_package(config: &DebuggerConfig) -> Result<Arc<Package>, Report> {
@@ -76,7 +62,9 @@ fn load_package_from_bytes(
     source: &str,
     config: &DebuggerConfig,
 ) -> Result<Arc<Package>, Report> {
-    let package = crate::linker::load_package_from_bytes(bytes, source)?;
+    let package = miden_mast_package::Package::read_from_bytes_trusted(bytes)
+        .map(Arc::new)
+        .map_err(|e| Report::msg(format!("failed to load Miden package from {source}: {e}")))?;
 
     if let Some(entry) = config.entrypoint.as_ref() {
         let id = entry

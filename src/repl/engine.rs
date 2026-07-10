@@ -376,6 +376,6 @@ pub(crate) fn format_bp_type(ty: &BreakpointType) -> String {
         BreakpointType::Line { pattern, line } => format!("{}:{}", pattern.as_str(), line),
         BreakpointType::Opcode(matcher) => format!("opcode {matcher}"),
         BreakpointType::Called(pat) => format!("call {}", pat.as_str()),
-        BreakpointType::Trace(event) => format!("trace event {event:?}"),
+        BreakpointType::Event(event) => format!("event {event:?}"),
     }
 }

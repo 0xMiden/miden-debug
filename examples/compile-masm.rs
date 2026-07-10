@@ -6,15 +6,10 @@
 //! If `-o` is omitted, this produces `examples/simple.masp`, which you can then debug:
 //!   cargo run -- examples/simple.masp
 
-use std::{collections::BTreeMap, env, path::PathBuf, sync::Arc};
+use std::{env, path::PathBuf, sync::Arc};
 
 use miden_assembly::{Assembler, DefaultSourceManager, SourceManager};
-use miden_assembly_syntax::{
-    Library, Path as MasmPath, ast,
-    library::{LibraryExport, ProcedureExport as LibraryProcedureExport},
-};
-use miden_core::serde::Serializable;
-use miden_mast_package::{Package, TargetType, Version};
+use miden_mast_package::Package;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -25,7 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let input_path = PathBuf::from(&args[1]);
     let output_path = match args.as_slice() {
-        [_, _] => input_path.with_extension("masp"),
+        [_, _] => input_path.with_extension(Package::EXTENSION),
         [_, _, flag, output] if flag == "-o" || flag == "--output" => PathBuf::from(output),
         _ => {
             eprintln!("Usage: compile-masm <file.masm> [-o <file.masp>]");
@@ -34,25 +29,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
 
-    let program = Assembler::new(source_manager).assemble_program(input_path.as_path())?;
-    let exec_path: Arc<MasmPath> =
-        MasmPath::exec_path().join(ast::ProcedureName::MAIN_PROC_NAME).into();
-    let library = Arc::new(Library::new(
-        program.mast_forest().clone(),
-        BTreeMap::from_iter([(
-            exec_path.clone(),
-            LibraryExport::Procedure(LibraryProcedureExport::new(program.entrypoint(), exec_path)),
-        )]),
-    )?);
-    let package = Package::from_library(
-        input_path.file_stem().and_then(|s| s.to_str()).unwrap_or("program").into(),
-        Version::new(0, 0, 0),
-        TargetType::Executable,
-        library,
-        [],
-    );
+    // Read and assemble the MASM source as a program
+    let assembler = Assembler::new(source_manager.clone());
+    let package = assembler.assemble_program("program", input_path.as_path())?;
 
-    std::fs::write(&output_path, package.to_bytes())?;
+    // Write the .masp file
+    package.write_to_file(&output_path)?;
 
     println!("Compiled {} -> {}", input_path.display(), output_path.display());
     println!("\nTo debug:");

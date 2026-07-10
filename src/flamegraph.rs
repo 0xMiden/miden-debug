@@ -8,6 +8,7 @@ use std::{
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report, WrapErr};
+use miden_debug_engine::LinkLibrary;
 use miden_processor::ExecutionError;
 
 use crate::{
@@ -16,7 +17,6 @@ use crate::{
     exec::{DebugExecutor, ExecutionConfig},
     felt::Felt,
     input::InputFile,
-    linker::LinkLibrary,
 };
 
 /// Folded stack samples keyed by semicolon-separated stack paths.

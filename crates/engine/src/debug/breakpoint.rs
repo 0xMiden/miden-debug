@@ -1,9 +1,10 @@
 use std::{ops::Deref, path::Path, str::FromStr};
 
 use glob::Pattern;
+use miden_processor::ProcessorState;
 
 use super::ResolvedLocation;
-use crate::TraceEvent;
+use crate::Event;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Breakpoint {
@@ -76,14 +77,23 @@ pub enum BreakpointType {
     Opcode(OperationMatcher),
     /// Break when any cycle causes us to push a frame for PROCEDURE on the call stack
     Called(Pattern),
-    /// Break when the given trace event occurs
-    Trace(TraceEvent),
+    /// Break when the given event is emitted
+    Event(Event),
 }
 impl BreakpointType {
     /// Return true if this breakpoint indicates we should break for `current_op`
-    pub fn should_break_for(&self, current_op: &miden_core::operations::Operation) -> bool {
+    pub fn should_break_for(
+        &self,
+        current_op: &miden_core::operations::Operation,
+        state: &ProcessorState<'_>,
+    ) -> bool {
+        use miden_core::operations::Operation;
+
         match self {
             Self::Opcode(matcher) => matcher.should_break_for(current_op),
+            Self::Event(event) if matches!(current_op, Operation::Emit) => {
+                state.get_stack_item(0) == event.as_event_id().as_felt()
+            }
             _ => false,
         }
     }

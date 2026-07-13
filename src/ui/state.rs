@@ -113,7 +113,7 @@ impl RemoteState {
     fn connect(addr: &str, source_manager: &Arc<dyn SourceManager>) -> Result<Self, Report> {
         use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
-        use miden_debug_engine::debug::DebugVarTracker;
+        use miden_debug_engine::{debug::DebugVarTracker, profiling::Profiler};
         use miden_processor::{ContextId, FastProcessor};
 
         use crate::exec::DebuggerHost;
@@ -141,6 +141,7 @@ impl RemoteState {
             recent: VecDeque::new(),
             cycle: snapshot.cycle,
             stopped: false,
+            profiler: Profiler::default(),
         };
 
         Ok(Self {

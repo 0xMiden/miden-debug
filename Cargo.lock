@@ -1348,6 +1348,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inventory"
+version = "0.3.24"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4f0c30c76f2f4ccee3fe55a2435f691ca00c0e4bd87abe4f4a851b1d4dac39b"
+dependencies = [
+ "rustversion",
+]
+
+[[package]]
 name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1770,6 +1779,7 @@ version = "0.8.0"
 dependencies = [
  "clap",
  "glob",
+ "inventory",
  "log",
  "miden-assembly",
  "miden-assembly-syntax",
@@ -1788,6 +1798,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "socket2",
+ "tempfile",
  "thiserror 2.0.18",
  "toml",
 ]

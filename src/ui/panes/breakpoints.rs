@@ -203,9 +203,9 @@ impl Pane for BreakpointsPane {
                         Span::styled("opcode:", yellow),
                         Span::styled(format!("{matcher}"), gray),
                     ]),
-                    BreakpointType::Trace(id) => Line::from(vec![
+                    BreakpointType::Event(id) => Line::from(vec![
                         gutter,
-                        Span::styled("trace:", yellow),
+                        Span::styled("event:", yellow),
                         Span::styled(format!("{id}"), gray),
                     ]),
                 };

@@ -16,11 +16,12 @@ use std::{
 
 use miden_core::{
     mast::MastForest,
-    program::{Program, StackInputs},
+    program::StackInputs,
     serde::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
 };
+use miden_mast_package::{Package, debug_info::PackageDebugInfo};
 use miden_processor::{
-    ExecutionOptions,
+    ExecutionOptions, LoadedMastForest,
     advice::{AdviceInputs, AdviceMutation},
 };
 
@@ -34,7 +35,7 @@ use super::advice::{read_event_log, write_event_log};
 /// replay host load exactly that set and reach the same targets.
 #[derive(Clone, Default)]
 pub struct MastForestRecorder {
-    forests: Arc<Mutex<Vec<Arc<MastForest>>>>,
+    forests: Arc<Mutex<Vec<LoadedMastForest>>>,
 }
 
 impl MastForestRecorder {
@@ -44,14 +45,17 @@ impl MastForestRecorder {
     }
 
     /// Returns a copy of the recorded forests.
-    pub fn snapshot(&self) -> Vec<Arc<MastForest>> {
+    pub fn snapshot(&self) -> Vec<LoadedMastForest> {
         self.forests.lock().expect("mast forest log poisoned").clone()
     }
 
     /// Record a forest resolved by the host, ignoring forests already recorded this run.
-    pub(crate) fn record(&self, forest: Arc<MastForest>) {
+    pub(crate) fn record(&self, forest: LoadedMastForest) {
         let mut guard = self.forests.lock().expect("mast forest log poisoned");
-        if !guard.iter().any(|existing| Arc::ptr_eq(existing, &forest)) {
+        if !guard
+            .iter()
+            .any(|existing| Arc::ptr_eq(existing.mast_forest(), forest.mast_forest()))
+        {
             guard.push(forest);
         }
     }
@@ -115,7 +119,7 @@ const SNAPSHOT_VERSION: u8 = 1;
 /// Everything needed to replay a recorded execution in the debugger.
 pub struct ReplaySnapshot {
     /// The program that was executed (for a transaction, the transaction kernel).
-    pub program: Program,
+    pub package: Arc<Package>,
     /// The operand stack inputs the program started with.
     pub stack_inputs: StackInputs,
     /// The advice inputs the program started with.
@@ -124,7 +128,7 @@ pub struct ReplaySnapshot {
     pub options: ExecutionOptions,
     /// The MAST forests resolved by the host during execution (account code, note scripts, ...),
     /// which the replay host must be able to resolve for the same `call`/`dyncall` targets.
-    pub mast_forests: Vec<Arc<MastForest>>,
+    pub mast_forests: Vec<LoadedMastForest>,
     /// The advice mutations produced by event handlers, one entry per `on_event` invocation, in
     /// execution order — the event replay queue.
     pub event_log: Vec<Vec<AdviceMutation>>,
@@ -160,13 +164,22 @@ impl Serializable for ReplaySnapshot {
     fn write_into<W: ByteWriter>(&self, target: &mut W) {
         target.write_bytes(&SNAPSHOT_MAGIC);
         target.write_u8(SNAPSHOT_VERSION);
-        self.program.write_into(target);
+        self.package.write_into(target);
         self.stack_inputs.write_into(target);
         self.advice_inputs.write_into(target);
         write_execution_options(&self.options, target);
         target.write_usize(self.mast_forests.len());
         for forest in &self.mast_forests {
-            forest.as_ref().write_into(target);
+            forest.mast_forest().as_ref().write_into(target);
+            match forest.package_debug_info().ok().flatten() {
+                Some(debug_info) => {
+                    target.write_bool(true);
+                    debug_info.as_ref().write_into(target);
+                }
+                None => {
+                    target.write_bool(false);
+                }
+            }
         }
         write_event_log(&self.event_log, target);
     }
@@ -186,18 +199,24 @@ impl Deserializable for ReplaySnapshot {
                 "unsupported replay snapshot version {version} (expected {SNAPSHOT_VERSION})"
             )));
         }
-        let program = Program::read_from(source)?;
+        let package = Arc::new(Package::read_from_trusted(source)?);
         let stack_inputs = StackInputs::read_from(source)?;
         let advice_inputs = AdviceInputs::read_from(source)?;
         let options = read_execution_options(source)?;
         let forest_count = source.read_usize()?;
         let mut mast_forests = Vec::with_capacity(forest_count);
         for _ in 0..forest_count {
-            mast_forests.push(Arc::new(MastForest::read_from(source)?));
+            let mast_forest = Arc::new(MastForest::read_from(source)?);
+            mast_forests.push(if source.read_bool()? {
+                let debug_info = Some(PackageDebugInfo::read_from(source)?);
+                LoadedMastForest::with_package_debug_info(mast_forest, Ok(debug_info))
+            } else {
+                LoadedMastForest::new(mast_forest)
+            });
         }
         let event_log = read_event_log(source)?;
         Ok(Self {
-            program,
+            package,
             stack_inputs,
             advice_inputs,
             options,
@@ -211,8 +230,6 @@ fn write_execution_options<W: ByteWriter>(options: &ExecutionOptions, target: &m
     target.write_u32(options.max_cycles());
     target.write_u32(options.expected_cycles());
     target.write_usize(options.core_trace_fragment_size());
-    target.write_bool(options.enable_tracing());
-    target.write_bool(options.enable_debugging());
     target.write_usize(options.max_adv_map_value_size());
     target.write_usize(options.max_adv_map_elements());
     target.write_usize(options.max_hash_len_bytes());
@@ -226,33 +243,27 @@ fn read_execution_options<R: ByteReader>(
     let max_cycles = source.read_u32()?;
     let expected_cycles = source.read_u32()?;
     let core_trace_fragment_size = source.read_usize()?;
-    let enable_tracing = source.read_bool()?;
-    let enable_debugging = source.read_bool()?;
     let max_adv_map_value_size = source.read_usize()?;
     let max_adv_map_elements = source.read_usize()?;
     let max_hash_len_bytes = source.read_usize()?;
     let max_num_continuations = source.read_usize()?;
     let max_stack_depth = source.read_usize()?;
 
-    ExecutionOptions::new(
-        Some(max_cycles),
-        expected_cycles,
-        core_trace_fragment_size,
-        enable_tracing,
-        enable_debugging,
-    )
-    .map_err(|err| DeserializationError::InvalidValue(format!("invalid execution options: {err}")))
-    .and_then(|options| {
-        options
-            .with_max_adv_map_value_size(max_adv_map_value_size)
-            .with_max_adv_map_elements(max_adv_map_elements)
-            .with_max_hash_len_bytes(max_hash_len_bytes)
-            .with_max_num_continuations(max_num_continuations)
-            .with_max_stack_depth(max_stack_depth)
-            .map_err(|err| {
-                DeserializationError::InvalidValue(format!("invalid execution options: {err}"))
-            })
-    })
+    ExecutionOptions::new(Some(max_cycles), expected_cycles, core_trace_fragment_size)
+        .map_err(|err| {
+            DeserializationError::InvalidValue(format!("invalid execution options: {err}"))
+        })
+        .and_then(|options| {
+            options
+                .with_max_adv_map_value_size(max_adv_map_value_size)
+                .with_max_adv_map_elements(max_adv_map_elements)
+                .with_max_hash_len_bytes(max_hash_len_bytes)
+                .with_max_num_continuations(max_num_continuations)
+                .with_max_stack_depth(max_stack_depth)
+                .map_err(|err| {
+                    DeserializationError::InvalidValue(format!("invalid execution options: {err}"))
+                })
+        })
 }
 
 /// Error reading a [ReplaySnapshot] from a file.
@@ -281,9 +292,13 @@ mod tests {
     fn replay_snapshot_round_trips() {
         let source_manager = Arc::new(DefaultSourceManager::default());
         let program = Assembler::new(source_manager)
-            .assemble_program("begin push.1 push.2 add drop end")
+            .assemble_program("program", "begin push.1 push.2 add drop end")
+            .map(Arc::<Package>::from)
             .expect("failed to assemble test program");
-        let forest = program.mast_forest().clone();
+        let forest = LoadedMastForest::with_package_debug_info(
+            program.mast_forest().clone(),
+            program.debug_info(),
+        );
 
         let event_log = vec![
             vec![AdviceMutation::extend_stack([Felt::from(7u32), Felt::from(8u32)])],
@@ -296,10 +311,10 @@ mod tests {
         ];
 
         let snapshot = ReplaySnapshot {
-            program: program.clone(),
+            package: program.clone(),
             stack_inputs: StackInputs::new(&[Felt::from(42u32), Felt::from(43u32)]).unwrap(),
             advice_inputs: AdviceInputs::default().with_stack([Felt::from(99u32)]),
-            options: ExecutionOptions::new(Some(100_000), 32, 1024, true, true)
+            options: ExecutionOptions::new(Some(100_000), 32, 1024)
                 .unwrap()
                 .with_max_adv_map_value_size(64)
                 .with_max_adv_map_elements(256)
@@ -314,7 +329,7 @@ mod tests {
         let restored = ReplaySnapshot::read_from_bytes(&snapshot.to_bytes())
             .expect("snapshot failed to deserialize");
 
-        assert_eq!(restored.program.hash(), snapshot.program.hash());
+        assert_eq!(restored.package.digest(), snapshot.package.digest());
         assert_eq!(restored.stack_inputs, snapshot.stack_inputs);
         assert_eq!(restored.advice_inputs, snapshot.advice_inputs);
         assert_eq!(restored.options, snapshot.options);

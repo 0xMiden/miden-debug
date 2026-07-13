@@ -93,7 +93,7 @@ impl Pane for DisassemblyPane {
                         .iter()
                         .map(|op| {
                             Line::from(vec![Span::styled(
-                                format!(" | {}", &op.display()),
+                                format!(" | {}", op.display()),
                                 Color::Gray,
                             )])
                         })

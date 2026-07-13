@@ -1,18 +1,18 @@
 use std::{
     borrow::Cow,
-    cell::{OnceCell, RefCell},
+    cell::OnceCell,
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use miden_core::operations::AssemblyOp;
 use miden_debug_types::{Location, SourceFile, SourceManager, SourceManagerExt, SourceSpan, Uri};
 use miden_processor::{ContextId, operation::Operation, trace::RowIndex};
 
-use crate::exec::TraceEvent;
+use crate::Event;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ControlFlowOp {
@@ -38,15 +38,15 @@ struct SpanContext {
 }
 
 pub struct CallStack {
-    trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>>,
+    events: Arc<Mutex<BTreeMap<RowIndex, Event>>>,
     contexts: BTreeSet<Rc<str>>,
     frames: Vec<CallFrame>,
     block_stack: Vec<Option<SpanContext>>,
 }
 impl CallStack {
-    pub fn new(trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>>) -> Self {
+    pub fn new(events: Arc<Mutex<BTreeMap<RowIndex, Event>>>) -> Self {
         Self {
-            trace_events,
+            events,
             contexts: BTreeSet::default(),
             frames: vec![],
             block_stack: vec![],
@@ -57,7 +57,7 @@ impl CallStack {
     #[cfg(feature = "dap")]
     pub fn from_remote_frames(frames: Vec<CallFrame>) -> Self {
         Self {
-            trace_events: Rc::new(RefCell::new(BTreeMap::new())),
+            events: Arc::new(Default::default()),
             contexts: BTreeSet::default(),
             frames,
             block_stack: vec![],
@@ -91,23 +91,15 @@ impl CallStack {
         let procedure = info.asmop.map(|op| self.cache_procedure_name(op.context_name()));
 
         let event = {
-            let mut trace_events = self.trace_events.borrow_mut();
-            match trace_events.first_key_value() {
-                Some((clk, _)) if *clk <= info.clk => {
-                    trace_events.pop_first().map(|(_, event)| event)
-                }
+            let mut events = self.events.lock().unwrap();
+            match events.first_key_value() {
+                Some((clk, _)) if *clk <= info.clk => events.pop_first().map(|(_, event)| event),
                 _ => None,
             }
         };
-        log::trace!(
-            "handling {:?}/{:?} at cycle {}: {:?}",
-            info.control,
-            info.op,
-            info.clk,
-            &event
-        );
-        let is_frame_start = event.is_some_and(|event| event.is_frame_start());
-        let popped_frame = self.handle_trace_event(event);
+        log::trace!("handling {:?}/{:?} at cycle {}: {:?}", info.control, info.op, info.clk, event);
+        let is_frame_start = event.as_ref().is_some_and(|event| event.is_frame_start());
+        let popped_frame = self.handle_event(event, procedure.clone(), info.op, info.asmop);
         let is_frame_end = popped_frame.is_some();
 
         match info.control {
@@ -213,25 +205,32 @@ impl CallStack {
         }
     }
 
-    fn handle_trace_event(&mut self, event: Option<TraceEvent>) -> Option<CallFrame> {
+    fn handle_event(
+        &mut self,
+        event: Option<Event>,
+        procedure: Option<Rc<str>>,
+        op: Option<Operation>,
+        asmop: Option<&AssemblyOp>,
+    ) -> Option<CallFrame> {
         // Do we need to handle any frame events?
-        if let Some(event) = event {
-            match event {
-                TraceEvent::FrameStart => {
-                    // Record the fact that we exec'd a new procedure in the op context
-                    if let Some(current_frame) = self.frames.last_mut() {
-                        current_frame.push_exec(None);
-                    }
-                    // The trace decorator is emitted in the caller, immediately before the exec.
-                    // Leave the new frame unnamed until the first callee op provides its context.
-                    self.frames.push(CallFrame::new(None));
+        match event? {
+            Event::FrameStart => {
+                // Record the fact that we exec'd a new procedure in the op context
+                if let Some(current_frame) = self.frames.last_mut() {
+                    current_frame.push_exec(procedure.clone());
                 }
-                TraceEvent::Unknown(code) => log::debug!("unknown trace event: {code}"),
-                TraceEvent::FrameEnd => {
-                    return self.frames.pop();
+                // The event is emitted at the start of the callee.
+                let mut frame = CallFrame::new(procedure);
+                if let Some(op) = op {
+                    frame.push(op, 0, asmop);
                 }
-                _ => (),
+                self.frames.push(frame);
             }
+            Event::Unknown(code) => log::debug!("unknown trace event: {code}"),
+            Event::FrameEnd => {
+                return self.frames.pop();
+            }
+            _ => (),
         }
         None
     }
@@ -592,7 +591,7 @@ impl fmt::Display for StackTrace<'_> {
                     if let Some(callee) = op.callee("") {
                         write!(f, " |   exec.{callee}")?;
                     } else {
-                        write!(f, " |   {}", &op.opcode())?;
+                        write!(f, " |   {}", op.opcode())?;
                     }
                     if is_last {
                         writeln!(f, "\n `-> <error occurred here>")?;
@@ -606,10 +605,10 @@ impl fmt::Display for StackTrace<'_> {
                 for (i, op) in self.recent.iter().enumerate() {
                     let is_last = i + 1 == context_size;
                     if is_last {
-                        writeln!(f, " |   {}", &op)?;
+                        writeln!(f, " |   {}", op)?;
                         writeln!(f, " `-> <error occurred here>")?;
                     } else {
-                        writeln!(f, " |   {}", &op)?;
+                        writeln!(f, " |   {}", op)?;
                     }
                 }
             } else {

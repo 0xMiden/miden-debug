@@ -210,9 +210,7 @@ impl App {
                         self.popup = Some(Box::new(debug_popup));
                     }
                     Action::ClosePopup => {
-                        if self.popup.is_some() {
-                            self.popup = None;
-                        }
+                        let _ = self.popup.take();
                     }
                     _ => (),
                 }

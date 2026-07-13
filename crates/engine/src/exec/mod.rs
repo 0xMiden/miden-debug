@@ -7,14 +7,13 @@ mod dap_client;
 #[cfg(feature = "dap")]
 mod dap_types;
 mod diagnostic;
+pub mod event;
 mod executor;
 mod host;
 mod query;
 mod snapshot;
 mod state;
 mod trace;
-mod trace_event;
-mod trace_monitor;
 
 #[cfg(feature = "dap")]
 pub use self::dap::{DapConfig, DapExecutor};
@@ -29,6 +28,7 @@ pub use self::{
     },
     config::ExecutionConfig,
     diagnostic::DiagnosticExecutor,
+    event::Event,
     executor::Executor,
     host::DebuggerHost,
     query::DebugQuery,
@@ -37,7 +37,5 @@ pub use self::{
         ReplaySnapshotWrite, ReplaySnapshotWriteError,
     },
     state::DebugExecutor,
-    trace::{ExecutionTrace, TraceHandler},
-    trace_event::{TRACE_PRINT_LN, TraceEvent},
-    trace_monitor::TraceMonitor,
+    trace::ExecutionTrace,
 };

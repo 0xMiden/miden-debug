@@ -4,11 +4,7 @@ use miden_processor::{
 };
 use smallvec::SmallVec;
 
-use super::TraceEvent;
 use crate::{debug::NativePtr, felt::FromMidenRepr};
-
-/// A callback to be executed when a [TraceEvent] occurs
-pub type TraceHandler = dyn FnMut(&ProcessorState<'_>, TraceEvent);
 
 /// Occurs when an attempt to read memory of the VM fails
 #[derive(Debug, thiserror::Error)]
@@ -180,10 +176,11 @@ mod tests {
     fn execute_trace(source: &str) -> ExecutionTrace {
         let source_manager = Arc::new(DefaultSourceManager::default());
         let program = miden_assembly::Assembler::new(source_manager.clone())
-            .assemble_program(source)
+            .assemble_program("program", source)
+            .map(Arc::from)
             .unwrap();
 
-        Executor::new(vec![]).capture_trace(&program, source_manager)
+        Executor::new(vec![]).capture_trace(program, source_manager)
     }
 
     #[test]

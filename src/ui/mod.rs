@@ -87,7 +87,7 @@ pub fn run_replay_and_log_level(
     // as it does for a raw program with no debug info.
     let source_manager = Arc::new(DefaultSourceManager::default());
     let state = State::new_for_transaction(
-        Arc::new(snapshot.program),
+        snapshot.package,
         snapshot.stack_inputs,
         snapshot.advice_inputs,
         snapshot.options,

@@ -4,7 +4,9 @@ use std::{
     str::FromStr,
 };
 
-use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile, linker::LinkLibrary};
+use miden_debug_engine::LinkLibrary;
+
+use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile};
 
 /// Run a compiled Miden package with the Miden VM
 #[derive(Default, Debug)]
@@ -343,8 +345,7 @@ impl DebuggerConfig {
     pub fn toolchain_dir(&self) -> Option<PathBuf> {
         let sysroot = if let Some(sysroot) = self.sysroot.as_deref() {
             Cow::Borrowed(sysroot)
-        } else if let Some((midenup_home, midenup_channel)) =
-            midenup_home().and_then(|home| midenup_channel().map(|channel| (home, channel)))
+        } else if let Some((midenup_home, midenup_channel)) = midenup_home().zip(midenup_channel())
         {
             Cow::Owned(midenup_home.join("toolchains").join(midenup_channel))
         } else {

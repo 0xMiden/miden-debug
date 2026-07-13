@@ -14,10 +14,10 @@ pub fn execute_trace(
     source_manager: Arc<dyn SourceManager>,
 ) -> miden_debug::ExecutionTrace {
     let program = miden_assembly::Assembler::new(source_manager.clone())
-        .assemble_program(source)
+        .assemble_program("program", source)
         .unwrap();
 
-    Executor::new(vec![]).capture_trace(&program, source_manager)
+    Executor::new(vec![]).capture_trace(program.into(), source_manager)
 }
 
 pub fn execute_debug(
@@ -25,10 +25,10 @@ pub fn execute_debug(
     source_manager: Arc<dyn SourceManager>,
 ) -> miden_debug::DebugExecutor {
     let program = miden_assembly::Assembler::new(source_manager.clone())
-        .assemble_program(source)
+        .assemble_program("program", source)
         .unwrap();
 
-    Executor::new(vec![]).into_debug(&program, source_manager)
+    Executor::new(vec![]).into_debug(program.into(), source_manager)
 }
 
 /// Initializes the debug logger for tests

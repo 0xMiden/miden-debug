@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -7,16 +7,12 @@ use std::{
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::Report;
-use miden_core::{
-    mast::{MastNode, MastNodeId},
-    operations::AssemblyOp,
-    program::Program,
-};
+use miden_debug_engine::DebugQuery;
 use miden_debug_types::{Location, SourceManagerExt, SourceSpan};
+use miden_mast_package::{Package, debug_info::DebugSourceAsmOp};
 use miden_processor::{
-    Felt, StackInputs,
+    Felt, LoadedMastForest, StackInputs,
     advice::{AdviceInputs, AdviceMutation},
-    mast::MastForest,
 };
 
 use crate::{
@@ -288,12 +284,12 @@ impl State {
     /// debugging harnesses, where there is no compiled package to load.
     pub fn from_masm_source(source: &str, args: Vec<Felt>) -> Result<Self, Report> {
         let source_manager = Arc::new(DefaultSourceManager::default());
-        let program =
-            miden_assembly::Assembler::new(source_manager.clone()).assemble_program(source)?;
+        let program = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program("program", source)?;
         // CLI/test args model sequential pushes, but the executor expects the
         // top-of-stack element first.
         let args = args.into_iter().rev().collect::<Vec<_>>();
-        let executor = Executor::new(args).into_debug(&program, source_manager.clone());
+        let executor = Executor::new(args).into_debug(program.into(), source_manager.clone());
 
         Ok(Self::new_local(
             source_manager,
@@ -312,12 +308,12 @@ impl State {
     /// step-by-step debugging, since the debugger's host doesn't have access
     /// to the real transaction host.
     pub fn new_for_transaction(
-        program: Arc<Program>,
+        package: Arc<Package>,
         stack_inputs: StackInputs,
         advice_inputs: AdviceInputs,
         options: miden_processor::ExecutionOptions,
         source_manager: Arc<dyn SourceManager>,
-        mast_forests: Vec<Arc<MastForest>>,
+        mast_forests: Vec<LoadedMastForest>,
         event_replay: Vec<Vec<AdviceMutation>>,
     ) -> Result<Self, Report> {
         // Create debug executor with the exact recorded inputs and options.
@@ -327,7 +323,7 @@ impl State {
             options,
         });
         let debug_executor = executor.into_debug_with_replay(
-            &program,
+            package,
             source_manager.clone(),
             mast_forests,
             clone_event_replay_queue(&event_replay),
@@ -504,7 +500,8 @@ impl State {
                 // executed; assembly-level matchers compare against the current
                 // asmop at instruction boundaries.
                 if cycles_stepped > 0
-                    && (current_op.is_some_and(|op| bp.should_break_for(&op))
+                    && (current_op
+                        .is_some_and(|op| bp.should_break_for(&op, &self.executor().state()))
                         || (is_op_boundary
                             && matches!(
                                 (&bp.ty, current_asmop_str.as_deref()),
@@ -785,33 +782,26 @@ impl State {
         procedure: &str,
         source_path: &str,
     ) -> Option<u32> {
-        let forest = self.executor().resume_ctx.as_ref()?.current_forest();
-        let source_path_prefixes = self.source_path_prefixes();
-        let mut min_line = None;
+        let ctx = self.executor().resume_ctx.as_ref()?;
+        let debug_info = ctx.debug_info()?;
+        let source_map = debug_info.source_map()?;
 
-        for (node_idx, node) in forest.nodes().iter().enumerate() {
-            let MastNode::Block(block) = node else {
+        let source_path_prefixes = self.source_path_prefixes();
+
+        let mut lines = BTreeSet::new();
+        for asmop in source_map.asm_ops() {
+            if asmop.context_name != procedure {
+                continue;
+            }
+            let Some((path, line)) = self.resolve_asmop_location(asmop) else {
                 continue;
             };
-
-            let node_id = MastNodeId::new_unchecked(node_idx as u32);
-            for op_idx in 0..block.num_operations() as usize {
-                let Some(asmop) = forest.get_assembly_op(node_id, Some(op_idx)) else {
-                    continue;
-                };
-                if asmop.context_name() != procedure {
-                    continue;
-                }
-                let Some((path, line)) = self.resolve_asmop_location(asmop) else {
-                    continue;
-                };
-                if line > 1 && source_paths_match(&path, source_path, &source_path_prefixes) {
-                    min_line = Some(min_line.map_or(line, |current: u32| current.min(line)));
-                }
+            if line > 1 && source_paths_match(&path, source_path, &source_path_prefixes) {
+                lines.insert(line);
             }
         }
 
-        min_line
+        lines.pop_first()
     }
 
     pub(crate) fn source_path_prefixes(&self) -> Vec<String> {
@@ -853,8 +843,8 @@ impl State {
         })
     }
 
-    fn resolve_asmop_location(&self, asmop: &AssemblyOp) -> Option<(String, u32)> {
-        let resolved = self.resolve_op_location(asmop.location()?)?;
+    fn resolve_asmop_location(&self, asmop: &DebugSourceAsmOp) -> Option<(String, u32)> {
+        let resolved = self.resolve_op_location(asmop.location.as_ref()?)?;
         Some((resolved.source_file.uri().as_str().to_string(), resolved.line))
     }
 

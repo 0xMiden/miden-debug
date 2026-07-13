@@ -170,10 +170,7 @@ where
             opts.max_cycles,
             opts.expected_cycles,
             ExecutionOptions::DEFAULT_CORE_TRACE_FRAGMENT_SIZE,
-            /* enable_tracing= */ true,
-            /* enable_debugging= */ true,
         )
-        .map(|exec_opts| exec_opts.with_debugging(true))
         .map_err(|err| serde::de::Error::custom(format!("invalid execution options: {err}")))
     })
 }
@@ -197,8 +194,6 @@ mod tests {
         let expected_inputs = StackInputs::new(&[]).unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert!(file.advice_inputs.stack.is_empty());
-        assert!(file.options.enable_tracing());
-        assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), ExecutionOptions::MAX_CYCLES);
         assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
@@ -216,8 +211,6 @@ mod tests {
         let expected_inputs = StackInputs::new(&[]).unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert!(file.advice_inputs.stack.is_empty());
-        assert!(file.options.enable_tracing());
-        assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), 100000);
         assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
@@ -242,8 +235,6 @@ mod tests {
         .unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert!(file.advice_inputs.stack.is_empty());
-        assert!(file.options.enable_tracing());
-        assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), 100000);
         assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
@@ -298,8 +289,6 @@ mod tests {
                 .as_slice()
             )
         );
-        assert!(file.options.enable_tracing());
-        assert!(file.options.enable_debugging());
         assert_eq!(file.options.max_cycles(), 100000);
         assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }

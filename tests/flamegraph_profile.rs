@@ -18,8 +18,10 @@ begin
 end
 "#;
 
-    let program = Assembler::new(source_manager.clone()).assemble_program(source).unwrap();
-    let mut debug_executor = Executor::new(vec![]).into_debug(&program, source_manager);
+    let program = Assembler::new(source_manager.clone())
+        .assemble_program("program", source)
+        .unwrap();
+    let mut debug_executor = Executor::new(vec![]).into_debug(program.into(), source_manager);
 
     let profile =
         FlamegraphProfile::collect(&mut debug_executor).expect("program execution failed");

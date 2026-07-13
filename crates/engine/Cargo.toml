@@ -1,7 +1,7 @@
 [package]
 name = "miden-debug-engine"
 description = "Core debugger engine for miden-debug"
-version = "0.8.0"
+version = "0.9.0"
 rust-version.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -18,19 +18,19 @@ doctest = false
 [features]
 default = ["std"]
 tui = []
-dap = ["dep:dap", "dep:socket2"]
+dap = ["dep:miden-debug-dap", "dep:socket2"]
 std = ["dep:glob", "clap/std", "clap/env", "miden-assembly-syntax/std"]
 proptest = ["dep:proptest"]
 
 [dependencies]
 clap.workspace = true
-dap = { workspace = true, optional = true, features = ["client"] }
 glob = { version = "0.3.1", optional = true }
 inventory.workspace = true
 log.workspace = true
 miden-assembly.workspace = true
 miden-assembly-syntax.workspace = true
 miden-core.workspace = true
+miden-debug-dap = { workspace = true, optional = true, features = ["client"] }
 miden-debug-types.workspace = true
 miden-mast-package.workspace = true
 miden-package-registry.workspace = true

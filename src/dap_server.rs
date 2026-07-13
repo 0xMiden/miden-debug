@@ -1,26 +1,23 @@
-use std::{collections::BTreeSet, path::Path, sync::Arc};
+use std::{path::Path, sync::Arc};
 
 use miden_assembly::{Assembler, DefaultSourceManager, SourceManager};
-use miden_assembly_syntax::{
-    Library,
-    diagnostics::{IntoDiagnostic, Report},
-};
-use miden_core::{
-    Word, events::EventId, mast::MastForest, operations::DebugOptions, program::Program,
-    serde::Deserializable,
-};
+use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
+use miden_core::{Word, events::EventId};
+use miden_debug_engine::HybridPackageRegistry;
 use miden_debug_types::{Location, SourceFile, SourceManagerExt, SourceSpan};
+use miden_mast_package::{Package, PackageId};
+use miden_package_registry::{PackageProvider, PackageRegistry};
 use miden_processor::{
-    BaseHost, DefaultDebugHandler, DefaultHost, FutureMaybeSend, Host, ProcessorState, StackInputs,
-    TraceError, advice::AdviceMutation, event::EventError,
+    BaseHost, DefaultHost, FutureMaybeSend, Host, HostLibrary, LoadedMastForest, ProcessorState,
+    advice::AdviceMutation, event::EventError,
 };
 
-use crate::{DapConfig, DapExecutor, DebuggerConfig, InputFile, exec::ExecutionConfig};
+use crate::{DapConfig, DapExecutor, DebuggerConfig, InputFile};
 
 /// Start a DAP server for a local Miden program.
 ///
 /// This is the non-transaction counterpart to `miden-client exec --start-debug-adapter`.
-/// It accepts standalone MASM source files as well as compiled `.masp` packages.
+/// It accepts standalone MASM source files as well as compiled package artifacts.
 pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     let addr = config
         .start_debug_adapter
@@ -31,25 +28,30 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     );
 
     let source_manager = Arc::new(DefaultSourceManager::default());
-    let inputs = execution_inputs(&config)?;
-    let libs = load_libraries(&config, source_manager.clone())?;
-    let program = load_program(&config, source_manager.clone(), &libs)?;
+    let inputs = crate::program_loader::execution_inputs(&config)?;
+    let mut registry = HybridPackageRegistry::new(
+        config.sysroot.as_deref(),
+        &config.search_path,
+        &config.link_libraries,
+    )?;
+    let program = load_program(&config, source_manager.clone(), &mut registry)?;
     let mut host = StandaloneDapHost::new(source_manager);
 
-    for lib in libs {
-        host.load_library(lib.mast_forest().clone()).map_err(|err| {
-            Report::msg(format!("failed to load linked library into DAP host: {err}"))
+    for package in registry.all() {
+        let name = package.name.clone();
+        host.load_library(package).map_err(|err| {
+            Report::msg(format!("failed to load package '{name}' into DAP host: {err}"))
         })?;
     }
 
     let executor = DapExecutor::new(inputs.inputs, inputs.advice_inputs, inputs.options);
-    futures::executor::block_on(executor.execute_async(&program, &mut host))
+    futures::executor::block_on(executor.execute_async(program, &mut host))
         .map(|_| ())
         .map_err(|err| Report::msg(format!("program execution failed: {err}")))
 }
 
 struct StandaloneDapHost {
-    inner: DefaultHost<DefaultDebugHandler, DefaultSourceManager>,
+    inner: DefaultHost<DefaultSourceManager>,
     source_manager: Arc<DefaultSourceManager>,
 }
 
@@ -64,7 +66,7 @@ impl StandaloneDapHost {
 
     fn load_library(
         &mut self,
-        lib: Arc<MastForest>,
+        lib: impl Into<HostLibrary>,
     ) -> Result<(), miden_processor::ExecutionError> {
         self.inner.load_library(lib)
     }
@@ -93,25 +95,16 @@ impl BaseHost for StandaloneDapHost {
         (span, maybe_file)
     }
 
-    fn on_debug(
-        &mut self,
-        process: &ProcessorState,
-        options: &DebugOptions,
-    ) -> Result<(), miden_processor::DebugError> {
-        self.inner.on_debug(process, options)
-    }
-
-    fn on_trace(&mut self, process: &ProcessorState, trace_id: u32) -> Result<(), TraceError> {
-        self.inner.on_trace(process, trace_id)
-    }
-
     fn resolve_event(&self, event_id: EventId) -> Option<&miden_core::events::EventName> {
         self.inner.resolve_event(event_id)
     }
 }
 
 impl Host for StandaloneDapHost {
-    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
+    fn get_mast_forest(
+        &self,
+        node_digest: &Word,
+    ) -> impl FutureMaybeSend<Option<LoadedMastForest>> {
         self.inner.get_mast_forest(node_digest)
     }
 
@@ -123,121 +116,61 @@ impl Host for StandaloneDapHost {
     }
 }
 
-fn execution_inputs(config: &DebuggerConfig) -> Result<ExecutionConfig, Report> {
-    let mut inputs = config.inputs.clone().unwrap_or_default();
-    if !config.args.is_empty() {
-        // CLI args model sequential pushes, but StackInputs expects the top element first.
-        let args = config.args.iter().rev().map(|felt| felt.0).collect::<Vec<_>>();
-        inputs.inputs = StackInputs::new(&args).into_diagnostic()?;
-    }
-
-    Ok(inputs)
-}
-
 fn load_program(
     config: &DebuggerConfig,
     source_manager: Arc<dyn SourceManager>,
-    libs: &[Arc<Library>],
-) -> Result<Program, Report> {
+    registry: &mut HybridPackageRegistry,
+) -> Result<Arc<Package>, Report> {
     let input = config.input.as_ref().ok_or_else(|| Report::msg("no input file specified"))?;
     if let InputFile::Real(path) = input
         && path.extension().and_then(|ext| ext.to_str()) == Some("masm")
     {
-        return assemble_masm_program(path, source_manager, libs);
+        return assemble_masm_program(path, source_manager, registry);
     }
 
     let package = load_package(config)?;
-    verify_package_dependencies(&package, libs)?;
-    Ok(package.unwrap_program())
+    verify_package_dependencies(&package, registry)?;
+    assert!(package.is_program());
+    Ok(package)
 }
 
 fn assemble_masm_program(
     path: &Path,
     source_manager: Arc<dyn SourceManager>,
-    libs: &[Arc<Library>],
-) -> Result<Program, Report> {
-    let mut assembler = Assembler::new(source_manager);
-    for lib in libs {
-        assembler.link_dynamic_library(lib.as_ref())?;
+    registry: &HybridPackageRegistry,
+) -> Result<Arc<Package>, Report> {
+    let mut assembler = Assembler::new(source_manager.clone());
+
+    let mut parser =
+        miden_assembly_syntax::ModuleParser::new(Some(miden_assembly::ast::ModuleKind::Executable));
+    let module = parser.parse_file(None, path, source_manager)?;
+
+    for extern_package in module.required_packages() {
+        let package_id = PackageId::from(extern_package.clone().into_inner());
+        let package = registry
+            .find_latest(&package_id, &miden_project::VersionReq::STAR.into())
+            .ok_or_else(|| Report::msg(format!("extern package '{package_id}' is not available")))
+            .and_then(|record| registry.load_package(&package_id, record.version()))?;
+        assembler.link_package(package, miden_project::Linkage::Dynamic)?;
     }
 
-    assembler.assemble_program(path)
+    assembler.assemble_program("program", module).map(Arc::from)
 }
 
-fn load_libraries(
-    config: &DebuggerConfig,
-    source_manager: Arc<dyn SourceManager>,
-) -> Result<Vec<Arc<Library>>, Report> {
-    let mut libs = Vec::with_capacity(config.link_libraries.len());
-    for link_library in config.link_libraries.iter() {
-        log::debug!(target: "dap", "loading link library {}", link_library.name());
-        libs.push(link_library.load(config, source_manager.clone())?);
-    }
-
-    if let Some(toolchain_dir) = config.toolchain_dir() {
-        libs.extend(load_sysroot_libs(&toolchain_dir)?);
-    }
-
-    Ok(libs)
-}
-
-fn load_sysroot_libs(toolchain_dir: &Path) -> Result<Vec<Arc<Library>>, Report> {
-    let mut libs = Vec::new();
-
-    let entries = match std::fs::read_dir(toolchain_dir) {
-        Ok(entries) => entries,
-        Err(_) => {
-            log::debug!(target: "dap", "could not read sysroot directory: {}", toolchain_dir.display());
-            return Ok(libs);
-        }
-    };
-
-    for entry in entries {
-        let entry = entry.into_diagnostic()?;
-        let path = entry.path();
-        let Some(ext) = path.extension() else {
-            continue;
-        };
-
-        if ext == "masp" {
-            log::debug!(target: "dap", "loading package from sysroot: {}", path.display());
-            let bytes = std::fs::read(&path).into_diagnostic()?;
-            let package = miden_mast_package::Package::read_from_bytes(&bytes).map_err(|err| {
-                Report::msg(format!("failed to load package '{}': {err}", path.display()))
-            })?;
-            libs.push(package.mast.clone());
-        } else if ext == "masl" {
-            log::debug!(target: "dap", "loading library from sysroot: {}", path.display());
-            let bytes = std::fs::read(&path).into_diagnostic()?;
-            let lib = Library::read_from_bytes(&bytes).map_err(|err| {
-                Report::msg(format!("failed to load library '{}': {err}", path.display()))
-            })?;
-            libs.push(Arc::new(lib));
-        }
-    }
-
-    Ok(libs)
-}
-
-fn load_package(config: &DebuggerConfig) -> Result<Arc<miden_mast_package::Package>, Report> {
+fn load_package(config: &DebuggerConfig) -> Result<Arc<Package>, Report> {
     let input = config.input.as_ref().ok_or_else(|| Report::msg("no input file specified"))?;
     let package = match input {
         InputFile::Real(path) => {
             let bytes = std::fs::read(path).into_diagnostic()?;
-            miden_mast_package::Package::read_from_bytes(&bytes)
-                .map(Arc::new)
-                .map_err(|err| {
-                    Report::msg(format!(
-                        "failed to load Miden package from {}: {err}",
-                        path.display()
-                    ))
-                })?
+            Package::read_from_bytes_trusted(&bytes).map(Arc::new).map_err(|err| {
+                Report::msg(format!("failed to load Miden package from {}: {err}", path.display()))
+            })?
         }
-        InputFile::Stdin(bytes) => miden_mast_package::Package::read_from_bytes(bytes)
-            .map(Arc::new)
-            .map_err(|err| {
+        InputFile::Stdin(bytes) => {
+            Package::read_from_bytes_trusted(bytes).map(Arc::new).map_err(|err| {
                 Report::msg(format!("failed to load Miden package from stdin: {err}"))
-            })?,
+            })?
+        }
     };
 
     if let Some(entry) = config.entrypoint.as_ref() {
@@ -255,14 +188,15 @@ fn load_package(config: &DebuggerConfig) -> Result<Arc<miden_mast_package::Packa
 }
 
 fn verify_package_dependencies(
-    package: &miden_mast_package::Package,
-    libs: &[Arc<Library>],
+    package: &Package,
+    registry: &HybridPackageRegistry,
 ) -> Result<(), Report> {
-    let available = libs.iter().map(|lib| *lib.digest()).collect::<BTreeSet<_>>();
     for dependency in package.manifest.dependencies() {
-        if !available.contains(&dependency.digest) {
+        let version = miden_project::Version::new(dependency.version().clone(), dependency.digest);
+        if !registry.is_version_available(&dependency.name, &version) {
             return Err(Report::msg(format!(
-                "dependency {dependency:?} not found in loaded libraries"
+                "dependency {}@{version} not found in loaded libraries",
+                dependency.name
             )));
         }
     }

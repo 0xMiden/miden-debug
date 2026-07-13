@@ -1,16 +1,13 @@
 use std::{sync::Arc, vec::Vec};
 
-use miden_core::{Word, operations::DebugOptions, program::Program};
+use miden_core::{Word, events::EventId, program::Program};
 use miden_processor::{
     BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, Felt,
-    FutureMaybeSend, Host, ProcessorState, StackInputs, TraceError,
+    FutureMaybeSend, Host, LoadedMastForest, ProcessorState, StackInputs,
     advice::{AdviceInputs, AdviceMutation},
     event::EventError,
-    mast::MastForest,
     trace::RowIndex,
 };
-
-use super::TraceEvent;
 
 // DIAGNOSTIC HOST WRAPPER
 // ================================================================================================
@@ -70,27 +67,6 @@ impl<H: Host> BaseHost for DiagnosticHostWrapper<'_, H> {
         self.inner.get_label_and_source_file(location)
     }
 
-    fn on_debug(
-        &mut self,
-        process: &ProcessorState<'_>,
-        options: &DebugOptions,
-    ) -> Result<(), miden_processor::DebugError> {
-        self.inner.on_debug(process, options)
-    }
-
-    fn on_trace(&mut self, process: &ProcessorState<'_>, trace_id: u32) -> Result<(), TraceError> {
-        self.capture_state(process);
-
-        let event = TraceEvent::from(trace_id);
-        match event {
-            TraceEvent::FrameStart => self.call_depth += 1,
-            TraceEvent::FrameEnd => self.call_depth = self.call_depth.saturating_sub(1),
-            _ => {}
-        }
-
-        self.inner.on_trace(process, trace_id)
-    }
-
     fn resolve_event(
         &self,
         event_id: miden_core::events::EventId,
@@ -100,7 +76,10 @@ impl<H: Host> BaseHost for DiagnosticHostWrapper<'_, H> {
 }
 
 impl<H: Host> Host for DiagnosticHostWrapper<'_, H> {
-    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
+    fn get_mast_forest(
+        &self,
+        node_digest: &Word,
+    ) -> impl FutureMaybeSend<Option<LoadedMastForest>> {
         self.inner.get_mast_forest(node_digest)
     }
 
@@ -109,6 +88,12 @@ impl<H: Host> Host for DiagnosticHostWrapper<'_, H> {
         process: &ProcessorState<'_>,
     ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
         self.capture_state(process);
+        let event_id = EventId::from_felt(process.get_stack_item(0));
+        match crate::Event::from(event_id) {
+            crate::Event::FrameStart => self.call_depth += 1,
+            crate::Event::FrameEnd => self.call_depth = self.call_depth.saturating_sub(1),
+            _ => (),
+        }
         self.inner.on_event(process)
     }
 }
@@ -163,10 +148,12 @@ impl DiagnosticExecutor {
     ) -> impl FutureMaybeSend<Result<ExecutionOutput, ExecutionError>> {
         async move {
             // Enable debugging and tracing for richer diagnostics.
-            let options = self.options.with_debugging(true).with_tracing(true);
-            let processor =
-                FastProcessor::new_with_options(self.stack_inputs, self.advice_inputs, options)
-                    .expect("advice inputs should fit advice map limits");
+            let processor = FastProcessor::new_with_options(
+                self.stack_inputs,
+                self.advice_inputs,
+                self.options,
+            )
+            .expect("advice inputs should fit advice map limits");
 
             let mut wrapper = DiagnosticHostWrapper::new(host);
 

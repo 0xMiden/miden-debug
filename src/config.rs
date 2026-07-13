@@ -4,18 +4,20 @@ use std::{
     str::FromStr,
 };
 
-use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile, linker::LinkLibrary};
+use miden_debug_engine::{LinkLibrary, profiling::ProfilerCliArgs};
 
-/// Run a compiled Miden program with the Miden VM
+use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile};
+
+/// Run a compiled Miden package with the Miden VM
 #[derive(Default, Debug)]
 #[cfg_attr(
     any(feature = "tui", feature = "repl", feature = "flamegraph"),
     derive(clap::Args)
 )]
 pub struct DebuggerConfig {
-    /// Specify the path to a Miden program file to execute.
+    /// Specify the path to a Miden package artifact to execute.
     ///
-    /// Miden Assembly programs are emitted by the compiler with a `.masp` extension.
+    /// Miden Assembly packages are emitted by the compiler with a `.masp` extension.
     ///
     /// You may use `-` as a file name to read a file from stdin.
     #[cfg_attr(
@@ -120,6 +122,17 @@ pub struct DebuggerConfig {
         )
     )]
     pub source_path_prefixes: Vec<PathBuf>,
+    /// Replay a recorded execution snapshot in the TUI debugger.
+    ///
+    /// FILE is a snapshot written during a recorded debug session (e.g.
+    /// `miden-client exec --start-debug-adapter <ADDR> --record <FILE>`). The recorded program,
+    /// inputs, resolved code, and event log are replayed so the same execution can be stepped
+    /// through offline, without the original host.
+    #[cfg_attr(
+        feature = "tui",
+        arg(long, value_name = "FILE", help_heading = "Execution")
+    )]
+    pub replay: Option<PathBuf>,
     /// Specify one or more search paths for link libraries requested via `-l`
     #[cfg_attr(
         any(feature = "tui", feature = "flamegraph"),
@@ -159,6 +172,34 @@ pub struct DebuggerConfig {
         arg(long, help_heading = "Output")
     )]
     pub repl: bool,
+    /// Run a script of debugger commands non-interactively, then exit.
+    ///
+    /// FILE is a list of debugger commands, one per line, using the same syntax
+    /// as the interactive REPL prompt. Blank lines and lines beginning with `#`
+    /// are ignored, so scripts may be commented. This is analogous to
+    /// `gdb -x <file> -batch` or `lldb -s <file>`, and is primarily used to
+    /// drive the debugger from lit/FileCheck tests.
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl", feature = "flamegraph"),
+        arg(
+            long = "commands",
+            visible_alias = "source",
+            short = 'x',
+            value_name = "FILE",
+            help_heading = "Execution"
+        )
+    )]
+    pub commands: Option<PathBuf>,
+    /// Do not auto-load the project-local `.miden-debug.py` file.
+    #[cfg(feature = "python")]
+    #[cfg_attr(feature = "python", arg(long, help_heading = "Scripting"))]
+    pub no_user_python_init: bool,
+    /// Profiler configuration.
+    #[cfg_attr(
+        any(feature = "tui", feature = "repl", feature = "flamegraph"),
+        command(flatten)
+    )]
+    pub profiler_cli_args: ProfilerCliArgs,
 }
 
 /// ColorChoice represents the color preferences of an end user.
@@ -310,8 +351,7 @@ impl DebuggerConfig {
     pub fn toolchain_dir(&self) -> Option<PathBuf> {
         let sysroot = if let Some(sysroot) = self.sysroot.as_deref() {
             Cow::Borrowed(sysroot)
-        } else if let Some((midenup_home, midenup_channel)) =
-            midenup_home().and_then(|home| midenup_channel().map(|channel| (home, channel)))
+        } else if let Some((midenup_home, midenup_channel)) = midenup_home().zip(midenup_channel())
         {
             Cow::Owned(midenup_home.join("toolchains").join(midenup_channel))
         } else {

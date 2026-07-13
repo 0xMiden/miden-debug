@@ -1,8 +1,4 @@
-use std::{
-    collections::{BTreeMap, VecDeque},
-    num::NonZeroU32,
-    sync::Arc,
-};
+use std::{collections::VecDeque, num::NonZeroU32, sync::Arc};
 
 use miden_assembly::SourceManager;
 use miden_core::{
@@ -10,15 +6,15 @@ use miden_core::{
     events::{EventId, EventName},
 };
 use miden_debug_types::{Location, SourceFile, SourceSpan};
+use miden_mast_package::Package;
 use miden_processor::{
-    BaseHost, ExecutionError, FutureMaybeSend, Host, MastForestStore, MemMastForestStore,
-    ProcessorState, TraceError,
+    BaseHost, ExecutionError, FutureMaybeSend, Host, LoadedMastForest, MastForestStore,
+    MemMastForestStore, ProcessorState,
     advice::AdviceMutation,
     event::{EventError, EventHandler, EventHandlerRegistry},
-    mast::MastForest,
 };
 
-use super::{TraceEvent, TraceHandler};
+use super::advice::clone_advice_mutations;
 
 /// This is an implementation of [Host] which is essentially [miden_processor::DefaultHost],
 /// but extended with additional functionality for debugging, in particular it manages trace
@@ -26,10 +22,11 @@ use super::{TraceEvent, TraceHandler};
 pub struct DebuggerHost<S: SourceManager + ?Sized> {
     store: MemMastForestStore,
     event_handlers: EventHandlerRegistry,
-    tracing_callbacks: BTreeMap<u32, Vec<Box<TraceHandler>>>,
-    on_assert_failed: Option<Box<TraceHandler>>,
+    #[allow(clippy::type_complexity)]
+    on_assert_failed: Option<Box<dyn FnMut(&ProcessorState<'_>, u32)>>,
     source_manager: Arc<S>,
     event_replay: VecDeque<Vec<AdviceMutation>>,
+    event_recording: Option<Vec<Vec<AdviceMutation>>>,
 }
 impl<S> DebuggerHost<S>
 where
@@ -40,10 +37,10 @@ where
         Self {
             store: Default::default(),
             event_handlers: EventHandlerRegistry::default(),
-            tracing_callbacks: Default::default(),
             on_assert_failed: None,
             source_manager,
             event_replay: VecDeque::new(),
+            event_recording: None,
         }
     }
 
@@ -56,22 +53,32 @@ where
         self.event_replay = events;
     }
 
-    /// Register a trace handler for `event`
-    pub fn register_trace_handler<F>(&mut self, event: TraceEvent, callback: F)
-    where
-        F: FnMut(&ProcessorState<'_>, TraceEvent) + 'static,
-    {
-        let key = match event {
-            TraceEvent::AssertionFailed(None) => u32::MAX,
-            ev => ev.into(),
-        };
-        self.tracing_callbacks.entry(key).or_default().push(Box::new(callback));
+    /// Record the advice mutations produced by each event handler invocation.
+    ///
+    /// One entry is recorded per `on_event` invocation, in execution order, **including empty
+    /// mutation sets**, so the recorded log can be fed directly back into
+    /// [DebuggerHost::set_event_replay] to replay this execution later. Take the log with
+    /// [DebuggerHost::take_recorded_event_mutations] once execution completes.
+    ///
+    /// Mutations are only recorded for live event handling; nothing is recorded while an event
+    /// replay queue is being consumed.
+    pub fn with_event_advice_mutations_recording(mut self) -> Self {
+        self.event_recording = Some(Vec::new());
+        self
+    }
+
+    /// Returns the advice mutations recorded so far, leaving the recording empty.
+    ///
+    /// Returns an empty log when recording was not enabled via
+    /// [DebuggerHost::with_event_advice_mutations_recording].
+    pub fn take_recorded_event_mutations(&mut self) -> Vec<Vec<AdviceMutation>> {
+        self.event_recording.as_mut().map(core::mem::take).unwrap_or_default()
     }
 
     /// Register a handler to be called when an assertion in the VM fails
     pub fn register_assert_failed_tracer<F>(&mut self, callback: F)
     where
-        F: FnMut(&ProcessorState<'_>, TraceEvent) + 'static,
+        F: FnMut(&ProcessorState<'_>, u32) + 'static,
     {
         self.on_assert_failed = Some(Box::new(callback));
     }
@@ -86,13 +93,21 @@ where
         err_code: Option<NonZeroU32>,
     ) {
         if let Some(handler) = self.on_assert_failed.as_mut() {
-            handler(process, TraceEvent::AssertionFailed(err_code));
+            handler(process, err_code.map(|nz| nz.get()).unwrap_or_default());
         }
     }
 
+    /// Load `package` into the MAST store for this host
+    pub fn load_package(&mut self, package: Arc<Package>) {
+        let mast = package.mast_forest().clone();
+        let debug_info = package.debug_info();
+        self.store
+            .insert_loaded(LoadedMastForest::with_package_debug_info(mast, debug_info));
+    }
+
     /// Load `forest` into the MAST store for this host
-    pub fn load_mast_forest(&mut self, forest: Arc<MastForest>) {
-        self.store.insert(forest);
+    pub fn load_mast_forest(&mut self, forest: LoadedMastForest) {
+        self.store.insert_loaded(forest);
     }
 
     /// Registers an event handler for use during program execution.
@@ -118,16 +133,6 @@ where
         (span, maybe_file)
     }
 
-    fn on_trace(&mut self, process: &ProcessorState<'_>, trace_id: u32) -> Result<(), TraceError> {
-        let event = TraceEvent::from(trace_id);
-        if let Some(handlers) = self.tracing_callbacks.get_mut(&trace_id) {
-            for handler in handlers.iter_mut() {
-                handler(process, event);
-            }
-        }
-        Ok(())
-    }
-
     fn resolve_event(&self, event_id: EventId) -> Option<&EventName> {
         self.event_handlers.resolve_event(event_id)
     }
@@ -137,7 +142,10 @@ impl<S> Host for DebuggerHost<S>
 where
     S: SourceManager + ?Sized,
 {
-    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
+    fn get_mast_forest(
+        &self,
+        node_digest: &Word,
+    ) -> impl FutureMaybeSend<Option<LoadedMastForest>> {
         std::future::ready(self.store.get(node_digest))
     }
 
@@ -162,6 +170,9 @@ where
             }
             Err(err) => Err(err),
         };
+        if let (Some(log), Ok(mutations)) = (self.event_recording.as_mut(), &result) {
+            log.push(clone_advice_mutations(mutations));
+        }
         std::future::ready(result)
     }
 }

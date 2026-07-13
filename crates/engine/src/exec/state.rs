@@ -1,25 +1,28 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     rc::Rc,
+    sync::Arc,
 };
 
 use miden_assembly::SourceManager;
 use miden_core::{
-    mast::{MastForest, MastNode, MastNodeId},
+    mast::{MastNode, MastNodeId},
     operations::AssemblyOp,
 };
+use miden_mast_package::debug_info::PackageDebugInfo;
 use miden_processor::{
     ContextId, Continuation, ExecutionError, FastProcessor, Felt, ResumeContext, StackOutputs,
     operation::Operation, trace::RowIndex,
 };
 
-use super::{DebuggerHost, ExecutionTrace, TraceMonitor};
+use super::{DebuggerHost, ExecutionTrace};
 use crate::{
     Breakpoint, BreakpointType, OperationMatcher,
     debug::{
         CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo,
         snapshot_transient_debug_values,
     },
+    profiling::Profiler,
 };
 
 /// Resolve a future that is expected to complete immediately (synchronous host methods).
@@ -82,6 +85,8 @@ pub struct DebugExecutor {
     pub cycle: usize,
     /// Whether or not execution has terminated
     pub stopped: bool,
+    /// The profiler used by this executor
+    pub profiler: Profiler,
 }
 
 impl super::query::DebugQuery for DebugExecutor {
@@ -160,8 +165,7 @@ pub(crate) fn extract_current_op(
             | Continuation::FinishSplit(_)
             | Continuation::FinishLoop { .. }
             | Continuation::FinishCall(_)
-            | Continuation::FinishDyn(_)
-            | Continuation::FinishExternal(_) => {
+            | Continuation::FinishDyn(_) => {
                 return (None, None, None, Some(ControlFlowOp::End));
             }
             other if other.increments_clk() => {
@@ -176,18 +180,32 @@ pub(crate) fn extract_current_op(
 impl DebugExecutor {
     /// Returns true if the current program forest has debug-variable locations associated with
     /// `procedure`.
+    #[allow(unused)]
     pub fn procedure_has_debug_vars(&self, procedure: &str) -> bool {
         let Some(resume_ctx) = self.resume_ctx.as_ref() else {
             return false;
         };
+        let di: PackageDebugInfo = todo!();
+        /*
+        let Some(debug_info) = resume_ctx.debug_info() else {
+            return false;
+        };
+        */
 
-        forest_procedure_has_debug_vars(resume_ctx.current_forest(), procedure)
-    }
+        let Some(source_map) = di.source_map() else {
+            return false;
+        };
+        for asm_op in source_map.asm_ops() {
+            if asm_op.context_name != procedure {
+                continue;
+            }
+            let mut debug_vars = di.debug_vars_for_operation(asm_op.source_node, asm_op.op_idx);
+            if debug_vars.next().is_some() {
+                return true;
+            }
+        }
 
-    pub fn register_trace_monitor_for(&mut self, monitor: TraceMonitor, event: super::TraceEvent) {
-        self.host.register_trace_handler(event, move |state, event| {
-            monitor.handle_event(state.clock(), event)
-        });
+        false
     }
 
     /// Advance the program state by one cycle.
@@ -211,18 +229,30 @@ impl DebugExecutor {
             }
         };
 
+        let debug_info: Option<Arc<PackageDebugInfo>> = resume_ctx.debug_info();
+
         // Before step: peek continuation to determine what will execute
         let (op, node_id, op_idx, control) = extract_current_op(&resume_ctx);
-        let asmop = node_id
-            .and_then(|nid| resume_ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
+        let debug_node_id = match node_id {
+            Some(nid) => match debug_info.as_deref() {
+                Some(di) => di.unique_source_root_for_exec_node(nid).ok().flatten(),
+                None => None,
+            },
+            None => None,
+        };
+        let asmop = debug_node_id.and_then(|dnid| match op_idx {
+            Some(op_idx) => {
+                debug_info.as_deref().unwrap().asm_op_for_operation(dnid, op_idx as u32)
+            }
+            None => debug_info.as_deref().unwrap().first_asm_op_for_source_node(dnid),
+        });
 
         // Look up debug vars from MAST forest for the current operation
-        let mut debug_var_infos: Vec<_> = if let (Some(nid), Some(idx)) = (node_id, op_idx) {
-            let forest = resume_ctx.current_forest();
-            forest
-                .debug_vars_for_operation(nid, idx)
-                .iter()
-                .filter_map(|vid| forest.debug_var(*vid).cloned())
+        let mut debug_var_infos: Vec<_> = if let (Some(di), Some(dnid), Some(op_idx)) =
+            (debug_info.as_deref(), debug_node_id, op_idx)
+        {
+            di.debug_vars_for_operation(dnid, op_idx as u32)
+                .map(|dsv| dsv.var.clone())
                 .collect()
         } else {
             vec![]
@@ -248,9 +278,16 @@ impl DebugExecutor {
 
                 // Track operation
                 self.current_op = op;
-                self.current_asmop = asmop.clone();
+                self.current_asmop = asmop.map(|asmop| {
+                    AssemblyOp::new(
+                        asmop.location.clone(),
+                        asmop.context_name.clone(),
+                        asmop.num_cycles,
+                        asmop.op.clone(),
+                    )
+                });
                 if let Some(asmop) = asmop.as_ref() {
-                    self.current_proc = Some(Rc::from(asmop.context_name()));
+                    self.current_proc = Some(Rc::from(asmop.context_name.clone()));
                 }
 
                 if let Some(op) = op {
@@ -258,6 +295,7 @@ impl DebugExecutor {
                         self.recent.pop_front();
                     }
                     self.recent.push_back(op);
+                    self.profiler.on_operation_execution_cycle(op);
                 }
 
                 // Update call stack
@@ -290,6 +328,9 @@ impl DebugExecutor {
                 let len = self.current_stack.len().min(16);
                 self.stack_outputs =
                     StackOutputs::new(&self.current_stack[..len]).expect("invalid stack outputs");
+
+                // Write profiling reports in case its enabled
+                self.profiler.write_reports();
                 Ok(None)
             }
             Err(err) => {
@@ -307,11 +348,9 @@ impl DebugExecutor {
     pub fn step_until(
         &mut self,
         breakpoint: BreakpointType,
-        trace_monitor: Option<TraceMonitor>,
         source_manager: &dyn SourceManager,
     ) -> Result<(), ExecutionError> {
         let start_cycle = self.cycle;
-        let start_clock = self.processor.state().clock();
         let breakpoint = Breakpoint {
             id: 0,
             creation_cycle: start_cycle,
@@ -326,14 +365,6 @@ impl DebugExecutor {
                     return Ok(());
                 }
                 _ => (),
-            }
-
-            // Break on trace events, if monitored
-            if let BreakpointType::Trace(event_id) = breakpoint.ty
-                && let Some(trace_monitor) = trace_monitor.as_ref()
-                && trace_monitor.has_event_occurred_since(start_clock, |event| event == event_id)
-            {
-                return Ok(());
             }
 
             let (op, is_op_boundary, proc, loc) = {
@@ -354,7 +385,7 @@ impl DebugExecutor {
             };
 
             if let Some(op) = op
-                && breakpoint.should_break_for(&op)
+                && breakpoint.should_break_for(&op, &self.processor.state())
             {
                 return Ok(());
             }
@@ -370,7 +401,8 @@ impl DebugExecutor {
             let current_cycle = self.cycle;
             let cycles_stepped = current_cycle - start_cycle;
             if let Some(n) = breakpoint.cycles_to_skip(current_cycle)
-                && cycles_stepped >= n
+                && cycles_stepped > 0
+                && n == 0
             {
                 return Ok(());
             }
@@ -408,74 +440,49 @@ impl DebugExecutor {
     }
 }
 
-pub(crate) fn forest_procedure_has_debug_vars(forest: &MastForest, procedure: &str) -> bool {
-    forest_operation_matches(forest, |node_id, op_idx, asmop| {
-        asmop.context_name() == procedure
-            && !forest.debug_vars_for_operation(node_id, op_idx).is_empty()
-    })
-}
-
-fn forest_operation_matches(
-    forest: &MastForest,
-    mut matches: impl FnMut(MastNodeId, usize, &AssemblyOp) -> bool,
-) -> bool {
-    for (node_idx, node) in forest.nodes().iter().enumerate() {
-        let MastNode::Block(block) = node else {
-            continue;
-        };
-        let node_id = MastNodeId::new_unchecked(node_idx as u32);
-        for op_idx in 0..block.num_operations() as usize {
-            if forest
-                .get_assembly_op(node_id, Some(op_idx))
-                .is_some_and(|asmop| matches(node_id, op_idx, asmop))
-            {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use miden_assembly::DefaultSourceManager;
+    use miden_mast_package::Package;
 
     use super::*;
     use crate::exec::Executor;
 
     #[test]
-    fn callstack_tracks_nested_frame_trace_events() {
+    fn callstack_tracks_nested_frame_events() {
+        use crate::event::{FRAME_END_EVENT, FRAME_START_EVENT};
         let source_manager = Arc::new(DefaultSourceManager::default());
         let program = miden_assembly::Assembler::new(source_manager.clone())
             .assemble_program(
-                r#"
+                "program",
+                format!(
+                    r#"
 proc inner
+    emit.event("{FRAME_START_EVENT}")
     nop
+    emit.event("{FRAME_END_EVENT}")
 end
 
 proc outer
-    trace.240
-    nop
+    emit.event("{FRAME_START_EVENT}")
     exec.inner
-    trace.252
-    nop
+    emit.event("{FRAME_END_EVENT}")
 end
 
 begin
-    trace.240
-    nop
+    emit.event("{FRAME_START_EVENT}")
     exec.outer
-    trace.252
-    nop
+    emit.event("{FRAME_END_EVENT}")
 end
-"#,
+"#
+                ),
             )
+            .map(Arc::<Package>::from)
             .unwrap();
 
-        let mut executor = Executor::new(Vec::<Felt>::new()).into_debug(&program, source_manager);
+        let mut executor = Executor::new(Vec::<Felt>::new()).into_debug(program, source_manager);
         let mut max_depth = 0;
         let mut saw_inner = false;
         let mut snapshots = Vec::new();

@@ -10,6 +10,8 @@ use miden_debug::flamegraph::FlamegraphArgs;
 #[cfg(feature = "repl")]
 use miden_debug::run_repl_with_log_level as run_repl;
 #[cfg(feature = "tui")]
+use miden_debug::run_replay_and_log_level;
+#[cfg(feature = "tui")]
 use miden_debug::run_with_log_level as run;
 #[cfg(feature = "dap")]
 use miden_debug::{State, run_with_state_and_log_level as run_with_state};
@@ -39,6 +41,13 @@ pub fn main() -> Result<(), Report> {
     // Initialize logger, but do not install it, leave that up to the command handler
     let mut builder = env_logger::Builder::from_env("MIDENC_TRACE");
     builder.format_indent(Some(2));
+    // miden-core's deserializer logs advisory errors on every untrusted
+    // package load, even successful ones; real failures surface as errors in
+    // their own right. Keep the default output clean, but let an explicit
+    // MIDENC_TRACE spec re-enable the module.
+    if env::var("MIDENC_TRACE").is_err() {
+        builder.filter_module("miden_core::mast::serialization", log::LevelFilter::Off);
+    }
     if let Ok(precision) = env::var("MIDENC_TRACE_TIMING") {
         match precision.as_str() {
             "s" => builder.format_timestamp_secs(),
@@ -89,6 +98,11 @@ fn run_debugger(
         config.working_dir = Some(cwd);
     }
 
+    #[cfg(feature = "tui")]
+    if let Some(snapshot_path) = config.replay.clone() {
+        return run_replay_and_log_level(&snapshot_path, _logger, _log_level);
+    }
+
     #[cfg(feature = "dap")]
     if let Some(addr) = config.dap_connect.as_ref() {
         let state = State::new_for_dap(addr)?;
@@ -103,8 +117,26 @@ fn run_debugger(
     }
 
     #[cfg(feature = "repl")]
+    if let Some(commands) = config.commands.clone() {
+        // Batch mode: install the logger directly (no interactive frontend),
+        // then run the command script to completion and exit.
+        log::set_boxed_logger(_logger).ok();
+        log::set_max_level(_log_level);
+        return miden_debug::run_commands(config, &commands);
+    }
+
+    #[cfg(feature = "repl")]
     if config.repl {
         return run_repl(config, _logger, _log_level);
+    }
+
+    // The `--repl`/`--commands` flags exist whenever any interactive frontend is compiled in;
+    // if the REPL itself is not, fail loudly rather than silently launching the TUI.
+    #[cfg(all(not(feature = "repl"), any(feature = "tui", feature = "flamegraph")))]
+    if config.repl || config.commands.is_some() {
+        return Err(Report::msg(
+            "this build does not include the REPL; rebuild with `--features repl`",
+        ));
     }
 
     #[cfg(feature = "tui")]

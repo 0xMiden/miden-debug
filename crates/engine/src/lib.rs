@@ -1,6 +1,9 @@
 pub mod debug;
 pub mod exec;
 pub mod felt;
+mod linker;
+pub mod profiling;
+mod registry;
 #[cfg(test)]
 mod test_utils;
 
@@ -12,4 +15,6 @@ pub use self::{
     debug::*,
     exec::*,
     felt::{Felt, FromMidenRepr, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack},
+    linker::LinkLibrary,
+    registry::HybridPackageRegistry,
 };

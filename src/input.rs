@@ -3,8 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::linker::LibraryKind;
-
 #[derive(Debug, Clone)]
 pub enum InputFile {
     Real(PathBuf),
@@ -31,27 +29,6 @@ impl InputFile {
         match self {
             Self::Real(path) => std::fs::read(path).ok().map(Cow::Owned),
             Self::Stdin(bytes) => Some(Cow::Borrowed(bytes)),
-        }
-    }
-
-    pub fn library_kind(&self) -> Option<LibraryKind> {
-        match self {
-            Self::Real(path) if path.is_file() => {
-                if path.extension().and_then(|ext| ext.to_str()).is_some_and(|ext| ext == "masp") {
-                    return Some(LibraryKind::Masp);
-                }
-                let bytes = std::fs::read(path).ok()?;
-                if bytes.starts_with(b"MASP\0") {
-                    Some(LibraryKind::Masp)
-                } else {
-                    None
-                }
-            }
-            // Assume the path is a MASM project
-            Self::Real(_) => Some(LibraryKind::Masm),
-            Self::Stdin(bytes) if bytes.starts_with(b"MASP\0") => Some(LibraryKind::Masp),
-            // Assume the input is MASM text
-            Self::Stdin(_) => Some(LibraryKind::Masm),
         }
     }
 

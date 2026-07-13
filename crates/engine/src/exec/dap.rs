@@ -3,7 +3,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io::{BufReader, BufWriter},
     net::TcpListener,
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::{
         Arc, OnceLock,
@@ -14,21 +14,26 @@ use std::{
 use dap::prelude::*;
 use miden_core::{
     Word,
-    mast::{MastNode, MastNodeId},
-    operations::{AssemblyOp, DebugOptions, DebugVarInfo, DebugVarLocation},
+    mast::MastNodeId,
+    operations::{DebugVarInfo, DebugVarLocation},
     precompile::PrecompileTranscript,
-    program::Program,
+};
+use miden_mast_package::{
+    Package,
+    debug_info::{DebugSourceAsmOp, PackageDebugInfo},
 };
 use miden_processor::{
     BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend,
-    Host, ProcessorState, ResumeContext, StackInputs, StackOutputs, TraceError,
+    Host, LoadedMastForest, ProcessorState, ResumeContext, StackInputs, StackOutputs,
     advice::{AdviceInputs, AdviceMutation},
     event::EventError,
-    mast::MastForest,
     trace::RowIndex,
 };
 
-use super::{TraceEvent, state::extract_current_op};
+use super::{
+    EventMutationRecorder, MastForestRecorder, ReplaySnapshot, ReplaySnapshotRecorder,
+    ReplaySnapshotWrite, state::extract_current_op,
+};
 use crate::debug::{
     DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, resolve_variable_value,
     snapshot_transient_debug_values,
@@ -51,6 +56,14 @@ pub struct DapConfig {
     /// Shared flag: set by the server when a Phase 2 restart (terminate-and-reconnect) is
     /// requested, read by the caller to decide whether to recompile and re-enter.
     restart_requested: Arc<AtomicBool>,
+    /// When set, the advice mutations produced by the host's event handlers are recorded into
+    /// this shared log during the session. See [DapConfig::record_event_mutations].
+    event_recorder: Option<EventMutationRecorder>,
+    /// When set, a [ReplaySnapshot] of the session is written to this path once execution
+    /// completes. See [DapConfig::record_snapshot].
+    snapshot_path: Option<PathBuf>,
+    /// Shared status for the configured replay snapshot write.
+    snapshot_recorder: Option<ReplaySnapshotRecorder>,
 }
 
 impl DapConfig {
@@ -59,6 +72,9 @@ impl DapConfig {
             listen_addr: listen_addr.into(),
             source_path_prefixes: Vec::new(),
             restart_requested: Arc::new(AtomicBool::new(false)),
+            event_recorder: None,
+            snapshot_path: None,
+            snapshot_recorder: None,
         }
     }
 
@@ -69,6 +85,35 @@ impl DapConfig {
             .filter(|prefix| !prefix.is_empty())
             .collect();
         self
+    }
+
+    /// Record the advice mutations produced by the host's event handlers during the session.
+    ///
+    /// Returns a shared handle that outlives the executor: the [DapExecutor] is constructed
+    /// internally (e.g. by a transaction executor) from the global configuration and consumed
+    /// by execution, so the handle obtained here — by whoever installs the configuration via
+    /// [DapConfig::set_global] — is how the recorded log is read once execution returns.
+    ///
+    /// One entry is recorded per `on_event` invocation, in execution order, including empty
+    /// mutation sets. The log always describes the final run (it is cleared whenever the
+    /// session restarts execution from the beginning) and can be fed into an event-replay
+    /// debugging session (e.g. `Executor::into_debug_with_replay` or
+    /// `State::new_for_transaction`) to re-execute the same program without the original
+    /// host's event handlers.
+    pub fn record_event_mutations(&mut self) -> EventMutationRecorder {
+        self.event_recorder.get_or_insert_with(EventMutationRecorder::new).clone()
+    }
+
+    /// Write a [ReplaySnapshot] of the session to `path` once execution completes.
+    ///
+    /// The snapshot captures the program, its stack and advice inputs, the MAST forests the host
+    /// resolved, and the recorded event log — everything an event-replay debugging session needs
+    /// to re-execute the same program later without the original host (e.g.
+    /// `miden-debug --replay <path>`). It always describes the final run, since the recorded state
+    /// is reset whenever the session restarts execution from the beginning.
+    pub fn record_snapshot(&mut self, path: impl Into<PathBuf>) -> ReplaySnapshotRecorder {
+        self.snapshot_path = Some(path.into());
+        self.snapshot_recorder.get_or_insert_with(ReplaySnapshotRecorder::new).clone()
     }
 
     /// Returns `true` if the server has signalled a Phase 2 restart.
@@ -113,14 +158,27 @@ struct DapHostWrapper<'a, H: Host> {
     inner: &'a mut H,
     call_depth: usize,
     frames: Vec<DapCallFrame>,
+    /// When set, the advice mutations produced by each `on_event` invocation of the inner host
+    /// are recorded here, in execution order, so they can be replayed later (e.g. transaction
+    /// debugging with event replay).
+    event_recorder: Option<EventMutationRecorder>,
+    /// When set, the MAST forests the inner host resolves are recorded here, so a replay session
+    /// can load the same code for `call`/`dyncall` targets.
+    forest_recorder: Option<MastForestRecorder>,
 }
 
 impl<'a, H: Host> DapHostWrapper<'a, H> {
-    fn new(inner: &'a mut H) -> Self {
+    fn new(
+        inner: &'a mut H,
+        event_recorder: Option<EventMutationRecorder>,
+        forest_recorder: Option<MastForestRecorder>,
+    ) -> Self {
         Self {
             inner,
             call_depth: 0,
             frames: Vec::new(),
+            event_recorder,
+            forest_recorder,
         }
     }
 }
@@ -133,35 +191,6 @@ impl<H: Host> BaseHost for DapHostWrapper<'_, H> {
         self.inner.get_label_and_source_file(location)
     }
 
-    fn on_debug(
-        &mut self,
-        process: &ProcessorState<'_>,
-        options: &DebugOptions,
-    ) -> Result<(), miden_processor::DebugError> {
-        self.inner.on_debug(process, options)
-    }
-
-    fn on_trace(&mut self, process: &ProcessorState<'_>, trace_id: u32) -> Result<(), TraceError> {
-        let event = TraceEvent::from(trace_id);
-        match event {
-            TraceEvent::FrameStart => {
-                self.call_depth += 1;
-                self.frames.push(DapCallFrame {
-                    name: String::new(),
-                    source_path: None,
-                    line: 0,
-                    column: 0,
-                });
-            }
-            TraceEvent::FrameEnd => {
-                self.call_depth = self.call_depth.saturating_sub(1);
-                self.frames.pop();
-            }
-            _ => {}
-        }
-        self.inner.on_trace(process, trace_id)
-    }
-
     fn resolve_event(
         &self,
         event_id: miden_core::events::EventId,
@@ -171,15 +200,55 @@ impl<H: Host> BaseHost for DapHostWrapper<'_, H> {
 }
 
 impl<H: Host> Host for DapHostWrapper<'_, H> {
-    fn get_mast_forest(&self, node_digest: &Word) -> impl FutureMaybeSend<Option<Arc<MastForest>>> {
-        self.inner.get_mast_forest(node_digest)
+    fn get_mast_forest(
+        &self,
+        node_digest: &Word,
+    ) -> impl FutureMaybeSend<Option<LoadedMastForest>> {
+        // Record every forest the inner host resolves, so a replay session can load the same
+        // code for `call`/`dyncall` targets. The recorder deduplicates.
+        let forest_recorder = self.forest_recorder.clone();
+        let fut = self.inner.get_mast_forest(node_digest);
+        async move {
+            let forest = fut.await;
+            if let (Some(recorder), Some(forest)) = (&forest_recorder, &forest) {
+                recorder.record(forest.clone());
+            }
+            forest
+        }
     }
 
     fn on_event(
         &mut self,
         process: &ProcessorState<'_>,
     ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
-        self.inner.on_event(process)
+        use miden_core::events::EventId;
+        match crate::Event::from(EventId::from_felt(process.get_stack_item(0))) {
+            crate::Event::FrameStart => {
+                self.call_depth += 1;
+                self.frames.push(DapCallFrame {
+                    name: String::new(),
+                    source_path: None,
+                    line: 0,
+                    column: 0,
+                });
+            }
+            crate::Event::FrameEnd => {
+                self.call_depth = self.call_depth.saturating_sub(1);
+                self.frames.pop();
+            }
+            _ => (),
+        }
+        // Every invocation is recorded, including empty mutation sets: event replay pops one
+        // entry per event, so the log must stay aligned with the event stream.
+        let recorder = self.event_recorder.clone();
+        let fut = self.inner.on_event(process);
+        async move {
+            let result = fut.await;
+            if let (Some(recorder), Ok(mutations)) = (&recorder, &result) {
+                recorder.record(crate::exec::clone_advice_mutations(mutations));
+            }
+            result
+        }
     }
 }
 
@@ -201,8 +270,8 @@ macro_rules! write_with_format_type {
     ($out:ident, $read_expr:ident, $value:expr) => {
         match $read_expr.format {
             FormatType::Decimal => write!(&mut $out, "{}", $value).unwrap(),
-            FormatType::Hex => write!(&mut $out, "{:0x}", $value).unwrap(),
-            FormatType::Binary => write!(&mut $out, "{:0b}", $value).unwrap(),
+            FormatType::Hex => write!(&mut $out, "{:#x}", $value).unwrap(),
+            FormatType::Binary => write!(&mut $out, "{:#b}", $value).unwrap(),
         }
     };
 }
@@ -346,7 +415,7 @@ fn read_memory_at_current_state(
 fn build_ui_state<H: Host>(
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&AssemblyOp>,
+    current_asmop: Option<&DebugSourceAsmOp>,
     cycle: usize,
 ) -> crate::exec::DapUiState {
     // Build callstack from the host's frame stack (bottom-to-top order, reversed so the
@@ -357,7 +426,7 @@ fn build_ui_state<H: Host>(
             Some(asmop) => {
                 let loc = resolve_asmop_location(asmop, host);
                 let (source_path, line) = loc.map_or((None, 0), |(path, line)| (Some(path), line));
-                (asmop.context_name().to_string(), source_path, line)
+                (asmop.context_name.clone(), source_path, line)
             }
             None => (format!("cycle {cycle}"), None, 0),
         };
@@ -429,9 +498,9 @@ struct ContinueBreakpoints<'a> {
 // RESOLVE ASMOP LOCATION
 // ================================================================================================
 
-/// Resolve an `AssemblyOp`'s location to a (file_path, line_number) pair using the host.
-fn resolve_asmop_location<H: Host>(asmop: &AssemblyOp, host: &H) -> Option<(String, i64)> {
-    let location = asmop.location()?;
+/// Resolve an `DebugSourceAsmOp`'s location to a (file_path, line_number) pair using the host.
+fn resolve_asmop_location<H: Host>(asmop: &DebugSourceAsmOp, host: &H) -> Option<(String, i64)> {
+    let location = asmop.location.as_ref()?;
     let (span, source_file) = host.get_label_and_source_file(location);
     if let Some(source_file) = source_file {
         let file_line_col = source_file.location(span);
@@ -516,29 +585,22 @@ fn source_paths_match(left: &str, right: &str, trim_prefixes: &[String]) -> bool
 }
 
 fn breakable_source_lines<H: Host>(
-    forest: &MastForest,
+    debug_info: &PackageDebugInfo,
     host: &H,
     source_path: &str,
     trim_prefixes: &[String],
 ) -> BTreeSet<i64> {
     let mut lines = BTreeSet::new();
 
-    for (node_idx, node) in forest.nodes().iter().enumerate() {
-        let MastNode::Block(block) = node else {
+    let Some(source_map) = debug_info.source_map() else {
+        return lines;
+    };
+    for asmop in source_map.asm_ops() {
+        let Some((path, line)) = resolve_asmop_location(asmop, host) else {
             continue;
         };
-
-        let node_id = MastNodeId::new_unchecked(node_idx as u32);
-        for op_idx in 0..block.num_operations() as usize {
-            let Some(asmop) = forest.get_assembly_op(node_id, Some(op_idx)) else {
-                continue;
-            };
-            let Some((path, line)) = resolve_asmop_location(asmop, host) else {
-                continue;
-            };
-            if source_paths_match(&path, source_path, trim_prefixes) {
-                lines.insert(line);
-            }
+        if source_paths_match(&path, source_path, trim_prefixes) {
+            lines.insert(line);
         }
     }
 
@@ -546,37 +608,26 @@ fn breakable_source_lines<H: Host>(
 }
 
 fn minimum_source_line_for_proc<H: Host>(
-    forest: &MastForest,
+    debug_info: &PackageDebugInfo,
     host: &H,
     procedure: &str,
     source_path: &str,
     trim_prefixes: &[String],
 ) -> Option<i64> {
-    let mut min_line: Option<i64> = None;
-
-    for (node_idx, node) in forest.nodes().iter().enumerate() {
-        let MastNode::Block(block) = node else {
+    let source_map = debug_info.source_map()?;
+    let mut lines = BTreeSet::<i64>::default();
+    for asmop in source_map.asm_ops() {
+        if asmop.context_name != procedure {
+            continue;
+        }
+        let Some((path, line)) = resolve_asmop_location(asmop, host) else {
             continue;
         };
-
-        let node_id = MastNodeId::new_unchecked(node_idx as u32);
-        for op_idx in 0..block.num_operations() as usize {
-            let Some(asmop) = forest.get_assembly_op(node_id, Some(op_idx)) else {
-                continue;
-            };
-            if asmop.context_name() != procedure {
-                continue;
-            }
-            let Some((path, line)) = resolve_asmop_location(asmop, host) else {
-                continue;
-            };
-            if line > 1 && source_paths_match(&path, source_path, trim_prefixes) {
-                min_line = Some(min_line.map_or(line, |current| current.min(line)));
-            }
+        if line > 1 && source_paths_match(&path, source_path, trim_prefixes) {
+            lines.insert(line);
         }
     }
-
-    min_line
+    lines.pop_first()
 }
 
 fn resolve_breakpoint_line(lines: &BTreeSet<i64>, requested_line: i64) -> Option<i64> {
@@ -589,23 +640,6 @@ fn resolve_breakpoint_line(lines: &BTreeSet<i64>, requested_line: i64) -> Option
         .next()
         .copied()
         .or_else(|| lines.range(..requested_line).next_back().copied())
-}
-
-fn debug_var_infos_for_context(ctx: &ResumeContext) -> Vec<DebugVarInfo> {
-    let (_op, node_id, op_idx, _control) = extract_current_op(ctx);
-    let Some(node_id) = node_id else {
-        return Vec::new();
-    };
-    let Some(op_idx) = op_idx else {
-        return Vec::new();
-    };
-
-    let forest = ctx.current_forest();
-    forest
-        .debug_vars_for_operation(node_id, op_idx)
-        .iter()
-        .filter_map(|var_id| forest.debug_var(*var_id).cloned())
-        .collect()
 }
 
 fn record_debug_vars(
@@ -627,7 +661,7 @@ fn is_compiler_generated_name(name: &str) -> bool {
 
 fn is_visible_source_var<H: Host>(
     var: &DebugVarSnapshot,
-    current_asmop: Option<&AssemblyOp>,
+    current_asmop: Option<&DebugSourceAsmOp>,
     host: &DapHostWrapper<'_, H>,
     source_path_prefixes: &[String],
     show_all: bool,
@@ -716,7 +750,7 @@ fn debug_var_to_dap_variable(
 fn debug_variables<H: Host>(
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&AssemblyOp>,
+    current_asmop: Option<&DebugSourceAsmOp>,
     debug_state: &DapDebugVarState,
     source_path_prefixes: &[String],
     show_all: bool,
@@ -734,7 +768,7 @@ fn debug_variables<H: Host>(
 fn format_debug_variables<H: Host>(
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&AssemblyOp>,
+    current_asmop: Option<&DebugSourceAsmOp>,
     debug_state: &DapDebugVarState,
     source_path_prefixes: &[String],
     show_all: bool,
@@ -766,7 +800,7 @@ fn format_debug_variables<H: Host>(
 fn evaluate_debug_variable<H: Host>(
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&AssemblyOp>,
+    current_asmop: Option<&DebugSourceAsmOp>,
     debug_state: &DapDebugVarState,
     source_path_prefixes: &[String],
     expression: &str,
@@ -782,12 +816,15 @@ fn evaluate_debug_variable<H: Host>(
 ///
 /// If the frame stack is empty (e.g. before the first FrameStart trace event), a root frame
 /// is pushed so there is always at least one frame visible in the stack trace.
-fn update_top_frame<H: Host>(host: &mut DapHostWrapper<'_, H>, current_asmop: Option<&AssemblyOp>) {
+fn update_top_frame<H: Host>(
+    host: &mut DapHostWrapper<'_, H>,
+    current_asmop: Option<&DebugSourceAsmOp>,
+) {
     let (name, source_path, line) = match current_asmop {
         Some(asmop) => {
             let loc = resolve_asmop_location(asmop, &*host);
             let (source_path, line) = loc.map_or((None, 0), |(p, l)| (Some(p), l));
-            (asmop.context_name().to_string(), source_path, line)
+            (asmop.context_name.clone(), source_path, line)
         }
         None => (String::new(), None, 0),
     };
@@ -820,6 +857,8 @@ pub struct DapExecutor {
     advice_inputs: AdviceInputs,
     options: ExecutionOptions,
     config: DapConfig,
+    event_recorder: Option<EventMutationRecorder>,
+    forest_recorder: Option<MastForestRecorder>,
 }
 
 /// Variables reference IDs for scopes.
@@ -846,17 +885,48 @@ impl DapExecutor {
         options: ExecutionOptions,
     ) -> Self {
         let config = DAP_CONFIG.get().cloned().unwrap_or_default();
+        // Writing a snapshot requires both the event log and the resolved forests. Ensure an
+        // event recorder exists (reusing the config's shared one if present) and turn on forest
+        // recording whenever a snapshot path is configured.
+        let (event_recorder, forest_recorder) = if config.snapshot_path.is_some() {
+            (
+                Some(config.event_recorder.clone().unwrap_or_default()),
+                Some(MastForestRecorder::new()),
+            )
+        } else {
+            (config.event_recorder.clone(), None)
+        };
         DapExecutor {
             stack_inputs,
             advice_inputs,
             options,
             config,
+            event_recorder,
+            forest_recorder,
         }
+    }
+
+    /// Record the advice mutations produced by each event handler invocation of the wrapped
+    /// host during execution.
+    ///
+    /// Returns a handle to the shared log. When recording was enabled on the installed
+    /// [DapConfig] (see [DapConfig::record_event_mutations]), this is the same log, so
+    /// embedders that never see the executor instance read the recording through their config
+    /// handle instead.
+    ///
+    /// One entry is recorded per `on_event` invocation, in execution order, including empty
+    /// mutation sets, so the log can be fed directly into an event replay queue (e.g.
+    /// `Executor::into_debug_with_replay` or `State::new_for_transaction`) to debug the same
+    /// execution later without access to the original host. The log is cleared automatically
+    /// whenever the DAP session restarts execution from the beginning, so after execution
+    /// completes it always describes the final run.
+    pub fn record_event_mutations(&mut self) -> EventMutationRecorder {
+        self.event_recorder.get_or_insert_with(EventMutationRecorder::new).clone()
     }
 
     pub fn execute_async<H: Host + Send>(
         self,
-        program: &Program,
+        program: Arc<Package>,
         host: &mut H,
     ) -> impl FutureMaybeSend<Result<ExecutionOutput, ExecutionError>> {
         async move { self.run_dap_server(program, host) }
@@ -864,60 +934,77 @@ impl DapExecutor {
 }
 
 impl DapExecutor {
+    /// Bind the DAP listen socket, reporting failures (bad address, port in
+    /// use, ...) as errors instead of aborting the process.
+    fn bind_listener(listen_addr: &str) -> Result<TcpListener, String> {
+        use std::net::ToSocketAddrs;
+
+        use socket2::{Domain, Socket, Type};
+        let addr: std::net::SocketAddr = listen_addr
+            .to_socket_addrs()
+            .map_err(|e| format!("invalid listen address '{listen_addr}': {e}"))?
+            .next()
+            .ok_or_else(|| {
+                format!("listen address '{listen_addr}' did not resolve to any address")
+            })?;
+        let socket = Socket::new(Domain::for_address(addr), Type::STREAM, None)
+            .map_err(|e| format!("failed to create socket: {e}"))?;
+        socket.set_reuse_address(true).ok();
+        socket
+            .bind(&addr.into())
+            .map_err(|e| format!("DAP server failed to bind to {addr}: {e}"))?;
+        socket
+            .listen(1)
+            .map_err(|e| format!("DAP server failed to listen on {addr}: {e}"))?;
+        Ok(socket.into())
+    }
+
     fn run_dap_server<H: Host>(
         self,
-        program: &Program,
+        root_package: Arc<Package>,
         host: &mut H,
     ) -> Result<ExecutionOutput, ExecutionError> {
+        assert!(root_package.is_program(), "cannot execute a non-executable package");
+
         // Clone inputs so they can be reused across restarts.
-        let stack_inputs = self.stack_inputs;
-        let advice_inputs = self.advice_inputs;
-        let options = self.options.with_debugging(true).with_tracing(true);
+        let Self {
+            stack_inputs,
+            advice_inputs,
+            options,
+            config,
+            ..
+        } = self;
 
         // Bind TCP listener with SO_REUSEADDR to allow rebinding during Phase 2 restarts.
-        let listener = {
-            use std::net::ToSocketAddrs;
-
-            use socket2::{Domain, Socket, Type};
-            let addr: std::net::SocketAddr = self
-                .config
-                .listen_addr
-                .to_socket_addrs()
-                .unwrap_or_else(|e| {
-                    panic!("invalid listen address '{}': {e}", self.config.listen_addr)
-                })
-                .next()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "listen address '{}' did not resolve to any address",
-                        self.config.listen_addr
-                    )
-                });
-            let socket = Socket::new(Domain::for_address(addr), Type::STREAM, None)
-                .unwrap_or_else(|e| panic!("failed to create socket: {e}"));
-            socket.set_reuse_address(true).ok();
-            socket
-                .bind(&addr.into())
-                .unwrap_or_else(|e| panic!("DAP server failed to bind to {addr}: {e}"));
-            socket
-                .listen(1)
-                .unwrap_or_else(|e| panic!("DAP server failed to listen on {addr}: {e}"));
-            let listener: TcpListener = socket.into();
-            listener
+        let listener = match Self::bind_listener(&config.listen_addr) {
+            Ok(listener) => listener,
+            Err(err) => {
+                log::error!("{err}");
+                return Err(ExecutionError::Internal("failed to start DAP server"));
+            }
         };
-        eprintln!(
+        log::info!(
             "DAP server listening on {}. Waiting for client connection...",
-            self.config.listen_addr
+            config.listen_addr
         );
 
         // Accept one client connection (persists across restarts).
-        let (stream, addr) =
-            listener.accept().unwrap_or_else(|e| panic!("DAP server accept failed: {e}"));
-        eprintln!("DAP client connected from {addr}");
+        let (stream, addr) = match listener.accept() {
+            Ok(accepted) => accepted,
+            Err(err) => {
+                log::error!("DAP server accept failed: {err}");
+                return Err(ExecutionError::Internal("DAP server accept failed"));
+            }
+        };
+        log::info!("DAP client connected from {addr}");
 
-        let reader = BufReader::new(
-            stream.try_clone().unwrap_or_else(|e| panic!("Failed to clone TCP stream: {e}")),
-        );
+        let reader = BufReader::new(match stream.try_clone() {
+            Ok(stream) => stream,
+            Err(err) => {
+                log::error!("failed to clone TCP stream: {err}");
+                return Err(ExecutionError::Internal("failed to clone TCP stream"));
+            }
+        });
         let writer = BufWriter::new(stream);
 
         let mut server = Server::new(reader, writer);
@@ -929,8 +1016,8 @@ impl DapExecutor {
         // whether the entry stop has already been announced so it fires
         // exactly once regardless of which client we're talking to.
         let mut entry_announced = false;
-        let restart_flag = self.config.restart_requested.clone();
-        let source_path_prefixes = self.config.source_path_prefixes.clone();
+        let restart_flag = config.restart_requested.clone();
+        let source_path_prefixes = config.source_path_prefixes.clone();
 
         // Outer restart loop — on restart, the DapHostWrapper borrow is dropped,
         // a fresh FastProcessor is created, and the inner event loop re-enters.
@@ -944,19 +1031,33 @@ impl DapExecutor {
                 FastProcessor::new_with_options(stack_inputs, advice_inputs.clone(), options)
                     .expect("advice inputs should fit advice map limits");
 
-            let resume_ctx = processor.get_initial_resume_context(program)?;
-            let mut wrapper = DapHostWrapper::new(host);
+            let resume_ctx =
+                processor.get_initial_resume_context_for_package(root_package.clone())?;
+            // Each pass through this loop starts execution from the beginning, so any mutations
+            // or forests recorded by a previous (restarted) run no longer apply.
+            if let Some(recorder) = self.event_recorder.as_ref() {
+                recorder.clear();
+            }
+            if let Some(recorder) = self.forest_recorder.as_ref() {
+                recorder.clear();
+            }
+            let mut wrapper = DapHostWrapper::new(
+                host,
+                self.event_recorder.clone(),
+                self.forest_recorder.clone(),
+            );
 
             let mut resume_ctx = Some(resume_ctx);
             let mut cycle: usize = 0;
-            let mut current_asmop: Option<AssemblyOp> = None;
+            let mut current_debug_info: Option<Arc<PackageDebugInfo>> = None;
+            let mut current_asmop: Option<DebugSourceAsmOp> = None;
             let mut debug_state = DapDebugVarState::new();
 
             // Extract initial asmop and populate the root frame.
             if let Some(ctx) = resume_ctx.as_ref() {
+                current_debug_info = ctx.debug_info();
                 let (_op, node_id, op_idx, _control) = extract_current_op(ctx);
-                current_asmop = node_id
-                    .and_then(|nid| ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
+                current_asmop = extract_asm_op(ctx, node_id, op_idx);
             }
             update_top_frame(&mut wrapper, current_asmop.as_ref());
 
@@ -990,7 +1091,7 @@ impl DapExecutor {
                     Ok(Some(req)) => req,
                     Ok(None) => break,
                     Err(e) => {
-                        eprintln!("DAP protocol error: {e:#?}");
+                        log::error!("DAP protocol error: {e:#?}");
                         break;
                     }
                 };
@@ -1142,6 +1243,19 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
+                                        path,
+                                        snapshot_recorder: config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
+                                        program: root_package.clone(),
+                                        stack_inputs,
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
+                                }
                                 return Err(e);
                             }
                         }
@@ -1196,6 +1310,19 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
+                                        path,
+                                        snapshot_recorder: config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
+                                        program: root_package.clone(),
+                                        stack_inputs,
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
+                                }
                                 return Err(e);
                             }
                         }
@@ -1232,6 +1359,19 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
+                                        path,
+                                        snapshot_recorder: config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
+                                        program: root_package.clone(),
+                                        stack_inputs,
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
+                                }
                                 return Err(e);
                             }
                         }
@@ -1268,6 +1408,19 @@ impl DapExecutor {
                             }
                             StepResult::Error(e) => {
                                 server.send_event(Event::Terminated(None)).ok();
+                                // Capture the failed run so it can still be replayed offline.
+                                if let Some(path) = config.snapshot_path.as_ref() {
+                                    write_replay_snapshot(ReplaySnapshotWriteContext {
+                                        path,
+                                        snapshot_recorder: config.snapshot_recorder.as_ref(),
+                                        event_recorder: self.event_recorder.as_ref(),
+                                        forest_recorder: self.forest_recorder.as_ref(),
+                                        program: root_package.clone(),
+                                        stack_inputs,
+                                        advice_inputs: &advice_inputs,
+                                        options,
+                                    });
+                                }
                                 return Err(e);
                             }
                         }
@@ -1300,7 +1453,7 @@ impl DapExecutor {
                                     path: Some(path),
                                     ..Default::default()
                                 };
-                                (asmop.context_name().to_string(), Some(source), line_num)
+                                (asmop.context_name.clone(), Some(source), line_num)
                             } else {
                                 (format!("cycle {cycle}"), None, 0)
                             };
@@ -1444,12 +1597,17 @@ impl DapExecutor {
                         breakpoints.retain(|bp| {
                             !source_paths_match(&bp.path, &source_path, &source_path_prefixes)
                         });
-                        let breakable_lines = breakable_source_lines(
-                            program.mast_forest(),
-                            &wrapper,
-                            &source_path,
-                            &source_path_prefixes,
-                        );
+                        let breakable_lines =
+                            if let Some(debug_info) = current_debug_info.as_deref() {
+                                breakable_source_lines(
+                                    debug_info,
+                                    &wrapper,
+                                    &source_path,
+                                    &source_path_prefixes,
+                                )
+                            } else {
+                                BTreeSet::default()
+                            };
 
                         let mut confirmed = Vec::new();
                         if let Some(bps) = &args.breakpoints {
@@ -1660,7 +1818,7 @@ impl DapExecutor {
             }
 
             if phase2_requested {
-                eprintln!("DAP Phase 2 restart: returning from execute() for recompilation...");
+                log::debug!("DAP Phase 2 restart: returning from execute() for recompilation...");
                 return Ok(ExecutionOutput {
                     stack: StackOutputs::new(&[]).expect("empty stack outputs"),
                     advice: Default::default(),
@@ -1671,14 +1829,14 @@ impl DapExecutor {
 
             if restart_requested {
                 is_restart = true;
-                eprintln!("DAP restart requested. Resetting processor...");
+                log::debug!("DAP restart requested. Resetting processor...");
                 // wrapper is dropped here, releasing the &mut H borrow.
                 // The outer loop creates a fresh processor and wrapper.
                 continue;
             }
 
             // Normal exit (disconnect or connection closed).
-            eprintln!("DAP session ended. Building execution output...");
+            log::debug!("DAP session ended. Building execution output...");
 
             // Run the program to completion if it hasn't finished.
             if let Some(ctx) = resume_ctx {
@@ -1689,9 +1847,39 @@ impl DapExecutor {
                             ctx = Some(new_ctx);
                         }
                         Ok(None) => break,
-                        Err(e) => return Err(e),
+                        Err(e) => {
+                            // Capture the run up to the failure so it can still be replayed.
+                            if let Some(path) = config.snapshot_path.as_ref() {
+                                write_replay_snapshot(ReplaySnapshotWriteContext {
+                                    path,
+                                    snapshot_recorder: config.snapshot_recorder.as_ref(),
+                                    event_recorder: self.event_recorder.as_ref(),
+                                    forest_recorder: self.forest_recorder.as_ref(),
+                                    program: root_package.clone(),
+                                    stack_inputs,
+                                    advice_inputs: &advice_inputs,
+                                    options,
+                                });
+                            }
+                            return Err(e);
+                        }
                     }
                 }
+            }
+
+            // If a snapshot path is configured, persist a self-contained replay snapshot of this
+            // (final) run: program, inputs, resolved forests, and the recorded event log.
+            if let Some(path) = config.snapshot_path.as_ref() {
+                write_replay_snapshot(ReplaySnapshotWriteContext {
+                    path,
+                    snapshot_recorder: config.snapshot_recorder.as_ref(),
+                    event_recorder: self.event_recorder.as_ref(),
+                    forest_recorder: self.forest_recorder.as_ref(),
+                    program: root_package.clone(),
+                    stack_inputs,
+                    advice_inputs: &advice_inputs,
+                    options,
+                });
             }
 
             // Build ExecutionOutput from the processor's final state.
@@ -1710,6 +1898,61 @@ impl DapExecutor {
     }
 }
 
+/// Build and write a [ReplaySnapshot] of the current run to `path`.
+///
+/// Reads the recorders without draining them (via their `snapshot()`), so a caller that also
+/// reads the shared event recorder afterwards — e.g. an embedder reporting how many mutation sets
+/// were recorded — still sees the full log. Called on every terminal outcome, clean exit or a
+/// failed step, so a failing transaction is captured and replayable too.
+struct ReplaySnapshotWriteContext<'a> {
+    path: &'a Path,
+    snapshot_recorder: Option<&'a ReplaySnapshotRecorder>,
+    event_recorder: Option<&'a EventMutationRecorder>,
+    forest_recorder: Option<&'a MastForestRecorder>,
+    program: Arc<Package>,
+    stack_inputs: StackInputs,
+    advice_inputs: &'a AdviceInputs,
+    options: ExecutionOptions,
+}
+
+fn write_replay_snapshot(context: ReplaySnapshotWriteContext<'_>) {
+    let event_log = context.event_recorder.map(EventMutationRecorder::snapshot).unwrap_or_default();
+    let mast_forests =
+        context.forest_recorder.map(MastForestRecorder::snapshot).unwrap_or_default();
+    let snapshot = ReplaySnapshot {
+        package: context.program.clone(),
+        stack_inputs: context.stack_inputs,
+        advice_inputs: context.advice_inputs.clone(),
+        options: context.options,
+        mast_forests,
+        event_log,
+    };
+    match snapshot.write_to_file(context.path) {
+        Ok(()) => {
+            let write = ReplaySnapshotWrite {
+                path: context.path.to_path_buf(),
+                event_count: snapshot.event_log.len(),
+                forest_count: snapshot.mast_forests.len(),
+            };
+            if let Some(recorder) = context.snapshot_recorder {
+                recorder.record_success(write.clone());
+            }
+            eprintln!(
+                "Wrote replay snapshot ({} event(s), {} forest(s)) to {}",
+                write.event_count,
+                write.forest_count,
+                write.path.display()
+            );
+        }
+        Err(err) => {
+            if let Some(recorder) = context.snapshot_recorder {
+                recorder.record_error(context.path.to_path_buf(), err.to_string());
+            }
+            eprintln!("Failed to write replay snapshot to {}: {err}", context.path.display());
+        }
+    }
+}
+
 // STEPPING HELPERS
 // ================================================================================================
 
@@ -1718,13 +1961,20 @@ fn advance_one<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     ctx: ResumeContext,
     cycle: &mut usize,
-    current_asmop: &mut Option<AssemblyOp>,
+    current_asmop: &mut Option<DebugSourceAsmOp>,
     debug_state: &mut DapDebugVarState,
 ) -> Result<Option<ResumeContext>, ExecutionError> {
     let (_op, node_id, op_idx, _control) = extract_current_op(&ctx);
-    let executed_asmop =
-        node_id.and_then(|nid| ctx.current_forest().get_assembly_op(nid, op_idx).cloned());
-    let mut debug_var_infos = debug_var_infos_for_context(&ctx);
+    let executed_asmop = extract_asm_op(&ctx, node_id, op_idx);
+    let mut debug_var_infos = match executed_asmop.as_ref() {
+        Some(asmop) => {
+            let di = ctx.debug_info().unwrap();
+            di.debug_vars_for_operation(asmop.source_node, asmop.op_idx)
+                .map(|dsv| dsv.var.clone())
+                .collect::<Vec<_>>()
+        }
+        None => vec![],
+    };
     let pre_step_stack = processor.state().get_stack_state();
     snapshot_transient_debug_values(&mut debug_var_infos, &pre_step_stack);
     match poll_immediately(processor.step(host, ctx)) {
@@ -1740,6 +1990,21 @@ fn advance_one<H: Host>(
             Ok(None)
         }
         Err(e) => Err(e),
+    }
+}
+
+fn extract_asm_op(
+    ctx: &ResumeContext,
+    node_id: Option<MastNodeId>,
+    op_idx: Option<usize>,
+) -> Option<DebugSourceAsmOp> {
+    let node_id = node_id?;
+    let debug_info = ctx.debug_info()?;
+
+    let debug_node_id = debug_info.unique_source_root_for_exec_node(node_id).ok().flatten()?;
+    match op_idx {
+        Some(op_idx) => debug_info.asm_op_for_operation(debug_node_id, op_idx as u32).cloned(),
+        None => debug_info.first_asm_op_for_source_node(debug_node_id).cloned(),
     }
 }
 
@@ -1781,7 +2046,7 @@ fn step_one<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
-    current_asmop: &mut Option<AssemblyOp>,
+    current_asmop: &mut Option<DebugSourceAsmOp>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let ctx = match resume_ctx.take() {
@@ -1806,7 +2071,7 @@ fn step_over<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
-    current_asmop: &mut Option<AssemblyOp>,
+    current_asmop: &mut Option<DebugSourceAsmOp>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let original_asmop = current_asmop.clone();
@@ -1838,23 +2103,18 @@ fn step_next_line<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
-    current_asmop: &mut Option<AssemblyOp>,
+    current_asmop: &mut Option<DebugSourceAsmOp>,
     source_path_prefixes: &[String],
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let original_asmop = current_asmop.clone();
-    let start_proc = original_asmop.as_ref().map(|asmop| asmop.context_name().to_string());
+    let start_proc = original_asmop.as_ref().map(|asmop| asmop.context_name.clone());
     let start_loc = original_asmop.as_ref().and_then(|asmop| resolve_asmop_location(asmop, host));
     let minimum_source_line = if let (Some(ctx), Some(proc), Some((source_path, _line))) =
         (resume_ctx.as_ref(), start_proc.as_deref(), start_loc.as_ref())
+        && let Some(debug_info) = ctx.debug_info()
     {
-        minimum_source_line_for_proc(
-            ctx.current_forest(),
-            host,
-            proc,
-            source_path,
-            source_path_prefixes,
-        )
+        minimum_source_line_for_proc(&debug_info, host, proc, source_path, source_path_prefixes)
     } else {
         None
     };
@@ -1869,8 +2129,7 @@ fn step_next_line<H: Host>(
             Ok(Some(new_ctx)) => {
                 *resume_ctx = Some(new_ctx);
 
-                let current_proc =
-                    current_asmop.as_ref().map(|asmop| asmop.context_name().to_string());
+                let current_proc = current_asmop.as_ref().map(|asmop| asmop.context_name.clone());
                 let current_loc =
                     current_asmop.as_ref().and_then(|asmop| resolve_asmop_location(asmop, host));
                 let has_source_context = start_loc.is_some() || current_loc.is_some();
@@ -1904,7 +2163,7 @@ fn step_out<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
-    current_asmop: &mut Option<AssemblyOp>,
+    current_asmop: &mut Option<DebugSourceAsmOp>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let target_depth = host.call_depth.saturating_sub(1);
@@ -1936,7 +2195,7 @@ fn step_until_breakpoint<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
-    current_asmop: &mut Option<AssemblyOp>,
+    current_asmop: &mut Option<DebugSourceAsmOp>,
     breakpoints: &ContinueBreakpoints<'_>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
@@ -1973,7 +2232,7 @@ fn step_until_breakpoint<H: Host>(
                     // source file path. Context names may have a leading `::` (absolute
                     // paths like `::prologue::foo`), so we also try matching without it.
                     if !breakpoints.function.is_empty() {
-                        let context_name = asmop.context_name();
+                        let context_name = &asmop.context_name;
                         let stripped_name = context_name.strip_prefix("::").unwrap_or(context_name);
                         for fbp in breakpoints.function {
                             // Match via glob pattern or suffix (e.g. "prologue::foo"
@@ -2017,7 +2276,7 @@ fn send_ui_state_snapshot<R: std::io::Read, W: std::io::Write, H: Host>(
     server: &mut Server<R, W>,
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&AssemblyOp>,
+    current_asmop: Option<&DebugSourceAsmOp>,
     cycle: usize,
 ) {
     let ui_state = build_ui_state(processor, host, current_asmop, cycle);
@@ -2036,7 +2295,7 @@ fn announce_entry_stop<R: std::io::Read, W: std::io::Write, H: Host>(
     server: &mut Server<R, W>,
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&AssemblyOp>,
+    current_asmop: Option<&DebugSourceAsmOp>,
     cycle: usize,
     already_announced: &mut bool,
 ) {
@@ -2097,7 +2356,105 @@ enum StepResult {
 
 #[cfg(test)]
 mod tests {
+    use miden_assembly::DefaultSourceManager;
+    use miden_core::{
+        Felt,
+        events::{EventId, EventName},
+    };
+    use miden_processor::event::EventHandler;
+
     use super::*;
+    use crate::exec::{DebuggerHost, EventMutationRecorder};
+
+    struct PushSeven;
+
+    impl EventHandler for PushSeven {
+        fn on_event(
+            &self,
+            _process: &ProcessorState<'_>,
+        ) -> Result<Vec<AdviceMutation>, EventError> {
+            Ok(vec![AdviceMutation::ExtendStack {
+                values: vec![Felt::from(7u32)],
+            }])
+        }
+    }
+
+    /// The DAP host wrapper is what a client-provided host (e.g. a transaction executor host)
+    /// is driven through; recording must capture the mutations its event handlers produce.
+    #[test]
+    fn dap_host_wrapper_records_event_mutations() {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let event_name = "miden-debug::test::dap-record";
+        let event_id = EventId::from_name(event_name).as_u64();
+        let program = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program(
+                "program",
+                format!("begin push.{event_id} emit drop adv_push drop end"),
+            )
+            .map(Arc::from)
+            .expect("failed to assemble test program");
+
+        let mut host = DebuggerHost::new(source_manager);
+        host.register_event_handler(
+            EventName::from_string(event_name.to_string()),
+            Arc::new(PushSeven),
+        )
+        .expect("failed to register event handler");
+
+        let recorder = EventMutationRecorder::new();
+        let mut wrapper = DapHostWrapper::new(&mut host, Some(recorder.clone()), None);
+
+        let mut processor = FastProcessor::new_with_options(
+            StackInputs::new(&[]).unwrap(),
+            AdviceInputs::default(),
+            ExecutionOptions::default(),
+        )
+        .expect("invalid inputs");
+        let mut resume_ctx = Some(
+            processor
+                .get_initial_resume_context_for_package(program)
+                .expect("invalid program"),
+        );
+        while let Some(ctx) = resume_ctx.take() {
+            match poll_immediately(processor.step(&mut wrapper, ctx)).expect("execution failed") {
+                Some(next) => resume_ctx = Some(next),
+                None => break,
+            }
+        }
+
+        assert_eq!(recorder.len(), 1, "expected one recorded entry for the emitted event");
+        let batches = recorder.take();
+        match batches[0].as_slice() {
+            [AdviceMutation::ExtendStack { values }] => {
+                assert_eq!(values.as_slice(), &[Felt::from(7u32)]);
+            }
+            _ => panic!("unexpected mutations recorded"),
+        }
+        assert!(recorder.is_empty(), "take() should leave the recorder empty");
+    }
+
+    /// The executor is constructed internally (e.g. by a transaction executor) and consumed by
+    /// execution, so embedders read the recording through the handle obtained from the global
+    /// [DapConfig] before execution: both must share one log.
+    #[test]
+    fn dap_config_recorder_is_shared_with_the_executor() {
+        let mut config = DapConfig::new("127.0.0.1:0");
+        let config_handle = config.record_event_mutations();
+        DapConfig::set_global(config);
+
+        let mut executor = DapExecutor::new(
+            StackInputs::new(&[]).unwrap(),
+            AdviceInputs::default(),
+            ExecutionOptions::default(),
+        );
+        executor.record_event_mutations().record(vec![]);
+
+        assert_eq!(
+            config_handle.len(),
+            1,
+            "recording through the executor must be visible through the config handle"
+        );
+    }
 
     #[test]
     fn source_paths_match_only_uses_declared_trim_prefixes() {

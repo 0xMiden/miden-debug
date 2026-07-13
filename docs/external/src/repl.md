@@ -16,7 +16,7 @@ when:
 - you just prefer line-by-line output.
 
 ```bash
-miden-debug --repl sum.masm
+miden-debug --repl sum.masp
 ```
 
 :::warning REPL is opt-in
@@ -28,8 +28,8 @@ feature to make `--repl` actually drop into the prompt:
 cargo build --release --features repl --bin miden-debug
 ```
 
-Without that feature the `--repl` flag is accepted but silently ignored —
-the binary falls back to the TUI.
+Without that feature, `--repl` (and `--commands`) exit with an error
+explaining that the build lacks the `repl` feature.
 
 :::
 
@@ -51,7 +51,7 @@ arguments.
 | `next-line` | `nl`, `nextline` | Execute until the next source line |
 | `continue` | `c` | Run until a breakpoint or program end |
 | `finish` | `e` | Run until the current call frame returns |
-| `reload` | | Restart the program from disk |
+| `reload` | | Restart program execution from the beginning (breakpoints are preserved) |
 
 ### Breakpoints
 
@@ -67,7 +67,7 @@ arguments.
 | ------- | ------- | ------ |
 | `stack` | | Print the operand stack |
 | `mem ADDR [OPTS]` | `memory` | Read linear memory — same syntax as the TUI's `:r` |
-| `locals` | | Print the procedure's locals (raw frame slots) |
+| `locals` | | Alias for `vars` |
 | `vars [all]` | `variables` | Print source-level variables. `all` includes compiler-generated locals (named `local0`, `local1`, …) |
 | `where` | `w` | Print the current source location and procedure |
 | `list` | `l` | Print recently executed instructions |
@@ -86,8 +86,8 @@ Identical to the TUI prompt. `<SPEC>` is one of:
 
 | Spec | Meaning |
 | ---- | ------- |
-| `<FILE>[:LINE]` | Glob match against the source-file path; optionally restricted to `LINE` |
-| `in <PATTERN>` | Glob match against the fully-qualified procedure name on entry |
+| `<FILE>[:LINE]` | Glob match against the source-file path; optionally restricted to `LINE`. Relative paths match by suffix (`src/lib.rs:40` matches `/home/me/proj/src/lib.rs`) |
+| `in <PATTERN>` | Glob match against the procedure name on entry. Unqualified names match by trailing path components (`in entrypoint` matches `::"pkg"::module::entrypoint`) |
 | `for <OPCODE>` | Match a literal opcode (with immediates) |
 | `next` | Break on the next instruction boundary (one-shot) |
 | `after <N>` | Break after `N` more cycles (one-shot) |
@@ -112,8 +112,8 @@ Same grammar as the TUI's `:r`. Examples:
 ```text
 mem 0x1000
 mem 0x1000 -t felt
-mem 0x1000 -t u32 -c 4 -f x
-mem 1024 -m bytes -c 16
+mem 0x1000 -t u32 -f x
+mem 1024 -m bytes -t u8
 ```
 
 See the TUI guide's [Reading memory](./tui.md#reading-memory) section for the
@@ -136,19 +136,19 @@ Each entry is `name=value` when the storage is materialised, otherwise
 ## Example session
 
 ```text
-$ miden-debug --repl sum.masm
-(miden-debug) b sum.masm:3
-breakpoint 1 set
-(miden-debug) c
-hit breakpoint 1 at sum.masm:3
-(miden-debug) stack
-[1, 2]
-(miden-debug) s
-(miden-debug) stack
-[3]
-(miden-debug) c
-program terminated
-(miden-debug) q
+$ miden-debug --repl sum.masp
+[cycle 0 STOP] > b sum.masm:3
+Breakpoint 0 set: **/sum.masm:3
+[cycle 0 STOP] > c
+at sum.masm:3:5 in ::$exec::$main
+[cycle 3 STOP] > stack
+Operand Stack (17 elements):
+  > [0] 30 (0x1e)
+    [1] 0 (0x0)
+    ...
+[cycle 3 STOP] > c
+Program terminated successfully
+[cycle 12 END] > q
 ```
 
 ## Tips

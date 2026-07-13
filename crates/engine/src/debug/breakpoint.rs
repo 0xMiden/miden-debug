@@ -1,9 +1,10 @@
 use std::{ops::Deref, path::Path, str::FromStr};
 
 use glob::Pattern;
+use miden_processor::ProcessorState;
 
 use super::ResolvedLocation;
-use crate::TraceEvent;
+use crate::Event;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Breakpoint {
@@ -31,15 +32,15 @@ impl Breakpoint {
         }
     }
 
-    /// Return the number of cycles this breakpoint indicates we should skip, or `None` if the
-    /// number of cycles is context-specific, or the breakpoint is triggered by something other
-    /// than cycle count.
+    /// Return the number of cycles remaining, as of `current_cycle`, before this breakpoint
+    /// should trigger (zero means it should trigger now), or `None` if the breakpoint is
+    /// triggered by something other than cycle count, or its target cycle has already passed.
     pub fn cycles_to_skip(&self, current_cycle: usize) -> Option<usize> {
         let cycles_passed = current_cycle - self.creation_cycle;
         match &self.ty {
-            BreakpointType::Step => Some(1),
+            BreakpointType::Step => Some(1usize.saturating_sub(cycles_passed)),
             BreakpointType::StepN(n) => Some(n.saturating_sub(cycles_passed)),
-            BreakpointType::StepTo(to) if to >= &current_cycle => Some(to.abs_diff(current_cycle)),
+            BreakpointType::StepTo(to) if to >= &current_cycle => Some(to - current_cycle),
             _ => None,
         }
     }
@@ -76,14 +77,23 @@ pub enum BreakpointType {
     Opcode(OperationMatcher),
     /// Break when any cycle causes us to push a frame for PROCEDURE on the call stack
     Called(Pattern),
-    /// Break when the given trace event occurs
-    Trace(TraceEvent),
+    /// Break when the given event is emitted
+    Event(Event),
 }
 impl BreakpointType {
     /// Return true if this breakpoint indicates we should break for `current_op`
-    pub fn should_break_for(&self, current_op: &miden_core::operations::Operation) -> bool {
+    pub fn should_break_for(
+        &self,
+        current_op: &miden_core::operations::Operation,
+        state: &ProcessorState<'_>,
+    ) -> bool {
+        use miden_core::operations::Operation;
+
         match self {
             Self::Opcode(matcher) => matcher.should_break_for(current_op),
+            Self::Event(event) if matches!(current_op, Operation::Emit) => {
+                state.get_stack_item(0) == event.as_event_id().as_felt()
+            }
             _ => false,
         }
     }
@@ -169,26 +179,56 @@ impl FromStr for BreakpointType {
             return Ok(BreakpointType::StepTo(cycle));
         }
         if let Some(procedure) = s.strip_prefix("in ") {
-            let pattern = Pattern::new(procedure.trim())
-                .map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))?;
-            return Ok(BreakpointType::Called(pattern));
+            return Ok(BreakpointType::Called(procedure_pattern(procedure)?));
         }
         match s.split_once(':') {
             Some((file, line)) => {
-                let pattern = Pattern::new(file.trim())
-                    .map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))?;
+                let pattern = file_pattern(file)?;
                 let line = line.trim().parse::<u32>().map_err(|err| {
                     format!("invalid breakpoint expression: could not parse line: {err}")
                 })?;
                 Ok(BreakpointType::Line { pattern, line })
             }
-            None => {
-                let pattern = Pattern::new(s.trim())
-                    .map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))?;
-                Ok(BreakpointType::File(pattern))
-            }
+            None => Ok(BreakpointType::File(file_pattern(s)?)),
         }
     }
+}
+
+/// Compile a user-provided procedure spec into a glob pattern.
+///
+/// Procedures are matched against their fully-qualified name, including the
+/// package qualification (e.g. `::"root_ns:root@1.0.0"::fibonacci::entrypoint`),
+/// which users rarely know or type. Anchor unqualified specs with a leading
+/// `*::` so they match by trailing path components: `entrypoint` and
+/// `fibonacci::entrypoint` both match the example above, while a partial
+/// component like `point` does not.
+fn procedure_pattern(spec: &str) -> Result<Pattern, String> {
+    let spec = spec.trim();
+    let anchored;
+    let spec = if spec.starts_with("::") || spec.starts_with('*') {
+        spec
+    } else {
+        anchored = format!("*::{spec}");
+        &anchored
+    };
+    Pattern::new(spec).map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))
+}
+
+/// Compile a user-provided file spec into a glob pattern.
+///
+/// Source locations in debug info are stored as absolute paths, so a relative
+/// spec like `src/lib.rs` would never match as-is. Anchor relative specs with
+/// a leading `**/` so they match by path suffix, like gdb's `break FILE:LINE`.
+fn file_pattern(spec: &str) -> Result<Pattern, String> {
+    let spec = spec.trim();
+    let anchored;
+    let spec = if spec.starts_with('/') || spec.starts_with('*') {
+        spec
+    } else {
+        anchored = format!("**/{spec}");
+        &anchored
+    };
+    Pattern::new(spec).map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

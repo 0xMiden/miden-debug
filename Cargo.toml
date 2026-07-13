@@ -3,8 +3,8 @@ members = [".", "crates/dap", "crates/engine"]
 resolver = "2"
 
 [workspace.package]
-version = "0.8.1"
-rust-version = "1.92"
+version = "0.9.0"
+rust-version = "1.96"
 authors = ["Miden contributors"]
 repository = "https://github.com/0xMiden/miden-debug"
 homepage = "https://github.com/0xMiden/miden-debug"
@@ -17,15 +17,19 @@ edition = "2024"
 
 [workspace.dependencies]
 clap = { version = "4.5", default-features = false, features = ["derive", "std", "env", "help", "suggestions", "error-context"]}
-dap = { package = "miden-debug-dap", version = "0.8.0", path = "crates/dap", features = ["client"] }
 log = "0.4"
-miden-debug-engine = { version = "0.8.1", path = "crates/engine", default-features = false }
-miden-assembly = { version = "0.23", default-features = false }
-miden-assembly-syntax = { version = "0.23", default-features = false }
-miden-core = { version = "0.23", default-features = false }
-miden-debug-types = { version = "0.23", default-features = false }
-miden-mast-package = { version = "0.23", default-features = false }
-miden-processor = { version = "0.23", default-features = false }
+inventory = "0.3"
+miden-debug-dap = { version = "0.9.0", path = "crates/dap", features = ["client"] }
+miden-debug-engine = { version = "0.9.0", path = "crates/engine", default-features = false }
+miden-assembly = { version = "0.25" }
+miden-assembly-syntax = { version = "0.25" }
+miden-core = { version = "0.25", default-features = false }
+miden-debug-types = { version = "0.25", default-features = false }
+miden-mast-package = { version = "0.25", default-features = false }
+miden-processor = { version = "0.25", default-features = false }
+miden-package-registry = { version = "0.25", features = ["resolver"] }
+miden-project = { version = "0.25" }
+rustc-hash = { version = "2.1" }
 serde = { version = "1.0", default-features = false, features = [
     "serde_derive",
     "alloc",
@@ -33,6 +37,14 @@ serde = { version = "1.0", default-features = false, features = [
 ] }
 serde_json = "1"
 thiserror = "2.0"
+
+[profile.dev]
+# Needed for 'inventory' to work
+codegen-units = 1
+
+[profile.release]
+# Needed for 'inventory' to work
+codegen-units = 1
 
 [package]
 name = "miden-debug"
@@ -91,11 +103,12 @@ name = "flamegraph_profile"
 required-features = ["flamegraph"]
 
 [features]
-default = ["tui", "dap"]
+default = ["tui", "dap", "repl"]
 flamegraph = ["std", "dep:env_logger", "dep:inferno", "miden-debug-engine/tui"]
 tui = ["std", "flamegraph", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect", "miden-debug-engine/tui"]
 repl = ["std", "dep:env_logger", "dep:rustyline", "miden-debug-engine/tui"]
 dap = ["miden-debug-engine/dap"]
+python = ["repl", "dep:pyo3"]
 std = ["clap/std", "clap/env", "compact_str/std", "miden-assembly-syntax/std", "miden-debug-engine/std"]
 proptest = ["miden-debug-engine/proptest"]
 
@@ -112,7 +125,10 @@ miden-assembly-syntax.workspace = true
 miden-core.workspace = true
 miden-debug-types.workspace = true
 miden-mast-package.workspace = true
+miden-package-registry.workspace = true
 miden-processor.workspace = true
+miden-project.workspace = true
+pyo3 = { version = "0.28.3", optional = true, features = ["auto-initialize"] }
 ratatui = { version = "0.30.0", optional = true }
 signal-hook = { version = "0.4.4", optional = true }
 syntect = { version = "5.2.0", optional = true, default-features = false, features = [
@@ -128,3 +144,6 @@ rustyline = { version = "18.0", optional = true }
 tokio = { version = "1.39.2", features = ["rt", "time", "macros", "rt-multi-thread"] }
 tokio-util = "0.7.11"
 futures = "0.3.30"
+
+[build-dependencies]
+pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }

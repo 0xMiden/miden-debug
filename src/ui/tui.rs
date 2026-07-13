@@ -255,6 +255,11 @@ impl DerefMut for Tui {
 
 impl Drop for Tui {
     fn drop(&mut self) {
-        self.exit().unwrap();
+        // Never panic in Drop: a failure to restore the terminal here (e.g.
+        // when stderr is not a terminal) would abort during unwinding and
+        // mask the original error.
+        if let Err(err) = self.exit() {
+            log::debug!("failed to restore terminal state: {err}");
+        }
     }
 }

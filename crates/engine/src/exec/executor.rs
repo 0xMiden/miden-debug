@@ -4,33 +4,33 @@ use std::{
     fmt,
     ops::Deref,
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use log::Level;
-use miden_assembly_syntax::{Library, diagnostics::Report};
-use miden_core::{
-    Word,
-    operations::DebugVarInfo,
-    program::{Program, StackInputs},
-};
+use miden_assembly_syntax::diagnostics::Report;
+use miden_core::{operations::DebugVarInfo, program::StackInputs};
 use miden_debug_types::{SourceManager, SourceManagerExt};
-use miden_mast_package::Dependency;
+use miden_mast_package::Package;
+use miden_package_registry::PackageCache;
 use miden_processor::{
-    ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt, ProcessorState,
+    ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt, LoadedMastForest,
+    ProcessorState,
     advice::{AdviceInputs, AdviceMutation},
-    event::{EventHandler, EventName},
-    mast::MastForest,
+    event::{EventError, EventHandler, EventName},
     trace::RowIndex,
 };
 
 use super::{
-    DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace, TraceEvent,
-    query::read_memory_bytes, trace_event::TRACE_PRINT_LN,
+    DebugExecutor, DebuggerHost, Event, ExecutionConfig, ExecutionTrace,
+    event::{FRAME_END_EVENT, FRAME_START_EVENT, PRINTLN_EVENT},
+    query::read_memory_bytes,
 };
 use crate::{
+    HybridPackageRegistry,
     debug::{CallStack, DebugVarTracker, NativePtr},
     felt::FromMidenRepr,
+    profiling::{Profiler, ProfilerConfig},
 };
 
 /// Maximum number of bytes for a single `println` output.
@@ -51,10 +51,12 @@ pub struct Executor {
     stack: StackInputs,
     advice: AdviceInputs,
     options: ExecutionOptions,
-    libraries: Vec<Arc<Library>>,
     event_handlers: Vec<(EventName, Arc<dyn EventHandler>)>,
-    dependency_resolver: BTreeMap<Word, Arc<Library>>,
+    registry: HybridPackageRegistry,
+    record_event_mutations: bool,
+    profiler_config: ProfilerConfig,
 }
+
 impl Executor {
     /// Construct an executor with the given arguments on the operand stack
     pub fn new(args: Vec<Felt>) -> Self {
@@ -75,56 +77,22 @@ impl Executor {
             advice_inputs,
             options,
         } = config;
-        let options = options.with_tracing(true).with_debugging(true);
-        let dependency_resolver = BTreeMap::new();
 
         Self {
             stack: inputs,
             advice: advice_inputs,
             options,
-            libraries: Default::default(),
             event_handlers: Default::default(),
-            dependency_resolver,
+            registry: HybridPackageRegistry::empty(),
+            record_event_mutations: false,
+            profiler_config: Default::default(),
         }
     }
 
-    /// Construct the executor with the given inputs and adds dependencies from the given package
-    pub fn for_package<I>(package: &miden_mast_package::Package, args: I) -> Result<Self, Report>
-    where
-        I: IntoIterator<Item = Felt>,
-    {
-        use miden_assembly_syntax::DisplayHex;
-        log::debug!(
-            "creating executor for package '{}' (digest={})",
-            package.name,
-            DisplayHex::new(&package.digest().as_bytes())
-        );
-        let mut exec = Self::new(args.into_iter().collect());
-        let dependencies = package.manifest.dependencies();
-        exec.with_dependencies(dependencies)?;
-        log::debug!("executor created");
-        Ok(exec)
-    }
-
-    /// Adds dependencies to the executor
-    pub fn with_dependencies<'a>(
-        &mut self,
-        dependencies: impl Iterator<Item = &'a Dependency>,
-    ) -> Result<&mut Self, Report> {
-        for dep in dependencies {
-            let digest = dep.digest;
-            match self.dependency_resolver.get(&digest) {
-                Some(lib) => {
-                    log::debug!("dependency {dep:?} resolved");
-                    self.with_library(lib.clone());
-                }
-                None => panic!("{dep:?} not found in resolver"),
-            }
-        }
-
-        log::debug!("executor created");
-
-        Ok(self)
+    #[inline]
+    pub fn with_registry(mut self, registry: HybridPackageRegistry) -> Self {
+        self.registry = registry;
+        self
     }
 
     /// Set the contents of memory for the shadow stack frame of the entrypoint
@@ -133,9 +101,24 @@ impl Executor {
         self
     }
 
-    /// Add a [Library] to the execution context
-    pub fn with_library(&mut self, lib: Arc<Library>) -> &mut Self {
-        self.libraries.push(lib);
+    /// Add a [Package] to the execution context
+    pub fn with_package(&mut self, package: Arc<Package>) -> Result<&mut Self, Report> {
+        self.registry.cache_package(package)?;
+        Ok(self)
+    }
+
+    /// Record the advice mutations produced by each event handler invocation during execution.
+    ///
+    /// Recording is a private detail of the debug host created by [Executor::into_debug]: once
+    /// the program completes, take the log via [DebuggerHost::take_recorded_event_mutations] on
+    /// the [DebugExecutor]'s host, and feed it back into [Executor::into_debug_with_replay] to
+    /// debug the same execution later without the original event handlers (e.g. transaction
+    /// debugging with event replay).
+    ///
+    /// Mutations are only recorded for live event handling; nothing is recorded while an event
+    /// replay queue is being consumed.
+    pub fn with_event_advice_mutations_recording(&mut self) -> &mut Self {
+        self.record_event_mutations = true;
         self
     }
 
@@ -149,44 +132,51 @@ impl Executor {
         Ok(self)
     }
 
+    /// Set the profiler configuration for this executor.
+    pub fn with_profiler_config(&mut self, profiler_config: ProfilerConfig) -> &mut Self {
+        self.profiler_config = profiler_config;
+        self
+    }
+
     /// Convert this [Executor] into a [DebugExecutor], which captures much more information
     /// about the program being executed, and must be stepped manually.
     pub fn into_debug(
         mut self,
-        program: &Program,
+        package: Arc<Package>,
         source_manager: Arc<dyn SourceManager>,
     ) -> DebugExecutor {
+        assert!(package.is_program());
+
         log::debug!("creating debug executor");
 
         let mut host = DebuggerHost::new(source_manager.clone());
-        for lib in core::mem::take(&mut self.libraries) {
-            host.load_mast_forest(lib.mast_forest().clone());
+        for lib in self.registry.all() {
+            host.load_package(lib);
         }
         for (event, handler) in core::mem::take(&mut self.event_handlers) {
             host.register_event_handler(event, handler)
                 .expect("failed to register debug executor event handler");
         }
+        if self.record_event_mutations {
+            host = host.with_event_advice_mutations_recording();
+        }
 
-        let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
-        register_builtin_trace_handlers(&mut host, Rc::clone(&trace_events));
+        let events: Arc<Mutex<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
+        register_builtin_event_handlers(&mut host, Arc::clone(&events));
 
         // Set up debug variable tracking
-        // Note: Currently no debug var events are emitted (requires new miden-core),
-        // but we set up the infrastructure for when they become available.
         let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
             Rc::new(Default::default());
 
         let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
-            .expect("advice inputs should fit advice map limits")
-            .with_debugging(true)
-            .with_tracing(true);
+            .expect("advice inputs should fit advice map limits");
 
         let root_context = ContextId::root();
         let resume_ctx = processor
-            .get_initial_resume_context(program)
+            .get_initial_resume_context_for_package(package)
             .expect("failed to get initial resume context");
 
-        let callstack = CallStack::new(trace_events);
+        let callstack = CallStack::new(events);
         let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
             processor,
@@ -206,6 +196,7 @@ impl Executor {
             recent: VecDeque::with_capacity(5),
             cycle: 0,
             stopped: false,
+            profiler: Profiler::from_config(self.profiler_config),
         }
     }
 
@@ -218,19 +209,21 @@ impl Executor {
     /// This is used for transaction debugging where events were recorded during a prior
     /// execution with the real transaction host.
     pub fn into_debug_with_replay(
-        mut self,
-        program: &Program,
+        self,
+        package: Arc<Package>,
         source_manager: Arc<dyn SourceManager>,
-        extra_forests: Vec<Arc<MastForest>>,
+        extra_mast_forests: Vec<LoadedMastForest>,
         event_replay: VecDeque<Vec<AdviceMutation>>,
     ) -> DebugExecutor {
+        assert!(package.is_program());
+
         log::debug!("creating debug executor with event replay");
 
         let mut host = DebuggerHost::new(source_manager.clone());
-        for lib in core::mem::take(&mut self.libraries) {
-            host.load_mast_forest(lib.mast_forest().clone());
+        for lib in self.registry.all() {
+            host.load_package(lib);
         }
-        for forest in extra_forests {
+        for forest in extra_mast_forests {
             host.load_mast_forest(forest);
         }
         host.set_event_replay(event_replay);
@@ -238,20 +231,18 @@ impl Executor {
         let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
             Rc::new(Default::default());
 
-        let trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>> = Rc::new(Default::default());
-        register_builtin_trace_handlers(&mut host, Rc::clone(&trace_events));
+        let events: Arc<Mutex<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
+        register_builtin_event_handlers(&mut host, Arc::clone(&events));
 
         let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
-            .expect("advice inputs should fit advice map limits")
-            .with_debugging(true)
-            .with_tracing(true);
+            .expect("advice inputs should fit advice map limits");
 
         let root_context = ContextId::root();
         let resume_ctx = processor
-            .get_initial_resume_context(program)
+            .get_initial_resume_context_for_package(package)
             .expect("failed to get initial resume context");
 
-        let callstack = CallStack::new(trace_events);
+        let callstack = CallStack::new(events);
         let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
             processor,
@@ -271,16 +262,17 @@ impl Executor {
             recent: VecDeque::with_capacity(5),
             cycle: 0,
             stopped: false,
+            profiler: Profiler::from_config(self.profiler_config),
         }
     }
 
     /// Execute the given program until termination, producing a trace
     pub fn capture_trace(
         self,
-        program: &Program,
+        package: Arc<Package>,
         source_manager: Arc<dyn SourceManager>,
     ) -> ExecutionTrace {
-        let mut executor = self.into_debug(program, source_manager);
+        let mut executor = self.into_debug(package, source_manager);
         loop {
             if executor.stopped {
                 break;
@@ -304,10 +296,10 @@ impl Executor {
     #[track_caller]
     pub fn execute(
         self,
-        program: &Program,
+        package: Arc<Package>,
         source_manager: Arc<dyn SourceManager>,
     ) -> ExecutionTrace {
-        let mut executor = self.into_debug(program, source_manager.clone());
+        let mut executor = self.into_debug(package, source_manager.clone());
         loop {
             if executor.stopped {
                 break;
@@ -318,7 +310,7 @@ impl Executor {
                         && let (Some(op), Some(asmop)) =
                             (executor.current_op, executor.current_asmop.as_ref())
                     {
-                        dbg!(&executor.current_stack);
+                        log::trace!(target: "executor", "stack: {:?}", executor.current_stack);
                         let source_loc = asmop.location().map(|loc| {
                             let path = std::path::Path::new(loc.uri().path());
                             let file = source_manager.load_file(path).unwrap();
@@ -326,12 +318,12 @@ impl Executor {
                         });
                         if let Some((source_file, line_start)) = source_loc {
                             let line_number = source_file.content().line_index(line_start).number();
-                            log::trace!(target: "executor", "in {} (located at {}:{})", asmop.context_name(), source_file.deref().uri().as_str(), &line_number);
+                            log::trace!(target: "executor", "in {} (located at {}:{})", asmop.context_name(), source_file.deref().uri().as_str(), line_number);
                         } else {
                             log::trace!(target: "executor", "in {} (no source location available)", asmop.context_name());
                         }
                         log::trace!(target: "executor", "  executed `{op:?}` of `{}` ({} cycles)", asmop.op(), asmop.num_cycles());
-                        log::trace!(target: "executor", "  stack state: {:#?}", &executor.current_stack);
+                        log::trace!(target: "executor", "  stack state: {:#?}", executor.current_stack);
                     }
                 }
                 Err(err) => {
@@ -344,22 +336,12 @@ impl Executor {
     }
 
     /// Execute a program, parsing the operand stack outputs as a value of type `T`
-    pub fn execute_into<T>(self, program: &Program, source_manager: Arc<dyn SourceManager>) -> T
+    pub fn execute_into<T>(self, package: Arc<Package>, source_manager: Arc<dyn SourceManager>) -> T
     where
         T: FromMidenRepr + PartialEq,
     {
-        let out = self.execute(program, source_manager);
+        let out = self.execute(package, source_manager);
         out.parse_result().expect("invalid result")
-    }
-
-    pub fn dependency_resolver_mut(&mut self) -> &mut BTreeMap<Word, Arc<Library>> {
-        &mut self.dependency_resolver
-    }
-
-    /// Register a library with the dependency resolver so it can be found when resolving package dependencies
-    pub fn register_library_dependency(&mut self, lib: Arc<Library>) {
-        let digest = *lib.digest();
-        self.dependency_resolver.insert(digest, lib);
     }
 }
 
@@ -379,20 +361,11 @@ enum PrintLnError {
     InvalidUtf8,
 }
 
-fn register_builtin_trace_handlers(
+fn register_builtin_event_handlers(
     host: &mut DebuggerHost<dyn SourceManager>,
-    trace_events: Rc<RefCell<BTreeMap<RowIndex, TraceEvent>>>,
+    events: Arc<Mutex<BTreeMap<RowIndex, Event>>>,
 ) {
-    let frame_start_events = Rc::clone(&trace_events);
-    host.register_trace_handler(TraceEvent::FrameStart, move |process, event| {
-        frame_start_events.borrow_mut().insert(process.clock(), event);
-    });
-    let frame_end_events = Rc::clone(&trace_events);
-    host.register_trace_handler(TraceEvent::FrameEnd, move |process, event| {
-        frame_end_events.borrow_mut().insert(process.clock(), event);
-    });
-
-    host.register_trace_handler(TraceEvent::PrintLn, move |process, _event| {
+    let println_handler = |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
         match decode_println(process) {
             Ok(content) => {
                 log::log!(target: "stdout", Level::Info, "{content}");
@@ -400,27 +373,52 @@ fn register_builtin_trace_handlers(
             Err(err) => {
                 log::warn!(
                     target: "executor",
-                    "trace.{TRACE_PRINT_LN} failed at cycle {}: {err}",
+                    "emit.{PRINTLN_EVENT} failed at cycle {}: {err}",
                     process.clock(),
                 );
             }
         }
-    });
 
-    let assertion_events = Rc::clone(&trace_events);
+        Ok(vec![])
+    };
+
+    host.register_event_handler(PRINTLN_EVENT, Arc::new(println_handler))
+        .expect("failed to register println event handler");
+
+    let frame_start_events = Arc::clone(&events);
+    let frame_start_handler =
+        move |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
+            frame_start_events.lock().unwrap().insert(process.clock(), Event::FrameStart);
+            Ok(vec![])
+        };
+    host.register_event_handler(FRAME_START_EVENT, Arc::new(frame_start_handler))
+        .expect("failed to register frame start event handler");
+
+    let frame_end_events = Arc::clone(&events);
+    let frame_end_handler =
+        move |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
+            frame_end_events.lock().unwrap().insert(process.clock(), Event::FrameEnd);
+            Ok(vec![])
+        };
+    host.register_event_handler(FRAME_END_EVENT, Arc::from(frame_end_handler))
+        .expect("failed to register frame end event handler");
+
+    /*
+    let assertion_events = Rc::clone(&events);
     host.register_assert_failed_tracer(move |process, event| {
         assertion_events.borrow_mut().insert(process.clock(), event);
     });
+     */
 }
 
-/// Decode a `TRACE_PRINT_LN` event into a UTF-8 string.
+/// Decode a [`Event::PrintLn`] event into a UTF-8 string.
 ///
-/// Expects `[address, length]` on the operand stack. Reads `length` bytes from
-/// `address` in the current context's memory and returns them as a string.
+/// Expects `[event_id, address, length]` on the operand stack. Reads `length` bytes from `address`
+/// in the current context's memory and returns them as a string.
 fn decode_println(process: &ProcessorState<'_>) -> Result<String, PrintLnError> {
-    let addr = u32::try_from(process.get_stack_item(0).as_canonical_u64())
+    let addr = u32::try_from(process.get_stack_item(1).as_canonical_u64())
         .map_err(|_| PrintLnError::InvalidAddress)?;
-    let len = usize::try_from(process.get_stack_item(1).as_canonical_u64())
+    let len = usize::try_from(process.get_stack_item(2).as_canonical_u64())
         .map_err(|_| PrintLnError::InvalidLength)?;
     if len > MAX_PRINTLN_BYTES {
         return Err(PrintLnError::LengthExceeded {
@@ -517,5 +515,206 @@ where
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One entry per `on_event` invocation, in execution order, and the recorded log replays to
+    /// an identical result without the original event handlers.
+    #[test]
+    fn records_event_mutations_and_replays_them() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use miden_assembly::DefaultSourceManager;
+        use miden_core::events::EventId;
+        use miden_processor::{ProcessorState, advice::AdviceMutation, event::EventError};
+
+        struct CountingHandler {
+            calls: AtomicU64,
+        }
+
+        impl EventHandler for CountingHandler {
+            fn on_event(
+                &self,
+                _process: &ProcessorState<'_>,
+            ) -> Result<Vec<AdviceMutation>, EventError> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![AdviceMutation::ExtendStack {
+                    values: vec![Felt::from(100u32 + call as u32)],
+                }])
+            }
+        }
+
+        let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
+        let event_name = "miden-debug::test::record-replay";
+        let event_id = EventId::from_name(event_name).as_u64();
+        // Each emit invokes the handler, which pushes one value onto the advice stack;
+        // adv_push moves it to the operand stack, and the sum of both values is the result.
+        let source = format!(
+            "begin push.{event_id} emit drop adv_push push.{event_id} emit drop adv_push add swap \
+             drop end"
+        );
+        let program = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program("program", source)
+            .map(Arc::from)
+            .expect("failed to assemble test program");
+
+        let mut executor = Executor::new(Vec::new());
+        executor
+            .register_event_handler(
+                EventName::from_string(event_name.to_string()),
+                Arc::new(CountingHandler {
+                    calls: AtomicU64::new(0),
+                }),
+            )
+            .expect("failed to register event handler");
+        executor.with_event_advice_mutations_recording();
+
+        // Run to completion through the debug executor: recording is an internal detail of its
+        // host, and the log is taken from the host once execution finishes.
+        let mut debug_executor = executor.into_debug(Arc::clone(&program), source_manager.clone());
+        while !debug_executor.stopped {
+            debug_executor.step().expect("recording step failed");
+        }
+        let recorded = debug_executor.host.take_recorded_event_mutations();
+        let recorded_result: u32 =
+            debug_executor.into_execution_trace().parse_result().expect("invalid result");
+        assert_eq!(recorded_result, 201);
+
+        assert_eq!(recorded.len(), 2, "expected one recorded entry per emit");
+        for (index, batch) in recorded.iter().enumerate() {
+            match batch.as_slice() {
+                [AdviceMutation::ExtendStack { values }] => {
+                    assert_eq!(values.as_slice(), &[Felt::from(100u32 + index as u32)]);
+                }
+                _ => panic!("unexpected mutations recorded for event {index}"),
+            }
+        }
+
+        // Replay the recorded mutations without any event handlers registered: execution must
+        // reach the same result, proving the log is sufficient for event replay.
+        let replay_executor = Executor::new(Vec::new());
+        let mut debug_executor = replay_executor.into_debug_with_replay(
+            program,
+            source_manager,
+            Vec::new(),
+            recorded.into(),
+        );
+        while !debug_executor.stopped {
+            debug_executor.step().expect("replay step failed");
+        }
+        let replayed_result: u32 = debug_executor
+            .into_execution_trace()
+            .parse_result()
+            .expect("invalid replay result");
+        assert_eq!(replayed_result, recorded_result);
+    }
+
+    /// A recorded execution serialized into a [ReplaySnapshot](crate::exec::ReplaySnapshot) and
+    /// read back from bytes replays to the same result — the offline record→replay path, end to
+    /// end, exactly what `miden-debug --replay <snapshot>` drives.
+    #[test]
+    fn replays_from_a_serialized_snapshot() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        use miden_assembly::DefaultSourceManager;
+        use miden_core::events::EventId;
+        use miden_processor::{ProcessorState, advice::AdviceMutation, event::EventError};
+
+        use crate::exec::ReplaySnapshot;
+
+        struct CountingHandler {
+            calls: AtomicU64,
+        }
+
+        impl EventHandler for CountingHandler {
+            fn on_event(
+                &self,
+                _process: &ProcessorState<'_>,
+            ) -> Result<Vec<AdviceMutation>, EventError> {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(vec![AdviceMutation::ExtendStack {
+                    values: vec![Felt::from(100u32 + call as u32)],
+                }])
+            }
+        }
+
+        let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
+        let event_name = "miden-debug::test::snapshot-replay";
+        let event_id = EventId::from_name(event_name).as_u64();
+        let source = format!(
+            "begin push.{event_id} emit drop adv_push push.{event_id} emit drop adv_push add add \
+             end"
+        );
+        let program = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program("program", source)
+            .map(Arc::<Package>::from)
+            .expect("failed to assemble test program");
+        let stack_inputs = StackInputs::new(&[Felt::from(7u32)]).unwrap();
+        let advice_inputs = AdviceInputs::default();
+        let options = ExecutionOptions::default();
+
+        // Record the event mutations by running to completion with a live handler.
+        let mut executor = Executor::from_config(ExecutionConfig {
+            inputs: stack_inputs,
+            advice_inputs: advice_inputs.clone(),
+            options,
+        });
+        executor
+            .register_event_handler(
+                EventName::from_string(event_name.to_string()),
+                Arc::new(CountingHandler {
+                    calls: AtomicU64::new(0),
+                }),
+            )
+            .expect("failed to register event handler");
+        executor.with_event_advice_mutations_recording();
+        let mut debug_executor = executor.into_debug(program.clone(), source_manager.clone());
+        while !debug_executor.stopped {
+            debug_executor.step().expect("recording step failed");
+        }
+        let event_log = debug_executor.host.take_recorded_event_mutations();
+        let recorded_result: u32 =
+            debug_executor.into_execution_trace().parse_result().expect("invalid result");
+
+        // Persist the recording as a snapshot and read it back from its serialized bytes.
+        let snapshot = ReplaySnapshot {
+            package: program.clone(),
+            stack_inputs,
+            advice_inputs,
+            options,
+            mast_forests: vec![LoadedMastForest::with_package_debug_info(
+                program.mast_forest().clone(),
+                program.debug_info(),
+            )],
+            event_log,
+        };
+        let restored = ReplaySnapshot::read_from_bytes(&snapshot.to_bytes())
+            .expect("snapshot failed to deserialize");
+
+        // Replay from the deserialized snapshot, with no event handlers registered.
+        let replay_executor = Executor::from_config(ExecutionConfig {
+            inputs: restored.stack_inputs,
+            advice_inputs: restored.advice_inputs,
+            options: restored.options,
+        });
+        let mut debug_executor = replay_executor.into_debug_with_replay(
+            restored.package.clone(),
+            source_manager,
+            restored.mast_forests.clone(),
+            restored.event_log.into(),
+        );
+        while !debug_executor.stopped {
+            debug_executor.step().expect("replay step failed");
+        }
+        let replayed_result: u32 = debug_executor
+            .into_execution_trace()
+            .parse_result()
+            .expect("invalid replay result");
+        assert_eq!(replayed_result, recorded_result);
+        assert_eq!(replayed_result, 208);
     }
 }

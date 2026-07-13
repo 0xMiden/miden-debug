@@ -1,9 +1,14 @@
 mod commands;
+pub(crate) mod engine;
+#[cfg(feature = "python")]
+mod python;
+mod script;
 mod session;
 
 use log::LevelFilter;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 
+pub use self::script::run_commands;
 use self::session::ReplSession;
 use crate::config::DebuggerConfig;
 

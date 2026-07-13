@@ -19,3 +19,8 @@ Printed lines are displayed in `DebugLogger`, which is built on `env_logger`. Th
 name = "println_smoke_test"
 required-features = ["tui"]
 ```
+
+## lit / FileCheck tests
+
+End-to-end debugger tests live under `tests/lit/` and are driven by
+[`litcheck`](https://crates.io/crates/litcheck). See `tests/lit/README.md`.

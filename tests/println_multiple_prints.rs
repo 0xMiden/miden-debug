@@ -3,7 +3,7 @@ mod common;
 use std::sync::Arc;
 
 use miden_assembly::DefaultSourceManager;
-use miden_debug::{BreakpointType, TRACE_PRINT_LN, TraceEvent, TraceMonitor};
+use miden_debug::{BreakpointType, Event, event::PRINTLN_EVENT};
 
 #[test]
 fn stepped_trace_println_logs_across_non_printing_steps() {
@@ -19,7 +19,7 @@ begin
     # Print "hi"
     push.2
     push.1114112
-    trace.{TRACE_PRINT_LN}
+    emit.event("{PRINTLN_EVENT}")
     drop
     drop
 
@@ -37,7 +37,7 @@ begin
     # Print "bye"
     push.3
     push.1114116
-    trace.{TRACE_PRINT_LN}
+    emit.event("{PRINTLN_EVENT}")
     drop
     drop
 
@@ -55,7 +55,7 @@ begin
     # Print "ok"
     push.2
     push.1114120
-    trace.{TRACE_PRINT_LN}
+    emit.event("{PRINTLN_EVENT}")
     drop
     drop
 end
@@ -65,33 +65,18 @@ end
     let source_manager = Arc::new(DefaultSourceManager::default());
     let mut executor = common::execute_debug(&source, source_manager.clone());
 
-    let trace_monitor = TraceMonitor::default();
-    executor.register_trace_monitor_for(trace_monitor.clone(), miden_debug::TraceEvent::PrintLn);
-
     executor
-        .step_until(
-            BreakpointType::Trace(TraceEvent::PrintLn),
-            Some(trace_monitor.clone()),
-            &source_manager,
-        )
+        .step_until(BreakpointType::Event(Event::PrintLn), &source_manager)
         .unwrap();
     assert_println!("hi");
 
     executor
-        .step_until(
-            BreakpointType::Trace(TraceEvent::PrintLn),
-            Some(trace_monitor.clone()),
-            &source_manager,
-        )
+        .step_until(BreakpointType::Event(Event::PrintLn), &source_manager)
         .unwrap();
     assert_println!("bye");
 
     executor
-        .step_until(
-            BreakpointType::Trace(TraceEvent::PrintLn),
-            Some(trace_monitor.clone()),
-            &source_manager,
-        )
+        .step_until(BreakpointType::Event(Event::PrintLn), &source_manager)
         .unwrap();
     assert_println!("ok");
 }

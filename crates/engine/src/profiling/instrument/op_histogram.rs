@@ -1,6 +1,7 @@
 use miden_core::{Felt, operations::Operation};
 
-use super::{INSTRUMENT_NAME_OP_HISTOGRAM, Instrument};
+use super::{Instrument, InstrumentRegistration};
+use crate::register_instrument;
 
 /// An [`Instrument`] to create operation histograms.
 ///
@@ -21,9 +22,19 @@ impl Default for OpHistogram {
     }
 }
 
+impl InstrumentRegistration for OpHistogram {
+    const NAME: &'static str = "op-histogram";
+
+    fn build(_config: &crate::profiling::ProfilerConfig) -> Result<Self, super::InstrumentError> {
+        Ok(Self::default())
+    }
+}
+
+register_instrument!(OpHistogram);
+
 impl Instrument for OpHistogram {
     fn name(&self) -> &'static str {
-        INSTRUMENT_NAME_OP_HISTOGRAM
+        Self::NAME
     }
 
     fn on_operation_execution_cycle(&mut self, op: Operation) {
@@ -225,7 +236,6 @@ mod tests {
     #[test]
     fn op_histogram_reports_recorded_ops() {
         let mut hist = super::OpHistogram::default();
-        assert_eq!(hist.name(), "op-histogram");
 
         // 3 cycles
         hist.on_operation_execution_cycle(Operation::Add);

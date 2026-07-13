@@ -19,6 +19,7 @@ edition = "2024"
 clap = { version = "4.5", default-features = false, features = ["derive", "std", "env", "help", "suggestions", "error-context"]}
 dap = { package = "miden-debug-dap", version = "0.8.0", path = "crates/dap", features = ["client"] }
 log = "0.4"
+inventory = "0.3"
 miden-debug-engine = { version = "0.8.0", path = "crates/engine", default-features = false }
 miden-assembly = { version = "0.25" }
 miden-assembly-syntax = { version = "0.25" }
@@ -36,6 +37,14 @@ serde = { version = "1.0", default-features = false, features = [
 ] }
 serde_json = "1"
 thiserror = "2.0"
+
+[profile.dev]
+# Needed for 'inventory' to work
+codegen-units = 1
+
+[profile.release]
+# Needed for 'inventory' to work
+codegen-units = 1
 
 [package]
 name = "miden-debug"

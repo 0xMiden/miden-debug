@@ -37,7 +37,7 @@ pub struct ProfilerConfig {
 impl TryFrom<ProfilerCliArgs> for ProfilerConfig {
     type Error = Report;
 
-    fn try_from(args: ProfilerCliArgs) -> Result<Self, Self::Error> {
+    fn try_from(mut args: ProfilerCliArgs) -> Result<Self, Self::Error> {
         let mut config = ProfilerConfig::default();
 
         if let Some(ref path) = args.reports_dir
@@ -64,9 +64,10 @@ impl TryFrom<ProfilerCliArgs> for ProfilerConfig {
 
         config.reports_dir = args.reports_dir;
 
+        args.instruments.sort();
+        args.instruments.dedup();
         for name in &args.instruments {
-            let instrument = instrument_from_name(name)
-                .ok_or_else(|| Report::msg(format!("unknown profiling instrument '{name}'")))?;
+            let instrument = instrument_from_name(name, &config).map_err(Report::msg)?;
             config.instruments.push(instrument);
         }
 

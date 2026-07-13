@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-dap-v0.8.0...miden-debug-dap-v0.9.0) - 2026-07-13
+
+### Fixed
+
+- Request::ack for Restart answering with the Next response body
+
+### Other
+
+- 0.9.0
+
 ## [0.8.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-dap-v0.7.1...miden-debug-dap-v0.8.0) - 2026-05-20
 
 ### Added

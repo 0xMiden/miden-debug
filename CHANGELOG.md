@@ -6,6 +6,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.8.1...miden-debug-v0.9.0) - 2026-07-13
+
+### Added
+
+- *(prof)* collect and print op histogram
+- *(repl)* add Python scripting support
+- auto resolve package dependencies ([#92](https://github.com/0xMiden/miden-debug/pull/92))
+- add test harness ([#79](https://github.com/0xMiden/miden-debug/pull/79))
+
+### Other
+
+- 0.9.0
+- support externally-defined instruments
+- configure `reports_dir` where all reports are written
+- migrate to miden-vm v0.25
+- Merge branch 'next' into fix/record
+- Merge branch 'next' into feature/python-scripting
+- run `format-rust` on nightly ([#83](https://github.com/0xMiden/miden-debug/pull/83))
+
 ## [0.8.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.8.0...miden-debug-v0.8.1) - 2026-05-26
 
 ### Fixed

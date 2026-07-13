@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.8.1...miden-debug-engine-v0.9.0) - 2026-07-13
+
+### Added
+
+- *(prof)* collect and print op histogram
+- *(engine)* write a replay snapshot even when the debugged run fails
+- add `miden-debug --replay <snapshot>` to replay recorded sessions
+- *(engine)* capture and serialize replay snapshots from DAP sessions
+- *(engine)* expose event-mutation recording through DapConfig
+- *(engine)* record advice mutations from event handlers for replay
+- report missing package dependencies ([#91](https://github.com/0xMiden/miden-debug/pull/91))
+
+### Fixed
+
+- preserve replay snapshot state
+- *(engine)* report the recorded event count correctly when writing a snapshot
+
+### Other
+
+- merge main back to next
+- 0.9.0
+- support externally-defined instruments
+- configure `reports_dir` where all reports are written
+- migrate to miden-vm v0.25
+- Merge branch 'next' into fix/record
+- apply nightly rustfmt
+- *(engine)* make event recording an internal detail of the host
+- *(engine)* move advice-mutation helpers into a support module
+
 ## [0.8.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.8.0...miden-debug-engine-v0.8.1) - 2026-05-26
 
 ### Fixed

@@ -3,7 +3,11 @@
 # executed operation, sorted by descending cycle count.
 #
 # RUN: compile-masm %S/add.masm -o %t.masp
-# RUN: (miden-debug --profile-op-histogram-out %t.histogram --commands %s %t.masp 2>&1; cat %t.histogram) | filecheck %s
+# RUN: (miden-debug \
+# RUN:   --profiling-reports-dir %t_reports \
+# RUN:   --profiling-instruments op-histogram \
+# RUN:   --commands %s %t.masp 2>&1; \
+# RUN:  cat %t_reports/op-histogram) | filecheck %s
 
 continue
 stack

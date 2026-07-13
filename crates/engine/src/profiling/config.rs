@@ -1,45 +1,76 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
-use crate::profiling::instrument::{Instrument, OpHistogram};
+use miden_assembly_syntax::diagnostics::Report;
+
+use crate::profiling::{instrument::Instrument, instrument_from_name};
 
 /// Profiler options parsed from the command line.
 #[derive(Default, Clone, Debug)]
 #[cfg_attr(feature = "tui", derive(clap::Args))]
 pub struct ProfilerCliArgs {
-    /// Generate an op histogram weighted by cycles and write it to the given path.
+    /// Enables profiling and sets the output dir for reports. Profiling
+    /// instruments need to be enabled separately.
     #[cfg_attr(
         feature = "tui",
-        arg(long = "profile-op-histogram-out", value_name = "FILE")
+        arg(long = "profiling-reports-dir", value_name = "DIRECTORY")
     )]
-    pub op_histogram_out: Option<PathBuf>,
+    pub reports_dir: Option<PathBuf>,
+    #[cfg_attr(
+        feature = "tui",
+        arg(
+            long = "profiling-instruments",
+            value_name = "VALUE",
+            value_delimiter = ','
+        )
+    )]
+    pub instruments: Vec<String>,
 }
 
 #[derive(Default)]
 pub struct ProfilerConfig {
     /// The active instrumentations.
     pub instruments: Vec<Box<dyn Instrument>>,
-    /// Optional output file per instrument.
-    pub output_paths: HashMap<&'static str, PathBuf>,
+    /// The directory where profiling reports are written.
+    pub reports_dir: Option<PathBuf>,
 }
 
-impl ProfilerConfig {
-    /// Associates an output file `path` with `instrument`, keyed by its name.
-    pub fn register_output_path(&mut self, instrument: &dyn Instrument, path: PathBuf) {
-        self.output_paths.insert(instrument.name(), path);
-    }
-}
+impl TryFrom<ProfilerCliArgs> for ProfilerConfig {
+    type Error = Report;
 
-impl From<ProfilerCliArgs> for ProfilerConfig {
-    fn from(args: ProfilerCliArgs) -> Self {
+    fn try_from(args: ProfilerCliArgs) -> Result<Self, Self::Error> {
         let mut config = ProfilerConfig::default();
 
-        if let Some(path) = args.op_histogram_out {
-            let op_histogram: Box<OpHistogram> = Box::default();
-            config.register_output_path(op_histogram.as_ref(), path);
-            config.instruments.push(op_histogram);
+        if let Some(ref path) = args.reports_dir
+            && path.exists()
+            && !path.is_dir()
+        {
+            return Err(Report::msg(format!(
+                "invalid profiling reports directory '{}': not a directory",
+                path.display()
+            )));
         }
 
-        config
+        if args.reports_dir.is_some() && args.instruments.is_empty() {
+            return Err(Report::msg(
+                "profiling requires at least one instrument set with --profiling-instruments",
+            ));
+        }
+
+        if args.reports_dir.is_none() && !args.instruments.is_empty() {
+            return Err(Report::msg(
+                "profiling instruments require --profiling-reports-dir to be set",
+            ));
+        }
+
+        config.reports_dir = args.reports_dir;
+
+        for name in &args.instruments {
+            let instrument = instrument_from_name(name)
+                .ok_or_else(|| Report::msg(format!("unknown profiling instrument '{name}'")))?;
+            config.instruments.push(instrument);
+        }
+
+        Ok(config)
     }
 }
 
@@ -49,7 +80,7 @@ impl std::fmt::Debug for ProfilerConfig {
             self.instruments.iter().map(|i| i.name()).collect();
         f.debug_struct("ProfilerConfig")
             .field("instruments", &instrument_names)
-            .field("output_paths", &self.output_paths)
+            .field("reports_dir", &self.reports_dir)
             .finish()
     }
 }

@@ -1,6 +1,6 @@
 use miden_core::{Felt, operations::Operation};
 
-use super::Instrument;
+use super::{INSTRUMENT_NAME_OP_HISTOGRAM, Instrument};
 
 /// An [`Instrument`] to create operation histograms.
 ///
@@ -23,7 +23,7 @@ impl Default for OpHistogram {
 
 impl Instrument for OpHistogram {
     fn name(&self) -> &'static str {
-        "op-histogram"
+        INSTRUMENT_NAME_OP_HISTOGRAM
     }
 
     fn on_operation_execution_cycle(&mut self, op: Operation) {

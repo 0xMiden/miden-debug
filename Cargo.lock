@@ -1788,6 +1788,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "socket2",
+ "tempfile",
  "thiserror 2.0.18",
  "toml",
 ]

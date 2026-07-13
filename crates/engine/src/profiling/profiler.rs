@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
 
 use miden_core::operations::Operation;
 
@@ -10,14 +10,14 @@ use crate::profiling::{ProfilerConfig, instrument::Instrument};
 #[derive(Default)]
 pub struct Profiler {
     instruments: Vec<Box<dyn Instrument>>,
-    output_paths: HashMap<&'static str, PathBuf>,
+    reports_dir: Option<PathBuf>,
 }
 
 impl Profiler {
     pub fn from_config(config: ProfilerConfig) -> Self {
         Self {
             instruments: config.instruments,
-            output_paths: config.output_paths,
+            reports_dir: config.reports_dir,
         }
     }
 
@@ -28,18 +28,32 @@ impl Profiler {
         }
     }
 
-    /// Writes every instrument's report to its configured output file.
+    /// Writes every instrument's report to the configured reports output directory.
     ///
     /// Failure to write a report should not abort execution, therefore this function always
     /// succeeds. If any errors occur they are logged.
     pub fn write_reports(&self) {
+        if self.instruments.is_empty() {
+            return;
+        }
+
+        let Some(ref reports_dir) = self.reports_dir else {
+            log::warn!("cannot write profiler reports: no reports directory configured");
+            return;
+        };
+
+        if let Err(e) = std::fs::create_dir_all(reports_dir) {
+            log::error!(
+                "failed to create profiler reports directory {}: {e}",
+                reports_dir.display()
+            );
+            return;
+        }
+
         for instrument in &self.instruments {
             let name = instrument.name();
-            let Some(path) = self.output_paths.get(name) else {
-                log::warn!("cannot write report for instrument `{name}`: no output file");
-                continue;
-            };
-            let mut file = match std::fs::File::create(path) {
+            let path = reports_dir.join(name);
+            let mut file = match std::fs::File::create(&path) {
                 Ok(file) => file,
                 Err(e) => {
                     log::error!(
@@ -58,6 +72,8 @@ impl Profiler {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use miden_core::operations::Operation;
 
     use super::*;
@@ -81,6 +97,40 @@ mod tests {
         fn write_report_to(&self, writer: &mut dyn std::io::Write) -> std::io::Result<()> {
             writer.write_fmt(format_args!("{}:{}", self.name, self.ops))
         }
+    }
+
+    #[test]
+    fn profiler_writes_reports_to_directory() {
+        let tmp_dir = tempfile::tempdir().unwrap();
+
+        let config = ProfilerConfig {
+            instruments: vec![
+                Box::new(CountingInstrument {
+                    name: "alpha",
+                    ops: 0,
+                }),
+                Box::new(CountingInstrument {
+                    name: "beta",
+                    ops: 0,
+                }),
+            ],
+            reports_dir: Some(tmp_dir.path().to_path_buf()),
+        };
+        let mut profiler = Profiler::from_config(config);
+
+        // Record some operations so the instruments have data to report.
+        profiler.on_operation_execution_cycle(Operation::Add);
+        profiler.on_operation_execution_cycle(Operation::Noop);
+        profiler.on_operation_execution_cycle(Operation::Add);
+
+        profiler.write_reports();
+
+        // Verify files were created with expected content.
+        let alpha_content = std::fs::read_to_string(tmp_dir.path().join("alpha")).unwrap();
+        assert_eq!(alpha_content, "alpha:3");
+
+        let beta_content = std::fs::read_to_string(tmp_dir.path().join("beta")).unwrap();
+        assert_eq!(beta_content, "beta:3");
     }
 
     #[test]

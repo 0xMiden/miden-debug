@@ -1,7 +1,11 @@
 # Final stack of the program: [0] 20.
 #
 # RUN: compile-masm %S/op_histogram_arithmetic.masm -o %t.masp
-# RUN: (miden-debug --profile-op-histogram-out %t.histogram --commands %s %t.masp 2>&1; cat %t.histogram) | filecheck %s
+# RUN: (miden-debug \
+# RUN:   --profiling-reports-dir %t_reports \
+# RUN:   --profiling-instruments op-histogram \
+# RUN:   --commands %s %t.masp 2>&1; \
+# RUN:  cat %t_reports/op-histogram) | filecheck %s
 
 continue
 stack

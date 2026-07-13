@@ -9,11 +9,16 @@ Profiling generates an execution profile that shows which operations consume the
 
 ## Usage
 
-Run the debugger with `--commands` to execute a script and `--profile-op-histogram-out` to collect and write the profile:
+Run the debugger with
+
+- `--commands` to execute a script
+- `--profiling-reports-dir` to set the output directory
+- and `--profiling-instruments` to enable one or more profiling instruments
 
 ```bash
 miden-debug \
-    --profile-op-histogram-out ./op_histogram.txt \
+    --profiling-reports-dir ./reports \
+    --profiling-instruments op-histogram \
     --commands cmds.txt \
     fibonacci:fibonacci.masp -- 42
 ```
@@ -28,6 +33,8 @@ stack
 ```
 
 Once passing commands as CLI parameters is supported [[#97](https://github.com/0xMiden/miden-debug/issues/97)], no separate `cmds.txt` file will be needed.
+
+Reports are written to the directory specified by `--profiling-reports-dir`, with one file per instrument named after the instrument (e.g., `op-histogram`).
 
 ## Interpretation
 

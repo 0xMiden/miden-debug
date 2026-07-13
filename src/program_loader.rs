@@ -40,7 +40,7 @@ pub(crate) fn load_debug_executor(
 
     let mut executor = Executor::new(args).with_registry(registry);
     executor
-        .with_profiler_config(config.profiler_cli_args.clone().into())
+        .with_profiler_config(config.profiler_cli_args.clone().try_into()?)
         .with_advice_inputs(inputs.advice_inputs);
 
     Ok(executor.into_debug(package, source_manager))

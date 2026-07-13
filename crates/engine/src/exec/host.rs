@@ -15,6 +15,7 @@ use miden_processor::{
 };
 
 use super::advice::clone_advice_mutations;
+use crate::event::is_builtin_event;
 
 /// This is an implementation of [Host] which is essentially [miden_processor::DefaultHost],
 /// but extended with additional functionality for debugging, in particular it manages trace
@@ -153,12 +154,27 @@ where
         &mut self,
         process: &ProcessorState<'_>,
     ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
-        if !self.event_replay.is_empty() {
-            let mutations = self.event_replay.pop_front().unwrap_or_default();
-            return std::future::ready(Ok(mutations));
+        let event_id = EventId::from_felt(process.get_stack_item(0));
+        let is_builtin_event = is_builtin_event(event_id);
+        let replay_mutations = self.event_replay.pop_front();
+        let is_replaying = replay_mutations.is_some();
+
+        if let Some(mutations) = replay_mutations {
+            if !is_builtin_event {
+                // Non-debug events without builtin handler: return mutations from replay.
+                return std::future::ready(Ok(mutations));
+            }
+
+            // Even in replay mode we want to forward builtin events to the builtin handlers.
+            // Debugger functionality relies on the side effects of the handlers.
+            if is_builtin_event {
+                assert!(
+                    mutations.is_empty(),
+                    "debug events must not be associated with mutations from replay"
+                );
+            }
         }
 
-        let event_id = EventId::from_felt(process.get_stack_item(0));
         let result = match self.event_handlers.handle_event(event_id, process) {
             Ok(Some(mutations)) => Ok(mutations),
             Ok(None) => {
@@ -170,7 +186,10 @@ where
             }
             Err(err) => Err(err),
         };
-        if let (Some(log), Ok(mutations)) = (self.event_recording.as_mut(), &result) {
+
+        if !is_replaying
+            && let (Some(log), Ok(mutations)) = (self.event_recording.as_mut(), &result)
+        {
             log.push(clone_advice_mutations(mutations));
         }
         std::future::ready(result)

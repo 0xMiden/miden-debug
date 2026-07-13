@@ -102,6 +102,14 @@ impl Event {
     }
 }
 
+/// Returns true if `id` corresponds to a builtin debugger event.
+pub fn is_builtin_event(id: EventId) -> bool {
+    match Event::from(id) {
+        Event::FrameStart | Event::FrameEnd | Event::PrintLn => true,
+        Event::Unknown(_) | Event::UserDefined(_) => false,
+    }
+}
+
 impl core::fmt::Display for Event {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {

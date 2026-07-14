@@ -8,8 +8,8 @@ use miden_core::{
 use miden_debug_types::{Location, SourceFile, SourceSpan};
 use miden_mast_package::Package;
 use miden_processor::{
-    BaseHost, ExecutionError, FutureMaybeSend, Host, LoadedMastForest, MastForestStore,
-    MemMastForestStore, ProcessorState,
+    BaseHost, ExecutionError, LoadedMastForest, MastForestStore, MemMastForestStore,
+    ProcessorState, SyncHost,
     advice::AdviceMutation,
     event::{EventError, EventHandler, EventHandlerRegistry},
 };
@@ -139,21 +139,18 @@ where
     }
 }
 
-impl<S> Host for DebuggerHost<S>
+impl<S> SyncHost for DebuggerHost<S>
 where
     S: SourceManager + ?Sized,
 {
-    fn get_mast_forest(
-        &self,
-        node_digest: &Word,
-    ) -> impl FutureMaybeSend<Option<LoadedMastForest>> {
-        std::future::ready(self.store.get(node_digest))
+    fn get_mast_forest(&self, node_digest: &Word) -> Option<LoadedMastForest> {
+        self.store.get(node_digest)
     }
 
     fn on_event(
         &mut self,
         process: &ProcessorState<'_>,
-    ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
+    ) -> Result<Vec<AdviceMutation>, EventError> {
         let event_id = EventId::from_felt(process.get_stack_item(0));
         let is_builtin_event = Event::from(event_id).has_builtin_handler();
         let replay_mutations = self.event_replay.pop_front();
@@ -162,7 +159,7 @@ where
         if let Some(mutations) = replay_mutations {
             if !is_builtin_event {
                 // Non-debug events without builtin handler: return mutations from replay.
-                return std::future::ready(Ok(mutations));
+                return Ok(mutations);
             }
 
             // Even in replay mode we want to forward builtin events to the builtin handlers.
@@ -192,6 +189,6 @@ where
         {
             log.push(clone_advice_mutations(mutations));
         }
-        std::future::ready(result)
+        result
     }
 }

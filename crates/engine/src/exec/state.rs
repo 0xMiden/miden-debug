@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeSet, VecDeque},
-    rc::Rc,
     sync::Arc,
 };
 
@@ -9,7 +8,7 @@ use miden_core::{
     mast::{MastNode, MastNodeId},
     operations::AssemblyOp,
 };
-use miden_mast_package::debug_info::PackageDebugInfo;
+use miden_mast_package::debug_info::{DebugSourceNodeId, PackageDebugInfo};
 use miden_processor::{
     ContextId, Continuation, ExecutionError, FastProcessor, Felt, ResumeContext, StackOutputs,
     operation::Operation, trace::RowIndex,
@@ -24,22 +23,6 @@ use crate::{
     },
     profiling::Profiler,
 };
-
-/// Resolve a future that is expected to complete immediately (synchronous host methods).
-///
-/// We use a noop waker because our Host methods all return `std::future::ready(...)`.
-/// This avoids calling `step_sync()` which would create its own tokio runtime and
-/// panic inside the TUI's existing tokio current-thread runtime.
-/// TODO: Revisit this (djole).
-fn poll_immediately<T>(fut: impl std::future::Future<Output = T>) -> T {
-    let waker = std::task::Waker::noop();
-    let mut cx = std::task::Context::from_waker(waker);
-    let mut fut = std::pin::pin!(fut);
-    match fut.as_mut().poll(&mut cx) {
-        std::task::Poll::Ready(val) => val,
-        std::task::Poll::Pending => panic!("future was expected to complete immediately"),
-    }
-}
 
 /// A special version of [crate::Executor] which provides finer-grained control over execution,
 /// and captures a ton of information about the program being executed, so as to make it possible
@@ -74,7 +57,7 @@ pub struct DebugExecutor {
     /// The current call stack
     pub callstack: CallStack,
     /// The most recent live procedure name observed from assembly operation metadata.
-    pub current_proc: Option<Rc<str>>,
+    pub current_proc: Option<Arc<str>>,
     /// Debug variable tracker for source-level variable inspection
     pub debug_vars: DebugVarTracker,
     /// Number of debug variable location records observed during the most recent step.
@@ -113,30 +96,52 @@ impl DebugExecutor {
     }
 }
 
+pub(crate) struct CurrentCycleInfo {
+    pub op: Option<Operation>,
+    pub node_id: Option<MastNodeId>,
+    pub source_node_id: Option<DebugSourceNodeId>,
+    pub op_idx: Option<usize>,
+    pub control_flow_kind: Option<ControlFlowOp>,
+}
+
 /// Extract the current operation and assembly info from the continuation stack
 /// before a step is executed. This lets us know what operation will run next.
-pub(crate) fn extract_current_op(
-    ctx: &ResumeContext,
-) -> (Option<Operation>, Option<MastNodeId>, Option<usize>, Option<ControlFlowOp>) {
+pub(crate) fn extract_current_op(ctx: &ResumeContext) -> CurrentCycleInfo {
     let forest = ctx.current_forest();
-    for cont in ctx.continuation_stack().iter_continuations_for_next_clock() {
+    let debug_info = ctx.debug_info();
+    let continuation_stack = ctx.continuation_stack();
+    for (cont, source_node_id) in
+        continuation_stack.iter_continuations_for_next_clock_with_source_node_ids()
+    {
+        let exec_node = cont.exec_node();
+        let source_node_id = source_node_id.or_else(|| {
+            exec_node.zip(debug_info.as_deref()).and_then(|(exec_node, di)| {
+                di.unique_source_root_for_exec_node(exec_node).ok().flatten()
+            })
+        });
         match cont {
             Continuation::ResumeBasicBlock {
                 node_id,
                 batch_index,
                 op_idx_in_batch,
             } => {
-                let node = &forest[*node_id];
-                if let MastNode::Block(block) = node {
-                    // Compute global op index within the basic block
-                    let mut global_idx = 0;
-                    for batch in &block.op_batches()[..*batch_index] {
-                        global_idx += batch.ops().len();
-                    }
-                    global_idx += op_idx_in_batch;
-                    let op = block.op_batches()[*batch_index].ops().get(*op_idx_in_batch).copied();
-                    return (op, Some(*node_id), Some(global_idx), None);
+                let MastNode::Block(block) = &forest[*node_id] else {
+                    unreachable!()
+                };
+                // Compute global op index within the basic block
+                let mut global_idx = 0;
+                for batch in &block.op_batches()[..*batch_index] {
+                    global_idx += batch.ops().len();
                 }
+                global_idx += op_idx_in_batch;
+                let op = block.op_batches()[*batch_index].ops().get(*op_idx_in_batch).copied();
+                return CurrentCycleInfo {
+                    op,
+                    node_id: Some(*node_id),
+                    source_node_id,
+                    op_idx: Some(global_idx),
+                    control_flow_kind: None,
+                };
             }
             Continuation::Respan {
                 node_id,
@@ -148,17 +153,29 @@ pub(crate) fn extract_current_op(
                     for batch in &block.op_batches()[..*batch_index] {
                         global_idx += batch.ops().len();
                     }
-                    return (None, Some(*node_id), Some(global_idx), Some(ControlFlowOp::Respan));
+                    return CurrentCycleInfo {
+                        op: None,
+                        node_id: Some(*node_id),
+                        source_node_id,
+                        op_idx: Some(global_idx),
+                        control_flow_kind: Some(ControlFlowOp::Respan),
+                    };
                 }
             }
             Continuation::StartNode(node_id) => {
-                let control = match &forest[*node_id] {
+                let control_flow_kind = match &forest[*node_id] {
                     MastNode::Block(_) => Some(ControlFlowOp::Span),
                     MastNode::Join(_) => Some(ControlFlowOp::Join),
                     MastNode::Split(_) => Some(ControlFlowOp::Split),
                     _ => None,
                 };
-                return (None, Some(*node_id), None, control);
+                return CurrentCycleInfo {
+                    op: None,
+                    node_id: Some(*node_id),
+                    source_node_id,
+                    op_idx: None,
+                    control_flow_kind,
+                };
             }
             Continuation::FinishBasicBlock(_)
             | Continuation::FinishJoin(_)
@@ -166,15 +183,32 @@ pub(crate) fn extract_current_op(
             | Continuation::FinishLoop { .. }
             | Continuation::FinishCall(_)
             | Continuation::FinishDyn(_) => {
-                return (None, None, None, Some(ControlFlowOp::End));
+                return CurrentCycleInfo {
+                    op: None,
+                    node_id: None,
+                    source_node_id,
+                    op_idx: None,
+                    control_flow_kind: Some(ControlFlowOp::End),
+                };
             }
-            other if other.increments_clk() => {
-                return (None, None, None, None);
+            Continuation::EnterForest { .. } => {
+                return CurrentCycleInfo {
+                    op: None,
+                    node_id: None,
+                    source_node_id,
+                    op_idx: None,
+                    control_flow_kind: None,
+                };
             }
-            _ => continue,
         }
     }
-    (None, None, None, None)
+    CurrentCycleInfo {
+        op: None,
+        node_id: None,
+        source_node_id: None,
+        op_idx: None,
+        control_flow_kind: None,
+    }
 }
 
 impl DebugExecutor {
@@ -185,23 +219,24 @@ impl DebugExecutor {
         let Some(resume_ctx) = self.resume_ctx.as_ref() else {
             return false;
         };
-        let di: PackageDebugInfo = todo!();
-        /*
         let Some(debug_info) = resume_ctx.debug_info() else {
             return false;
         };
-        */
 
-        let Some(source_map) = di.source_map() else {
-            return false;
-        };
-        for asm_op in source_map.asm_ops() {
-            if asm_op.context_name != procedure {
+        for function_info in debug_info.functions() {
+            if debug_info[function_info.name_idx].as_ref() != procedure {
                 continue;
             }
-            let mut debug_vars = di.debug_vars_for_operation(asm_op.source_node, asm_op.op_idx);
-            if debug_vars.next().is_some() {
-                return true;
+            if let Some(source_node) = function_info.source_node.into_option() {
+                return !debug_info[source_node].debug_vars.is_empty();
+            } else if let Some(exec_node) =
+                resume_ctx.current_forest().find_procedure_root(function_info.mast_root)
+                && let Ok(Some(source_node)) =
+                    debug_info.unique_source_root_for_exec_node(exec_node)
+            {
+                return !debug_info[source_node].debug_vars.is_empty();
+            } else {
+                return false;
             }
         }
 
@@ -232,36 +267,43 @@ impl DebugExecutor {
         let debug_info: Option<Arc<PackageDebugInfo>> = resume_ctx.debug_info();
 
         // Before step: peek continuation to determine what will execute
-        let (op, node_id, op_idx, control) = extract_current_op(&resume_ctx);
-        let debug_node_id = match node_id {
-            Some(nid) => match debug_info.as_deref() {
-                Some(di) => di.unique_source_root_for_exec_node(nid).ok().flatten(),
-                None => None,
-            },
-            None => None,
-        };
-        let asmop = debug_node_id.and_then(|dnid| match op_idx {
-            Some(op_idx) => {
-                debug_info.as_deref().unwrap().asm_op_for_operation(dnid, op_idx as u32)
-            }
-            None => debug_info.as_deref().unwrap().first_asm_op_for_source_node(dnid),
+        let CurrentCycleInfo {
+            op,
+            node_id,
+            source_node_id,
+            op_idx,
+            control_flow_kind,
+        } = extract_current_op(&resume_ctx);
+        let debug_node_id = source_node_id.or_else(|| {
+            node_id.zip(debug_info.as_deref()).and_then(|(exec_node, di)| {
+                di.unique_source_root_for_exec_node(exec_node).ok().flatten()
+            })
+        });
+        let source_node = debug_node_id.zip(debug_info.as_deref()).map(|(dnid, di)| &di[dnid]);
+        let asmop = source_node.and_then(|source_node| match op_idx {
+            Some(op_idx) => source_node.asm_op_for_operation(op_idx as u32),
+            None => source_node.asm_op_for_operation(0),
         });
 
         // Look up debug vars from MAST forest for the current operation
-        let mut debug_var_infos: Vec<_> = if let (Some(di), Some(dnid), Some(op_idx)) =
-            (debug_info.as_deref(), debug_node_id, op_idx)
-        {
-            di.debug_vars_for_operation(dnid, op_idx as u32)
-                .map(|dsv| dsv.var.clone())
-                .collect()
-        } else {
-            vec![]
-        };
+        let mut debug_var_infos: Vec<_> = source_node
+            .zip(op_idx)
+            .zip(debug_info.as_deref())
+            .map(|((source_node, op_idx), di)| {
+                source_node.debug_infos_for_operation(op_idx as u32, di).collect()
+            })
+            .unwrap_or_default();
         let pre_step_stack = self.processor.state().get_stack_state();
         snapshot_transient_debug_values(&mut debug_var_infos, &pre_step_stack);
 
         // Execute one step
-        match poll_immediately(self.processor.step(&mut self.host, resume_ctx)) {
+        let step_result = if let Some(debug_info) = debug_info.as_deref() {
+            self.processor
+                .step_with_package_debug_info_sync(&mut self.host, resume_ctx, debug_info)
+        } else {
+            self.processor.step_sync(&mut self.host, resume_ctx)
+        };
+        match step_result {
             Ok(Some(new_ctx)) => {
                 self.resume_ctx = Some(new_ctx);
                 self.cycle += 1;
@@ -278,16 +320,16 @@ impl DebugExecutor {
 
                 // Track operation
                 self.current_op = op;
-                self.current_asmop = asmop.map(|asmop| {
+                self.current_asmop = asmop.zip(debug_info.as_deref()).map(|(asmop, di)| {
                     AssemblyOp::new(
-                        asmop.location.clone(),
-                        asmop.context_name.clone(),
+                        asmop.location_idx.into_option().and_then(|loc| di.get_location(loc)),
+                        di[asmop.context_name_idx].clone(),
                         asmop.num_cycles,
-                        asmop.op.clone(),
+                        di[asmop.op_name_idx].clone(),
                     )
                 });
-                if let Some(asmop) = asmop.as_ref() {
-                    self.current_proc = Some(Rc::from(asmop.context_name.clone()));
+                if let Some(asmop) = self.current_asmop.as_ref() {
+                    self.current_proc = Some(asmop.context_name().clone());
                 }
 
                 if let Some(op) = op {
@@ -301,7 +343,7 @@ impl DebugExecutor {
                 // Update call stack
                 let step_info = StepInfo {
                     op,
-                    control,
+                    control: control_flow_kind,
                     asmop: self.current_asmop.as_ref(),
                     clk: RowIndex::from(self.cycle as u32),
                     ctx: self.current_context,
@@ -392,7 +434,7 @@ impl DebugExecutor {
 
             if is_op_boundary
                 && let Some(asmop) = self.current_asmop.as_ref()
-                && matches!(&breakpoint.ty, BreakpointType::Opcode(OperationMatcher::Asm(expected)) if expected == asmop.op())
+                && matches!(&breakpoint.ty, BreakpointType::Opcode(OperationMatcher::Asm(expected)) if expected.as_str() == asmop.op().as_ref())
             {
                 return Ok(());
             }

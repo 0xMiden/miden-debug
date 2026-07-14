@@ -12,15 +12,12 @@ use std::{
 };
 
 use dap::prelude::*;
-use miden_core::{
-    Word,
-    mast::MastNodeId,
-    operations::{DebugVarInfo, DebugVarLocation},
-    precompile::PrecompileTranscript,
-};
+use miden_assembly_syntax::ast::{DebugVarInfo, DebugVarLocation};
+use miden_core::{Word, operations::AssemblyOp, precompile::PrecompileTranscript};
+use miden_debug_types::Location;
 use miden_mast_package::{
-    Package,
-    debug_info::{DebugSourceAsmOp, PackageDebugInfo},
+    MastForest, Package,
+    debug_info::{DebugFileIdx, DebugSourceAsmOp, DebugSourceNodeId, PackageDebugInfo},
 };
 use miden_processor::{
     BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend,
@@ -34,9 +31,12 @@ use super::{
     EventMutationRecorder, MastForestRecorder, ReplaySnapshot, ReplaySnapshotRecorder,
     ReplaySnapshotWrite, state::extract_current_op,
 };
-use crate::debug::{
-    DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, resolve_variable_value,
-    snapshot_transient_debug_values,
+use crate::{
+    debug::{
+        DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, resolve_variable_value,
+        snapshot_transient_debug_values,
+    },
+    exec::state::CurrentCycleInfo,
 };
 
 // DAP CONFIG
@@ -146,7 +146,7 @@ impl Default for DapConfig {
 /// A single frame in the DAP call stack.
 #[derive(Debug, Clone)]
 struct DapCallFrame {
-    name: String,
+    name: Arc<str>,
     source_path: Option<String>,
     line: i64,
     column: i64,
@@ -154,7 +154,7 @@ struct DapCallFrame {
 
 /// A host wrapper that intercepts trace events to track the call stack for DAP stack traces,
 /// while delegating all other operations to the inner host.
-struct DapHostWrapper<'a, H: Host> {
+struct DapHostWrapper<'a, H> {
     inner: &'a mut H,
     call_depth: usize,
     frames: Vec<DapCallFrame>,
@@ -167,7 +167,7 @@ struct DapHostWrapper<'a, H: Host> {
     forest_recorder: Option<MastForestRecorder>,
 }
 
-impl<'a, H: Host> DapHostWrapper<'a, H> {
+impl<'a, H> DapHostWrapper<'a, H> {
     fn new(
         inner: &'a mut H,
         event_recorder: Option<EventMutationRecorder>,
@@ -199,6 +199,53 @@ impl<H: Host> BaseHost for DapHostWrapper<'_, H> {
     }
 }
 
+#[cfg(false)]
+impl<S: ?Sized + miden_assembly::SourceManager> SyncHost
+    for DapHostWrapper<'_, super::DebuggerHost<S>>
+{
+    fn get_mast_forest(&self, node_digest: &Word) -> Option<LoadedMastForest> {
+        // Record every forest the inner host resolves, so a replay session can load the same
+        // code for `call`/`dyncall` targets. The recorder deduplicates.
+        let forest_recorder = self.forest_recorder.clone();
+        let forest = SyncHost::get_mast_forest(&*self.inner, node_digest);
+        if let (Some(recorder), Some(forest)) = (&forest_recorder, &forest) {
+            recorder.record(forest.clone());
+        }
+        forest
+    }
+
+    fn on_event(
+        &mut self,
+        process: &ProcessorState<'_>,
+    ) -> Result<Vec<AdviceMutation>, EventError> {
+        use miden_core::events::EventId;
+        match crate::Event::from(EventId::from_felt(process.get_stack_item(0))) {
+            crate::Event::FrameStart => {
+                self.call_depth += 1;
+                self.frames.push(DapCallFrame {
+                    name: Arc::default(),
+                    source_path: None,
+                    line: 0,
+                    column: 0,
+                });
+            }
+            crate::Event::FrameEnd => {
+                self.call_depth = self.call_depth.saturating_sub(1);
+                self.frames.pop();
+            }
+            _ => (),
+        }
+        // Every invocation is recorded, including empty mutation sets: event replay pops one
+        // entry per event, so the log must stay aligned with the event stream.
+        let recorder = self.event_recorder.clone();
+        let result = SyncHost::on_event(self.inner, process);
+        if let (Some(recorder), Ok(mutations)) = (&recorder, &result) {
+            recorder.record(crate::exec::clone_advice_mutations(mutations));
+        }
+        result
+    }
+}
+
 impl<H: Host> Host for DapHostWrapper<'_, H> {
     fn get_mast_forest(
         &self,
@@ -226,7 +273,7 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
             crate::Event::FrameStart => {
                 self.call_depth += 1;
                 self.frames.push(DapCallFrame {
-                    name: String::new(),
+                    name: Arc::default(),
                     source_path: None,
                     line: 0,
                     column: 0,
@@ -415,7 +462,7 @@ fn read_memory_at_current_state(
 fn build_ui_state<H: Host>(
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&DebugSourceAsmOp>,
+    current_asmop: Option<&AssemblyOp>,
     cycle: usize,
 ) -> crate::exec::DapUiState {
     // Build callstack from the host's frame stack (bottom-to-top order, reversed so the
@@ -426,9 +473,9 @@ fn build_ui_state<H: Host>(
             Some(asmop) => {
                 let loc = resolve_asmop_location(asmop, host);
                 let (source_path, line) = loc.map_or((None, 0), |(path, line)| (Some(path), line));
-                (asmop.context_name.clone(), source_path, line)
+                (asmop.context_name().clone(), source_path, line)
             }
-            None => (format!("cycle {cycle}"), None, 0),
+            None => (format!("cycle {cycle}").into_boxed_str().into(), None, 0),
         };
         vec![crate::exec::DapUiFrame {
             name,
@@ -498,9 +545,13 @@ struct ContinueBreakpoints<'a> {
 // RESOLVE ASMOP LOCATION
 // ================================================================================================
 
-/// Resolve an `DebugSourceAsmOp`'s location to a (file_path, line_number) pair using the host.
-fn resolve_asmop_location<H: Host>(asmop: &DebugSourceAsmOp, host: &H) -> Option<(String, i64)> {
-    let location = asmop.location.as_ref()?;
+/// Resolve an `AssemblyOp`'s location to a (file_path, line_number) pair using the host.
+fn resolve_asmop_location<H: Host>(asmop: &AssemblyOp, host: &H) -> Option<(String, i64)> {
+    let location = asmop.location()?;
+    resolve_location(location, host)
+}
+
+fn resolve_location<H: Host>(location: &Location, host: &H) -> Option<(String, i64)> {
     let (span, source_file) = host.get_label_and_source_file(location);
     if let Some(source_file) = source_file {
         let file_line_col = source_file.location(span);
@@ -592,15 +643,52 @@ fn breakable_source_lines<H: Host>(
 ) -> BTreeSet<i64> {
     let mut lines = BTreeSet::new();
 
-    let Some(source_map) = debug_info.source_map() else {
+    // Find the source file index by path
+    let Some(file_idx) = debug_info
+        .files()
+        .iter()
+        .position(|f| {
+            let path = debug_info[f.path_idx].as_ref();
+            source_paths_match(path, source_path, trim_prefixes)
+        })
+        .map(|idx| DebugFileIdx::from(idx as u32))
+    else {
         return lines;
     };
-    for asmop in source_map.asm_ops() {
-        let Some((path, line)) = resolve_asmop_location(asmop, host) else {
+
+    // Collect all locations for that source file index
+    let mut spans = Vec::with_capacity(256);
+    for location in debug_info.locations() {
+        if location.file_idx == file_idx {
+            spans.push((location.start, location.end));
+        }
+    }
+
+    // Extract the first span from those locations so we can request the source file from the host
+    let Some(((start, end), spans)) = spans.split_first() else {
+        return lines;
+    };
+
+    // Get the source file content if available
+    let path_idx = debug_info[file_idx].path_idx;
+    let path = debug_info[path_idx].clone();
+    let location = Location::new(path.into(), *start, *end);
+    let (_, Some(source_file)) = host.get_label_and_source_file(&location) else {
+        return lines;
+    };
+
+    // Map all locations to a unique set of lines on which those locations start
+    let source_content = source_file.content();
+    let last_line = source_content.last_line_index();
+    let last_line_range = source_content.line_range(last_line).unwrap();
+    for (start, _) in core::iter::once((*start, *end)).chain(spans.iter().copied()) {
+        if start >= last_line_range.end {
             continue;
-        };
-        if source_paths_match(&path, source_path, trim_prefixes) {
-            lines.insert(line);
+        } else if last_line_range.contains(&start) {
+            lines.insert(last_line.to_u32() as i64 + 1);
+        } else {
+            let line = source_content.line_index(start);
+            lines.insert(line.to_u32() as i64 + 1);
         }
     }
 
@@ -608,26 +696,96 @@ fn breakable_source_lines<H: Host>(
 }
 
 fn minimum_source_line_for_proc<H: Host>(
+    mast_forest: &MastForest,
     debug_info: &PackageDebugInfo,
     host: &H,
     procedure: &str,
     source_path: &str,
     trim_prefixes: &[String],
 ) -> Option<i64> {
-    let source_map = debug_info.source_map()?;
-    let mut lines = BTreeSet::<i64>::default();
-    for asmop in source_map.asm_ops() {
-        if asmop.context_name != procedure {
+    // Find the function info record for `procedure`, which will give us the root source node for
+    // that procedure
+    let function_node_idx = debug_info.functions().iter().find_map(|f| {
+        if debug_info[f.name_idx].as_ref() == procedure {
+            // Look up the source node either exactly, or by MAST root as a fallback
+            f.source_node.into_option().or_else(|| {
+                mast_forest.find_procedure_root(f.mast_root).and_then(|exec_node| {
+                    debug_info.unique_source_root_for_exec_node(exec_node).ok().flatten()
+                })
+            })
+        } else {
+            None
+        }
+    })?;
+
+    // Extract the smallest byte index from the locations associated with the source node or
+    // its children
+    let node = &debug_info[function_node_idx];
+    let mut file_index = None;
+    let mut min_index = None;
+    for location_idx in node.asm_ops.iter().filter_map(|op| op.location_idx.into_option()) {
+        let loc = debug_info[location_idx];
+        if file_index.is_some_and(|idx| loc.file_idx != idx) {
             continue;
         }
-        let Some((path, line)) = resolve_asmop_location(asmop, host) else {
-            continue;
-        };
-        if line > 1 && source_paths_match(&path, source_path, trim_prefixes) {
-            lines.insert(line);
+        let path_idx = debug_info[loc.file_idx].path_idx;
+        let path = debug_info[path_idx].as_ref();
+        if source_paths_match(path, source_path, trim_prefixes) {
+            file_index = Some(loc.file_idx);
+            min_index = Some(match min_index.take() {
+                Some(prev_min) => core::cmp::min(prev_min, loc.start),
+                None => loc.start,
+            });
         }
     }
-    lines.pop_first()
+
+    // If we haven't found a minimum index yet, search through immediate children of this node
+    if min_index.is_none() {
+        for child in node.children.iter().copied().map(|idx| &debug_info[idx]) {
+            for location_idx in child.asm_ops.iter().filter_map(|op| op.location_idx.into_option())
+            {
+                let loc = debug_info[location_idx];
+                if file_index.is_some_and(|idx| loc.file_idx != idx) {
+                    continue;
+                }
+                let path_idx = debug_info[loc.file_idx].path_idx;
+                let path = debug_info[path_idx].as_ref();
+                if source_paths_match(path, source_path, trim_prefixes) {
+                    file_index = Some(loc.file_idx);
+                    min_index = Some(match min_index.take() {
+                        Some(prev_min) => core::cmp::min(prev_min, loc.start),
+                        None => loc.start,
+                    });
+                }
+            }
+            // Stop as soon as we find a child with location information
+            if min_index.is_some() {
+                break;
+            }
+        }
+    }
+
+    let file_index = file_index?;
+    let min_index = min_index?;
+    let path_index = debug_info[file_index].path_idx;
+    let path = debug_info[path_index].clone();
+
+    let location = Location::new(path.into(), min_index, min_index + 1);
+    let (_, Some(source_file)) = host.get_label_and_source_file(&location) else {
+        return None;
+    };
+
+    let source_content = source_file.content();
+    let last_line = source_content.last_line_index();
+    let last_line_range = source_content.line_range(last_line).unwrap();
+    if min_index >= last_line_range.end {
+        None
+    } else if last_line_range.contains(&min_index) {
+        Some(last_line.to_u32() as i64 + 1)
+    } else {
+        let line = source_content.line_index(min_index);
+        Some(line.to_u32() as i64 + 1)
+    }
 }
 
 fn resolve_breakpoint_line(lines: &BTreeSet<i64>, requested_line: i64) -> Option<i64> {
@@ -661,7 +819,7 @@ fn is_compiler_generated_name(name: &str) -> bool {
 
 fn is_visible_source_var<H: Host>(
     var: &DebugVarSnapshot,
-    current_asmop: Option<&DebugSourceAsmOp>,
+    current_asmop: Option<&AssemblyOp>,
     host: &DapHostWrapper<'_, H>,
     source_path_prefixes: &[String],
     show_all: bool,
@@ -683,13 +841,10 @@ fn is_visible_source_var<H: Host>(
         return true;
     };
 
-    source_var_location_is_visible(
-        var_loc.uri.as_str(),
-        i64::from(var_loc.line.to_u32()),
-        &current.0,
-        current.1,
-        source_path_prefixes,
-    )
+    let Some((var_path, var_line)) = resolve_location(var_loc, host) else {
+        return true;
+    };
+    source_var_location_is_visible(&var_path, var_line, &current.0, current.1, source_path_prefixes)
 }
 
 fn source_var_location_is_visible(
@@ -750,7 +905,7 @@ fn debug_var_to_dap_variable(
 fn debug_variables<H: Host>(
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&DebugSourceAsmOp>,
+    current_asmop: Option<&AssemblyOp>,
     debug_state: &DapDebugVarState,
     source_path_prefixes: &[String],
     show_all: bool,
@@ -768,7 +923,7 @@ fn debug_variables<H: Host>(
 fn format_debug_variables<H: Host>(
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&DebugSourceAsmOp>,
+    current_asmop: Option<&AssemblyOp>,
     debug_state: &DapDebugVarState,
     source_path_prefixes: &[String],
     show_all: bool,
@@ -800,7 +955,7 @@ fn format_debug_variables<H: Host>(
 fn evaluate_debug_variable<H: Host>(
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&DebugSourceAsmOp>,
+    current_asmop: Option<&AssemblyOp>,
     debug_state: &DapDebugVarState,
     source_path_prefixes: &[String],
     expression: &str,
@@ -816,17 +971,14 @@ fn evaluate_debug_variable<H: Host>(
 ///
 /// If the frame stack is empty (e.g. before the first FrameStart trace event), a root frame
 /// is pushed so there is always at least one frame visible in the stack trace.
-fn update_top_frame<H: Host>(
-    host: &mut DapHostWrapper<'_, H>,
-    current_asmop: Option<&DebugSourceAsmOp>,
-) {
+fn update_top_frame<H: Host>(host: &mut DapHostWrapper<'_, H>, current_asmop: Option<&AssemblyOp>) {
     let (name, source_path, line) = match current_asmop {
         Some(asmop) => {
             let loc = resolve_asmop_location(asmop, &*host);
             let (source_path, line) = loc.map_or((None, 0), |(p, l)| (Some(p), l));
-            (asmop.context_name.clone(), source_path, line)
+            (asmop.context_name().clone(), source_path, line)
         }
-        None => (String::new(), None, 0),
+        None => (Arc::default(), None, 0),
     };
 
     if host.frames.is_empty() {
@@ -1050,14 +1202,19 @@ impl DapExecutor {
             let mut resume_ctx = Some(resume_ctx);
             let mut cycle: usize = 0;
             let mut current_debug_info: Option<Arc<PackageDebugInfo>> = None;
-            let mut current_asmop: Option<DebugSourceAsmOp> = None;
+            let mut current_asmop: Option<AssemblyOp> = None;
             let mut debug_state = DapDebugVarState::new();
 
             // Extract initial asmop and populate the root frame.
             if let Some(ctx) = resume_ctx.as_ref() {
                 current_debug_info = ctx.debug_info();
-                let (_op, node_id, op_idx, _control) = extract_current_op(ctx);
-                current_asmop = extract_asm_op(ctx, node_id, op_idx);
+                let CurrentCycleInfo {
+                    source_node_id,
+                    op_idx,
+                    ..
+                } = extract_current_op(ctx);
+                current_asmop =
+                    extract_asm_op(current_debug_info.as_deref(), source_node_id, op_idx);
             }
             update_top_frame(&mut wrapper, current_asmop.as_ref());
 
@@ -1453,9 +1610,9 @@ impl DapExecutor {
                                     path: Some(path),
                                     ..Default::default()
                                 };
-                                (asmop.context_name.clone(), Some(source), line_num)
+                                (asmop.context_name().clone(), Some(source), line_num)
                             } else {
-                                (format!("cycle {cycle}"), None, 0)
+                                (format!("cycle {cycle}").into_boxed_str().into(), None, 0)
                             };
                             vec![types::StackFrame {
                                 id: 0,
@@ -1842,7 +1999,17 @@ impl DapExecutor {
             if let Some(ctx) = resume_ctx {
                 let mut ctx = Some(ctx);
                 while let Some(resume) = ctx.take() {
-                    match poll_immediately(processor.step(&mut wrapper, resume)) {
+                    let debug_info = resume.debug_info();
+                    let step_result = if let Some(debug_info) = debug_info.as_deref() {
+                        poll_immediately(processor.step_with_package_debug_info(
+                            &mut wrapper,
+                            resume,
+                            debug_info,
+                        ))
+                    } else {
+                        poll_immediately(processor.step(&mut wrapper, resume))
+                    };
+                    match step_result {
                         Ok(Some(new_ctx)) => {
                             ctx = Some(new_ctx);
                         }
@@ -1961,23 +2128,37 @@ fn advance_one<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     ctx: ResumeContext,
     cycle: &mut usize,
-    current_asmop: &mut Option<DebugSourceAsmOp>,
+    current_asmop: &mut Option<AssemblyOp>,
     debug_state: &mut DapDebugVarState,
 ) -> Result<Option<ResumeContext>, ExecutionError> {
-    let (_op, node_id, op_idx, _control) = extract_current_op(&ctx);
-    let executed_asmop = extract_asm_op(&ctx, node_id, op_idx);
-    let mut debug_var_infos = match executed_asmop.as_ref() {
-        Some(asmop) => {
-            let di = ctx.debug_info().unwrap();
-            di.debug_vars_for_operation(asmop.source_node, asmop.op_idx)
-                .map(|dsv| dsv.var.clone())
-                .collect::<Vec<_>>()
+    let CurrentCycleInfo {
+        source_node_id,
+        op_idx,
+        ..
+    } = extract_current_op(&ctx);
+    let debug_info = ctx.debug_info();
+    let executed_source_node = source_node_id.zip(debug_info.as_deref()).map(|(id, di)| &di[id]);
+    let (executed_asmop, mut debug_var_infos) = match executed_source_node.zip(op_idx) {
+        Some((source_node, op_idx)) => {
+            let op_idx = op_idx as u32;
+            let debug_info = debug_info.as_deref().unwrap();
+            let asm_op = source_node
+                .asm_op_for_operation(op_idx)
+                .map(|asm_op| asm_op.to_assembly_op(debug_info));
+            let debug_var_infos =
+                source_node.debug_infos_for_operation(op_idx, debug_info).collect::<Vec<_>>();
+            (asm_op, debug_var_infos)
         }
-        None => vec![],
+        None => (None, vec![]),
     };
     let pre_step_stack = processor.state().get_stack_state();
     snapshot_transient_debug_values(&mut debug_var_infos, &pre_step_stack);
-    match poll_immediately(processor.step(host, ctx)) {
+    let result = if let Some(debug_info) = debug_info.as_ref() {
+        poll_immediately(processor.step_with_package_debug_info(host, ctx, debug_info))
+    } else {
+        poll_immediately(processor.step(host, ctx))
+    };
+    match result {
         Ok(Some(new_ctx)) => {
             *cycle += 1;
             record_debug_vars(debug_state, *cycle, debug_var_infos);
@@ -1993,19 +2174,28 @@ fn advance_one<H: Host>(
     }
 }
 
-fn extract_asm_op(
-    ctx: &ResumeContext,
-    node_id: Option<MastNodeId>,
+fn extract_debug_asm_op(
+    debug_info: Option<&PackageDebugInfo>,
+    source_node_id: Option<DebugSourceNodeId>,
     op_idx: Option<usize>,
-) -> Option<DebugSourceAsmOp> {
-    let node_id = node_id?;
-    let debug_info = ctx.debug_info()?;
-
-    let debug_node_id = debug_info.unique_source_root_for_exec_node(node_id).ok().flatten()?;
+) -> Option<&DebugSourceAsmOp> {
+    let debug_info = debug_info?;
+    let source_node_id = source_node_id?;
+    let source_node = &debug_info[source_node_id];
     match op_idx {
-        Some(op_idx) => debug_info.asm_op_for_operation(debug_node_id, op_idx as u32).cloned(),
-        None => debug_info.first_asm_op_for_source_node(debug_node_id).cloned(),
+        Some(op_idx) => source_node.asm_op_for_operation(op_idx as u32),
+        None => source_node.asm_op_for_operation(0),
     }
+}
+
+fn extract_asm_op(
+    debug_info: Option<&PackageDebugInfo>,
+    source_node_id: Option<DebugSourceNodeId>,
+    op_idx: Option<usize>,
+) -> Option<AssemblyOp> {
+    let debug_asm_op = extract_debug_asm_op(debug_info, source_node_id, op_idx)?;
+    let debug_info = debug_info?;
+    Some(debug_asm_op.to_assembly_op(debug_info))
 }
 
 fn is_next_source_line(
@@ -2046,7 +2236,7 @@ fn step_one<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
-    current_asmop: &mut Option<DebugSourceAsmOp>,
+    current_asmop: &mut Option<AssemblyOp>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let ctx = match resume_ctx.take() {
@@ -2071,7 +2261,7 @@ fn step_over<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
-    current_asmop: &mut Option<DebugSourceAsmOp>,
+    current_asmop: &mut Option<AssemblyOp>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let original_asmop = current_asmop.clone();
@@ -2103,18 +2293,25 @@ fn step_next_line<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
-    current_asmop: &mut Option<DebugSourceAsmOp>,
+    current_asmop: &mut Option<AssemblyOp>,
     source_path_prefixes: &[String],
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let original_asmop = current_asmop.clone();
-    let start_proc = original_asmop.as_ref().map(|asmop| asmop.context_name.clone());
+    let start_proc = original_asmop.as_ref().map(|asmop| asmop.context_name().clone());
     let start_loc = original_asmop.as_ref().and_then(|asmop| resolve_asmop_location(asmop, host));
     let minimum_source_line = if let (Some(ctx), Some(proc), Some((source_path, _line))) =
         (resume_ctx.as_ref(), start_proc.as_deref(), start_loc.as_ref())
         && let Some(debug_info) = ctx.debug_info()
     {
-        minimum_source_line_for_proc(&debug_info, host, proc, source_path, source_path_prefixes)
+        minimum_source_line_for_proc(
+            ctx.current_forest(),
+            &debug_info,
+            host,
+            proc,
+            source_path,
+            source_path_prefixes,
+        )
     } else {
         None
     };
@@ -2129,7 +2326,7 @@ fn step_next_line<H: Host>(
             Ok(Some(new_ctx)) => {
                 *resume_ctx = Some(new_ctx);
 
-                let current_proc = current_asmop.as_ref().map(|asmop| asmop.context_name.clone());
+                let current_proc = current_asmop.as_ref().map(|asmop| asmop.context_name().clone());
                 let current_loc =
                     current_asmop.as_ref().and_then(|asmop| resolve_asmop_location(asmop, host));
                 let has_source_context = start_loc.is_some() || current_loc.is_some();
@@ -2163,7 +2360,7 @@ fn step_out<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
-    current_asmop: &mut Option<DebugSourceAsmOp>,
+    current_asmop: &mut Option<AssemblyOp>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let target_depth = host.call_depth.saturating_sub(1);
@@ -2195,7 +2392,7 @@ fn step_until_breakpoint<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     resume_ctx: &mut Option<ResumeContext>,
     cycle: &mut usize,
-    current_asmop: &mut Option<DebugSourceAsmOp>,
+    current_asmop: &mut Option<AssemblyOp>,
     breakpoints: &ContinueBreakpoints<'_>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
@@ -2232,7 +2429,7 @@ fn step_until_breakpoint<H: Host>(
                     // source file path. Context names may have a leading `::` (absolute
                     // paths like `::prologue::foo`), so we also try matching without it.
                     if !breakpoints.function.is_empty() {
-                        let context_name = &asmop.context_name;
+                        let context_name = asmop.context_name();
                         let stripped_name = context_name.strip_prefix("::").unwrap_or(context_name);
                         for fbp in breakpoints.function {
                             // Match via glob pattern or suffix (e.g. "prologue::foo"
@@ -2276,7 +2473,7 @@ fn send_ui_state_snapshot<R: std::io::Read, W: std::io::Write, H: Host>(
     server: &mut Server<R, W>,
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&DebugSourceAsmOp>,
+    current_asmop: Option<&AssemblyOp>,
     cycle: usize,
 ) {
     let ui_state = build_ui_state(processor, host, current_asmop, cycle);
@@ -2295,7 +2492,7 @@ fn announce_entry_stop<R: std::io::Read, W: std::io::Write, H: Host>(
     server: &mut Server<R, W>,
     processor: &mut FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&DebugSourceAsmOp>,
+    current_asmop: Option<&AssemblyOp>,
     cycle: usize,
     already_announced: &mut bool,
 ) {
@@ -2416,7 +2613,17 @@ mod tests {
                 .expect("invalid program"),
         );
         while let Some(ctx) = resume_ctx.take() {
-            match poll_immediately(processor.step(&mut wrapper, ctx)).expect("execution failed") {
+            let debug_info = ctx.debug_info();
+            let step_result = if let Some(debug_info) = debug_info.as_deref() {
+                poll_immediately(processor.step_with_package_debug_info(
+                    &mut wrapper,
+                    ctx,
+                    debug_info,
+                ))
+            } else {
+                poll_immediately(processor.step(&mut wrapper, ctx))
+            };
+            match step_result.expect("execution failed") {
                 Some(next) => resume_ctx = Some(next),
                 None => break,
             }

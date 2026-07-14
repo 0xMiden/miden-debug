@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
 /// A bundled snapshot of the remote state needed by the TUI.
@@ -11,7 +13,7 @@ pub struct DapUiState {
 /// A single remote frame within a bundled UI-state snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DapUiFrame {
-    pub name: String,
+    pub name: Arc<str>,
     pub source_path: Option<String>,
     pub line: i64,
     pub column: i64,

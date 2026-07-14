@@ -1,4 +1,6 @@
-pub use miden_debug_engine::{debug, debug_types, events, exec, felt, processor};
+pub use miden_debug_engine::{
+    HybridPackageRegistry, LinkLibrary, debug, debug_types, events, exec, felt, processor,
+};
 
 mod config;
 #[cfg(feature = "dap")]

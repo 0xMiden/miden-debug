@@ -21,14 +21,14 @@ log = "0.4"
 inventory = "0.3"
 miden-debug-dap = { version = "0.9.0", path = "crates/dap", features = ["client"] }
 miden-debug-engine = { version = "0.9.0", path = "crates/engine", default-features = false }
-miden-assembly = { version = "0.25" }
-miden-assembly-syntax = { version = "0.25" }
-miden-core = { version = "0.25", default-features = false }
-miden-debug-types = { version = "0.25", default-features = false }
-miden-mast-package = { version = "0.25", default-features = false }
-miden-processor = { version = "0.25", default-features = false }
-miden-package-registry = { version = "0.25", features = ["resolver"] }
-miden-project = { version = "0.25" }
+miden-assembly = { version = "0.25.8" }
+miden-assembly-syntax = { version = "0.25.8" }
+miden-core = { version = "0.25.8", default-features = false }
+miden-debug-types = { version = "0.25.8", default-features = false }
+miden-mast-package = { version = "0.25.8", default-features = false }
+miden-processor = { version = "0.25.8", default-features = false }
+miden-package-registry = { version = "0.25.8", features = ["resolver"] }
+miden-project = { version = "0.25.8" }
 rustc-hash = { version = "2.1" }
 serde = { version = "1.0", default-features = false, features = [
     "serde_derive",
@@ -45,6 +45,26 @@ codegen-units = 1
 [profile.release]
 # Needed for 'inventory' to work
 codegen-units = 1
+
+[patch.crates-io]
+#miden-assembly = { path = "../miden-vm/crates/assembly" }
+#miden-assembly-syntax = { path = "../miden-vm/crates/assembly-syntax" }
+#miden-core = { path = "../miden-vm/core" }
+#miden-debug-types = { path = "../miden-vm/crates/debug-types" }
+#miden-processor = { path = "../miden-vm/processor" }
+#miden-mast-package = { path = "../miden-vm/crates/mast-package" }
+#miden-package-registry = { path = "../miden-vm/crates/package-registry" }
+#miden-project = { path = "../miden-vm/crates/project" }
+#miden-assembly = { git = "https://github.com/0xMiden/miden-vm", branch = "bitwalker/package-debug-info-consolidation" }
+#miden-assembly-syntax = { git = "https://github.com/0xMiden/miden-vm", branch = "bitwalker/package-debug-info-consolidation" }
+#miden-core = { git = "https://github.com/0xMiden/miden-vm", branch = "bitwalker/package-debug-info-consolidation" }
+#miden-debug-types = { git = "https://github.com/0xMiden/miden-vm", branch = "bitwalker/package-debug-info-consolidation" }
+#miden-processor = { git = "https://github.com/0xMiden/miden-vm", branch = "bitwalker/package-debug-info-consolidation" }
+#miden-mast-package = { git = "https://github.com/0xMiden/miden-vm", branch = "bitwalker/package-debug-info-consolidation" }
+#miden-package-registry = { git = "https://github.com/0xMiden/miden-vm", branch = "bitwalker/package-debug-info-consolidation" }
+#miden-project = { git = "https://github.com/0xMiden/miden-vm", branch = "bitwalker/package-debug-info-consolidation" }
+
+
 
 [package]
 name = "miden-debug"

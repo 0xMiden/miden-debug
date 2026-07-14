@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 #[cfg(feature = "integration_testing")]
 use fake::{Dummy, Fake, Faker, RngExt};
@@ -1191,7 +1191,7 @@ pub struct StackFrame {
     /// request or to restart the execution of a stackframe.
     pub id: i64,
     /// The name of the stack frame, typically a method name.
-    pub name: String,
+    pub name: Arc<str>,
     /// The source of the frame.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<Source>,

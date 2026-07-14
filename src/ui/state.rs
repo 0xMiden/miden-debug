@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     path::{Path, PathBuf},
-    rc::Rc,
     sync::Arc,
 };
 
@@ -9,7 +8,7 @@ use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::Report;
 use miden_debug_engine::DebugQuery;
 use miden_debug_types::{Location, SourceManagerExt, SourceSpan};
-use miden_mast_package::{Package, debug_info::DebugSourceAsmOp};
+use miden_mast_package::Package;
 use miden_processor::{
     Felt, LoadedMastForest, StackInputs,
     advice::{AdviceInputs, AdviceMutation},
@@ -673,12 +672,12 @@ impl State {
         }
     }
 
-    pub fn current_procedure(&self) -> Option<Rc<str>> {
+    pub fn current_procedure(&self) -> Option<Arc<str>> {
         let live_proc = self
             .executor()
             .current_asmop
             .as_ref()
-            .map(|op| Rc::from(op.context_name()))
+            .map(|op| op.context_name().clone())
             .or_else(|| self.executor().current_proc.clone());
         let frame_proc =
             self.executor().callstack.current_frame().and_then(|frame| frame.procedure(""));
@@ -783,25 +782,42 @@ impl State {
         procedure: &str,
         source_path: &str,
     ) -> Option<u32> {
-        let ctx = self.executor().resume_ctx.as_ref()?;
+        let executor = self.executor();
+        let ctx = executor.resume_ctx.as_ref()?;
+        let mast_forest = ctx.current_forest();
         let debug_info = ctx.debug_info()?;
-        let source_map = debug_info.source_map()?;
 
         let source_path_prefixes = self.source_path_prefixes();
 
-        let mut lines = BTreeSet::new();
-        for asmop in source_map.asm_ops() {
-            if asmop.context_name != procedure {
+        let mut lines = BTreeSet::<u32>::default();
+        for function_info in debug_info.functions() {
+            if debug_info[function_info.name_idx].as_ref() != procedure {
                 continue;
             }
-            let Some((path, line)) = self.resolve_asmop_location(asmop) else {
-                continue;
-            };
-            if line > 1 && source_paths_match(&path, source_path, &source_path_prefixes) {
-                lines.insert(line);
+            let source_node_id = function_info.source_node.into_option().or_else(|| {
+                mast_forest.find_procedure_root(function_info.mast_root).and_then(|exec_node| {
+                    debug_info.unique_source_root_for_exec_node(exec_node).ok().flatten()
+                })
+            })?;
+            for asm_op in debug_info[source_node_id].asm_ops.iter() {
+                let Some(location_idx) = asm_op.location_idx.into_option() else {
+                    continue;
+                };
+                let location = debug_info.get_location(location_idx).unwrap();
+                let Some(resolved_location) = self.resolve_op_location(&location) else {
+                    continue;
+                };
+                if resolved_location.line > 1
+                    && source_paths_match(
+                        resolved_location.source_file.uri().as_str(),
+                        source_path,
+                        &source_path_prefixes,
+                    )
+                {
+                    lines.insert(resolved_location.line);
+                }
             }
         }
-
         lines.pop_first()
     }
 
@@ -842,11 +858,6 @@ impl State {
             col: file_line_col.column.to_u32(),
             span,
         })
-    }
-
-    fn resolve_asmop_location(&self, asmop: &DebugSourceAsmOp) -> Option<(String, u32)> {
-        let resolved = self.resolve_op_location(asmop.location.as_ref()?)?;
-        Some((resolved.source_file.uri().as_str().to_string(), resolved.line))
     }
 
     fn load_source_file_for_uri(
@@ -1093,9 +1104,10 @@ impl State {
 
             if let (Some(current), Some(var_loc)) =
                 (current_source.as_ref(), var_snapshot.info.location())
+                && let Some(var_loc) = self.resolve_op_location(var_loc)
                 && !source_var_location_is_visible(
-                    var_loc.uri.as_str(),
-                    var_loc.line.to_u32(),
+                    var_loc.source_file.uri().as_str(),
+                    var_loc.line,
                     current.source_file.uri().as_str(),
                     current.line,
                     &source_path_prefixes,
@@ -1114,10 +1126,13 @@ impl State {
                 read_mem(addr)
             });
 
-            let source = var_snapshot.info.location().map(|loc| DebugVariableSource {
-                path: loc.uri.as_str().to_string(),
-                line: loc.line.to_u32(),
-                column: loc.column.to_u32(),
+            let source = var_snapshot.info.location().and_then(|loc| {
+                let loc = self.resolve_op_location(loc)?;
+                Some(DebugVariableSource {
+                    path: loc.source_file.uri().as_str().to_string(),
+                    line: loc.line,
+                    column: loc.col,
+                })
             });
 
             variables.push(DebugVariableValue {

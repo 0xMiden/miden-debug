@@ -199,7 +199,7 @@ impl Deserializable for ReplaySnapshot {
                 "unsupported replay snapshot version {version} (expected {SNAPSHOT_VERSION})"
             )));
         }
-        let package = Arc::new(Package::read_from_trusted(source)?);
+        let package = Arc::new(Package::read_from_unchecked(source)?);
         let stack_inputs = StackInputs::read_from(source)?;
         let advice_inputs = AdviceInputs::read_from(source)?;
         let options = read_execution_options(source)?;

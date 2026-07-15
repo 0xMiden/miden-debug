@@ -1,0 +1,15 @@
+# Render ABI-typed debug variables through the non-interactive REPL.
+#
+# RUN: compile-abi-fixture %S/abi_types.masm -o %t.masp
+# RUN: miden-debug --commands %s %t.masp 2>&1 | filecheck %s
+
+continue
+vars all
+
+# CHECK: Program terminated successfully
+# CHECK: account=account-id(0xa591009a3022e800788f9ed177dcdb)
+# CHECK-SAME: array=[5, 6, 7]
+# CHECK-SAME: enabled=true
+# CHECK-SAME: maybe=OptionU32::Some(42)
+# CHECK-SAME: point={x=3, y=4}
+# CHECK-SAME: wide=u256([1, 2, 3, 4, 5, 6, 7, 8])

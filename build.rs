@@ -49,7 +49,11 @@ fn validate_python() {
         );
     }
 
-    match (config.python_framework_prefix.as_deref(), config.lib_dir.as_deref()) {
+    let framework_prefix =
+        config.python_framework_prefix.as_deref().filter(|path| !path.trim().is_empty());
+    let lib_dir = config.lib_dir.as_deref().filter(|path| !path.trim().is_empty());
+
+    match (framework_prefix, lib_dir) {
         (Some(prefix), _) => validate_framework_prefix(prefix),
         (None, Some(lib_dir)) => validate_lib_dir(lib_dir),
         (None, None) => panic!(

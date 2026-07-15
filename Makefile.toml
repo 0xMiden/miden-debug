@@ -314,7 +314,12 @@ args = [
     "${LOCAL_BIN_DIR}",
     "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/tests/lit",
 ]
-dependencies = ["litcheck", "install-compile-masm-locally", "install-repl-locally"]
+dependencies = [
+    "litcheck",
+    "install-compile-masm-locally",
+    "install-repl-locally",
+    "install-python-repl-locally",
+]
 
 [tasks.litcheck]
 category = "Test"
@@ -326,6 +331,12 @@ category = "Build"
 description = "Builds miden-debug with the `repl` feature, required for `--commands` batch mode"
 command = "cargo"
 args = ["build", "--bin", "miden-debug", "--features", "repl", "${@}"]
+
+[tasks.python-repl]
+category = "Build"
+description = "Builds miden-debug with Python scripting for lit tests"
+command = "cargo"
+args = ["build", "--bin", "miden-debug", "--features", "python", "${@}"]
 
 [tasks.compile-masm]
 category = "Build"
@@ -356,6 +367,19 @@ script = '''
 mkdir ${LOCAL_BIN_DIR}
 src = concat ${CARGO_ARTIFACT_DIR} "/miden-debug"
 dst = concat ${LOCAL_BIN_DIR} "/miden-debug"
+cp ${src} ${dst}
+'''
+
+[tasks.install-python-repl-locally]
+category = "Install"
+description = "Builds the Python-enabled debugger and copies it into the local bin folder"
+private = true
+dependencies = ["python-repl"]
+script_runner = "@duckscript"
+script = '''
+mkdir ${LOCAL_BIN_DIR}
+src = concat ${CARGO_ARTIFACT_DIR} "/miden-debug"
+dst = concat ${LOCAL_BIN_DIR} "/miden-debug-python"
 cp ${src} ${dst}
 '''
 

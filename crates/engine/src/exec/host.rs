@@ -15,7 +15,7 @@ use miden_processor::{
 };
 
 use super::advice::clone_advice_mutations;
-use crate::event::is_builtin_event;
+use crate::Event;
 
 /// This is an implementation of [Host] which is essentially [miden_processor::DefaultHost],
 /// but extended with additional functionality for debugging, in particular it manages trace
@@ -155,7 +155,7 @@ where
         process: &ProcessorState<'_>,
     ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
         let event_id = EventId::from_felt(process.get_stack_item(0));
-        let is_builtin_event = is_builtin_event(event_id);
+        let is_builtin_event = Event::from(event_id).has_builtin_handler();
         let replay_mutations = self.event_replay.pop_front();
         let is_replaying = replay_mutations.is_some();
 

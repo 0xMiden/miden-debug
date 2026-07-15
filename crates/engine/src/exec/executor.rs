@@ -382,6 +382,8 @@ fn register_builtin_event_handlers(
         Ok(vec![])
     };
 
+    // Keep builtin event handlers in sync with `Event::has_builtin_handler`
+
     host.register_event_handler(PRINTLN_EVENT, Arc::new(println_handler))
         .expect("failed to register println event handler");
 

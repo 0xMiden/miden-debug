@@ -100,6 +100,14 @@ impl Event {
             Self::Unknown(_) => return None,
         })
     }
+
+    /// Returns `true` if `DebuggerHost` has a builtin handler for the event.
+    pub fn has_builtin_handler(&self) -> bool {
+        match self {
+            Self::FrameStart | Self::FrameEnd | Self::PrintLn => true,
+            Self::UserDefined(_) | Self::Unknown(_) => false,
+        }
+    }
 }
 
 impl core::fmt::Display for Event {

@@ -38,11 +38,14 @@ impl LinkLibrary {
         matches!(self.name.as_ref(), "miden-protocol" | "protocol" | "base")
     }
 
-    pub fn load(
+    pub fn load<S>(
         &self,
         search_paths: &[PathBuf],
-        registry: &mut dyn PackageCache<Error = Report>,
-    ) -> Result<Arc<Package>, Report> {
+        registry: &mut S,
+    ) -> Result<Arc<Package>, Report>
+    where
+        S: PackageCache<Error = Report>,
+    {
         if let Some(path) = self.path.as_deref() {
             return self.load_from_path(path, registry);
         }
@@ -53,11 +56,10 @@ impl LinkLibrary {
         self.load_from_path(&path, registry)
     }
 
-    fn load_from_path(
-        &self,
-        path: &Path,
-        registry: &mut dyn PackageCache<Error = Report>,
-    ) -> Result<Arc<Package>, Report> {
+    fn load_from_path<S>(&self, path: &Path, registry: &mut S) -> Result<Arc<Package>, Report>
+    where
+        S: PackageCache<Error = Report>,
+    {
         if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("masm")) {
             let source_manager = Arc::new(DefaultSourceManager::default());
             return miden_assembly::Assembler::new(source_manager)

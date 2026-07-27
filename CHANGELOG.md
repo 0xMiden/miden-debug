@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.9.0...miden-debug-v0.9.1) - 2026-07-20
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [0.9.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.8.1...miden-debug-v0.9.0) - 2026-07-13
 
 ### Added

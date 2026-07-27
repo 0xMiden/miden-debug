@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.9.0...miden-debug-engine-v0.10.0) - 2026-07-20
+
+### Fixed
+
+- support miden-vm 0.25.6
+- forward events to builtin handlers even with event replay
+
+### Other
+
+- make check for builtin event handler a method
+
 ## [0.9.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.8.1...miden-debug-engine-v0.9.0) - 2026-07-13
 
 ### Added

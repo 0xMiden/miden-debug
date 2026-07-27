@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.2](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.9.1...miden-debug-v0.9.2) - 2026-07-27
+
+### Other
+
+- prepare for next release
+- migrate to miden-vm v0.25.8 ([#106](https://github.com/0xMiden/miden-debug/pull/106))
+
 ## [0.9.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.9.0...miden-debug-v0.9.1) - 2026-07-20
 
 ### Other

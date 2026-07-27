@@ -1,4 +1,4 @@
-use std::{io::Write, rc::Rc};
+use std::{io::Write, sync::Arc};
 
 use miden_assembly_syntax::diagnostics::Report;
 
@@ -90,7 +90,7 @@ impl ReplEngine {
 
     /// Print the current source location / procedure to `out`.
     pub fn print_location(&self, out: &mut dyn Write) {
-        let proc_name = self.state.current_procedure().unwrap_or_else(|| Rc::from("<unknown>"));
+        let proc_name = self.state.current_procedure().unwrap_or_else(|| Arc::from("<unknown>"));
         if let Some(resolved) = self.state.current_display_location() {
             let _ = writeln!(out, "at {} in {}", resolved, proc_name);
         } else if self.state.executor().callstack.current_frame().is_some() {
@@ -292,7 +292,8 @@ impl ReplEngine {
 
     fn cmd_where(&mut self, out: &mut dyn Write) -> Result<(), String> {
         if self.state.executor().callstack.current_frame().is_some() {
-            let proc_name = self.state.current_procedure().unwrap_or_else(|| Rc::from("<unknown>"));
+            let proc_name =
+                self.state.current_procedure().unwrap_or_else(|| Arc::from("<unknown>"));
 
             if let Some(resolved) = self.state.current_display_location() {
                 let _ = writeln!(
@@ -340,7 +341,7 @@ impl ReplEngine {
 
         let _ = writeln!(out, "Backtrace ({} frames):", frames.len());
         for (i, frame) in frames.iter().rev().enumerate() {
-            let proc_name = frame.procedure("").unwrap_or_else(|| Rc::from("<unknown>"));
+            let proc_name = frame.procedure("").unwrap_or_else(|| Arc::from("<unknown>"));
             let loc_str = frame
                 .last_resolved(&*self.state.source_manager)
                 .map(|r| format!(" at {}", r))

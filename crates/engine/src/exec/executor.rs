@@ -8,8 +8,8 @@ use std::{
 };
 
 use log::Level;
-use miden_assembly_syntax::diagnostics::Report;
-use miden_core::{operations::DebugVarInfo, program::StackInputs};
+use miden_assembly_syntax::{ast::DebugVarInfo, diagnostics::Report};
+use miden_core::program::StackInputs;
 use miden_debug_types::{SourceManager, SourceManagerExt};
 use miden_mast_package::Package;
 use miden_package_registry::PackageCache;

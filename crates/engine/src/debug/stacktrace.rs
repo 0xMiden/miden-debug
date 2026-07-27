@@ -4,7 +4,6 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
     path::{Path, PathBuf},
-    rc::Rc,
     sync::{Arc, Mutex},
 };
 
@@ -39,7 +38,7 @@ struct SpanContext {
 
 pub struct CallStack {
     events: Arc<Mutex<BTreeMap<RowIndex, Event>>>,
-    contexts: BTreeSet<Rc<str>>,
+    contexts: BTreeSet<Arc<str>>,
     frames: Vec<CallFrame>,
     block_stack: Vec<Option<SpanContext>>,
 }
@@ -193,13 +192,13 @@ impl CallStack {
         popped_frame
     }
 
-    // Get or cache procedure name/context as `Rc<str>`
-    fn cache_procedure_name(&mut self, context_name: &str) -> Rc<str> {
+    // Get or cache procedure name/context as `Arc<str>`
+    fn cache_procedure_name(&mut self, context_name: &str) -> Arc<str> {
         match self.contexts.get(context_name) {
-            Some(name) => Rc::clone(name),
+            Some(name) => Arc::clone(name),
             None => {
-                let name = Rc::from(context_name.to_string().into_boxed_str());
-                self.contexts.insert(Rc::clone(&name));
+                let name = Arc::from(context_name.to_string().into_boxed_str());
+                self.contexts.insert(Arc::clone(&name));
                 name
             }
         }
@@ -208,7 +207,7 @@ impl CallStack {
     fn handle_event(
         &mut self,
         event: Option<Event>,
-        procedure: Option<Rc<str>>,
+        procedure: Option<Arc<str>>,
         op: Option<Operation>,
         asmop: Option<&AssemblyOp>,
     ) -> Option<CallFrame> {
@@ -237,13 +236,13 @@ impl CallStack {
 }
 
 pub struct CallFrame {
-    procedure: Option<Rc<str>>,
+    procedure: Option<Arc<str>>,
     context: VecDeque<OpDetail>,
-    display_name: std::cell::OnceCell<Rc<str>>,
+    display_name: std::cell::OnceCell<Arc<str>>,
     finishing: bool,
 }
 impl CallFrame {
-    pub fn new(procedure: Option<Rc<str>>) -> Self {
+    pub fn new(procedure: Option<Arc<str>>) -> Self {
         Self {
             procedure,
             context: Default::default(),
@@ -258,8 +257,7 @@ impl CallFrame {
     /// as a pre-resolved `OpDetail::Full` entry so that `last_resolved()` and
     /// `recent()` work correctly for pane rendering.
     #[cfg(feature = "dap")]
-    pub fn from_remote(name: Option<String>, resolved: Option<ResolvedLocation>) -> Self {
-        let procedure = name.map(|n| Rc::from(n.into_boxed_str()));
+    pub fn from_remote(procedure: Option<Arc<str>>, resolved: Option<ResolvedLocation>) -> Self {
         let mut context = VecDeque::new();
         if let Some(loc) = resolved {
             let cell = OnceCell::new();
@@ -278,7 +276,7 @@ impl CallFrame {
         }
     }
 
-    pub fn procedure(&self, strip_prefix: &str) -> Option<Rc<str>> {
+    pub fn procedure(&self, strip_prefix: &str) -> Option<Arc<str>> {
         self.procedure.as_ref()?;
         let name = self.display_name.get_or_init(|| {
             let name = self.procedure.as_deref().unwrap();
@@ -286,12 +284,12 @@ impl CallFrame {
                 Some((module, rest)) if module == strip_prefix => demangle(rest),
                 _ => demangle(name),
             };
-            Rc::from(name.into_boxed_str())
+            Arc::<str>::from(name.into_boxed_str())
         });
-        Some(Rc::clone(name))
+        Some(Arc::clone(name))
     }
 
-    pub fn push_exec(&mut self, callee: Option<Rc<str>>) {
+    pub fn push_exec(&mut self, callee: Option<Arc<str>>) {
         if self.context.len() == 5 {
             self.context.pop_front();
         }
@@ -383,7 +381,7 @@ pub enum OpDetail {
         resolved: OnceCell<Option<ResolvedLocation>>,
     },
     Exec {
-        callee: Option<Rc<str>>,
+        callee: Option<Arc<str>>,
     },
     Basic {
         op: Operation,
@@ -522,7 +520,7 @@ impl fmt::Display for ResolvedLocation {
 }
 
 pub struct CurrentFrame {
-    pub procedure: Option<Rc<str>>,
+    pub procedure: Option<Arc<str>>,
     pub location: Option<ResolvedLocation>,
 }
 

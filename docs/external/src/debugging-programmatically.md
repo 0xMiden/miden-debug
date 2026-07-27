@@ -25,7 +25,7 @@ use miden_debug::{Executor, debug_types::DefaultSourceManager, RawFelt};
 let source_manager = Arc::new(DefaultSourceManager::default());
 
 // Load an already assembled executable package, or assemble one
-let package = Package::deserialize_from_file("path/to/program.masp").map(Arc::new).unwrap();
+let package = Package::deserialize_from_file_trusted("path/to/program.masp").map(Arc::new).unwrap();
 
 // Construct the debug executor from the package, and specify the initial args
 let exec = Executor::for_package(package, [RawFelt::new(1)]).expect("invalid package");
@@ -104,7 +104,7 @@ To do so, you need to convert the executor into debug mode, as shown here:
 use miden_debug::{Executor, BreakpointType};
 
 let source_manager = Arc::new(DefaultSourceManager::default());
-let program_package = Package::deserialize_from_file("path/to/program.masp").map(Arc::new).unwrap();
+let program_package = Package::deserialize_from_file_trusted("path/to/program.masp").map(Arc::new).unwrap();
 let exec = Executor::for_package(&program_package, args).unwrap();
 
 let program = program_package.unwrap_program();
@@ -160,7 +160,7 @@ use miden_debug::{
 };
 
 let source_manager = Arc::new(DefaultSourceManager::default());
-let program_package = Package::deserialize_from_file("path/to/program.masp").map(Arc::new).unwrap();
+let program_package = Package::deserialize_from_file_trusted("path/to/program.masp").map(Arc::new).unwrap();
 let exec = Executor::for_package(&program_package, args).unwrap();
 
 let program = program_package.unwrap_program();

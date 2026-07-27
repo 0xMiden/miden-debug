@@ -1,8 +1,8 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
+use miden_assembly_syntax::ast::{DebugVarInfo, DebugVarLocation};
 use miden_core::{
     Felt,
-    operations::{DebugVarInfo, DebugVarLocation},
     serde::{ByteReader, Deserializable, SliceReader},
 };
 use miden_processor::trace::RowIndex;
@@ -63,7 +63,7 @@ impl DebugVarTracker {
         for (event_clk, var_infos) in events.range(self.processed_up_to..=clk) {
             for info in var_infos {
                 if is_debug_var_kill(info) {
-                    self.current_vars.remove(info.name());
+                    self.current_vars.remove(info.name().as_ref());
                     continue;
                 }
                 let snapshot = DebugVarSnapshot {

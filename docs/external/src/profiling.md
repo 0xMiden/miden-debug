@@ -39,3 +39,6 @@ Reports are written to the directory specified by `--profiling-reports-dir`, wit
 ## Interpretation
 
 The output file contains a histogram of operation counts sorted by frequency. Counts are weighted by cycle, so if `opx` takes 4 cycles and is executed twice, its value in the histogram will be 8.
+
+The global histogram combines operations from every procedure executed during the run into one histogram. It does not provide a per-procedure breakdown.
+

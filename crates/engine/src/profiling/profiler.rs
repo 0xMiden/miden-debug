@@ -22,9 +22,9 @@ impl Profiler {
     }
 
     /// Records the op with every active instrument, otherwise it's a no-op.
-    pub fn on_operation_execution_cycle(&mut self, op: Operation) {
+    pub fn on_operation_execution_cycle(&mut self, op: Operation, proc: Option<&str>) {
         for instrument in &mut self.instruments {
-            instrument.on_operation_execution_cycle(op);
+            instrument.on_operation_execution_cycle(op, proc);
         }
     }
 
@@ -90,7 +90,7 @@ mod tests {
             self.name
         }
 
-        fn on_operation_execution_cycle(&mut self, _op: Operation) {
+        fn on_operation_execution_cycle(&mut self, _op: Operation, _proc: Option<&str>) {
             self.ops += 1;
         }
 
@@ -119,9 +119,9 @@ mod tests {
         let mut profiler = Profiler::from_config(config);
 
         // Record some operations so the instruments have data to report.
-        profiler.on_operation_execution_cycle(Operation::Add);
-        profiler.on_operation_execution_cycle(Operation::Noop);
-        profiler.on_operation_execution_cycle(Operation::Add);
+        profiler.on_operation_execution_cycle(Operation::Add, None);
+        profiler.on_operation_execution_cycle(Operation::Noop, None);
+        profiler.on_operation_execution_cycle(Operation::Add, None);
 
         profiler.write_reports();
 
@@ -145,8 +145,8 @@ mod tests {
         let mut profiler = Profiler::from_config(config);
 
         // Each instrument must observe every recorded op.
-        profiler.on_operation_execution_cycle(Operation::Add);
-        profiler.on_operation_execution_cycle(Operation::Noop);
+        profiler.on_operation_execution_cycle(Operation::Add, None);
+        profiler.on_operation_execution_cycle(Operation::Noop, None);
 
         // Collect each report into an in-memory buffer and construct string from there.
         fn report_of(instrument: &dyn Instrument) -> String {

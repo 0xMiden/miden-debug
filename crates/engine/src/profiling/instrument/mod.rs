@@ -16,7 +16,11 @@ pub trait Instrument {
     /// This should be the same name as the corresponding `InstrumentRegistration::NAME` constant
     fn name(&self) -> &'static str;
     /// To be called each vm cycle an `Operation` is executed.
-    fn on_operation_execution_cycle(&mut self, op: Operation);
+    ///
+    /// `proc` is the name of the most recent live procedure, or `None` when the operation cannot
+    /// be attributed to a procedure. For example, it is `None` while executing a program without
+    /// assembly operation metadata.
+    fn on_operation_execution_cycle(&mut self, op: Operation, proc: Option<&str>);
     /// Write this instrumentation's collected output as a report to `writer`
     fn write_report_to(&self, writer: &mut dyn std::io::Write) -> std::io::Result<()>;
 }

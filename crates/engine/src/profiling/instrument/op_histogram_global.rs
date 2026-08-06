@@ -3,7 +3,9 @@ use miden_core::operations::Operation;
 use super::{Instrument, InstrumentRegistration};
 use crate::{profiling::helpers::op_histogram::OpHistogram, register_instrument};
 
-/// An [`Instrument`] to create operation histograms.
+/// An [`Instrument`] to create global operation histograms.
+///
+/// The global histogram aggregates across all procedures over the entire runtime.
 ///
 /// At each cycle, it records the current operation and produces a histogram of executed operations
 /// weighted by cycles per operation. If `opX` takes 4 cycles and was executed twice, its count
@@ -28,7 +30,8 @@ impl Instrument for OpHistogramGlobal {
         Self::NAME
     }
 
-    fn on_operation_execution_cycle(&mut self, op: Operation) {
+    fn on_operation_execution_cycle(&mut self, op: Operation, _proc: Option<&str>) {
+        // The global histogram aggregates over all procedures, ignoring `proc`.
         self.hist.record(op);
     }
 
@@ -48,10 +51,10 @@ mod tests {
     fn op_histogram_reports_recorded_ops() {
         let mut hist = OpHistogramGlobal::default();
 
-        // 3 cycles
-        hist.on_operation_execution_cycle(Operation::Add);
-        hist.on_operation_execution_cycle(Operation::Add);
-        hist.on_operation_execution_cycle(Operation::Noop);
+        // 3 cycles, procedure names are ignored by the global histogram.
+        hist.on_operation_execution_cycle(Operation::Add, Some("main"));
+        hist.on_operation_execution_cycle(Operation::Add, Some("sum"));
+        hist.on_operation_execution_cycle(Operation::Noop, None);
 
         let mut buf = Vec::new();
         hist.write_report_to(&mut buf).unwrap();
@@ -67,5 +70,22 @@ mod tests {
 
         // no further lines
         assert_eq!(lines.len(), 3);
+    }
+
+    /// The global histogram must not be affected by which procedure an op is recorded in.
+    #[test]
+    fn op_histogram_ignores_procedure() {
+        let mut across_procs = OpHistogramGlobal::default();
+        let mut single_proc = OpHistogramGlobal::default();
+
+        across_procs.on_operation_execution_cycle(Operation::Add, Some("sum"));
+        across_procs.on_operation_execution_cycle(Operation::Add, Some("main"));
+        across_procs.on_operation_execution_cycle(Operation::Noop, None);
+
+        single_proc.on_operation_execution_cycle(Operation::Add, Some("main"));
+        single_proc.on_operation_execution_cycle(Operation::Add, Some("main"));
+        single_proc.on_operation_execution_cycle(Operation::Noop, Some("main"));
+
+        assert_eq!(across_procs.hist.report(), single_proc.hist.report());
     }
 }

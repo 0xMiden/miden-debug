@@ -18,7 +18,7 @@ Run the debugger with
 ```bash
 miden-debug \
     --profiling-reports-dir ./reports \
-    --profiling-instruments op-histogram \
+    --profiling-instruments op-histogram-global \
     --commands cmds.txt \
     fibonacci:fibonacci.masp -- 42
 ```
@@ -34,7 +34,7 @@ stack
 
 Once passing commands as CLI parameters is supported [[#97](https://github.com/0xMiden/miden-debug/issues/97)], no separate `cmds.txt` file will be needed.
 
-Reports are written to the directory specified by `--profiling-reports-dir`, with one file per instrument named after the instrument (e.g., `op-histogram`).
+Reports are written to the directory specified by `--profiling-reports-dir`, with one file per instrument named after the instrument (e.g., `op-histogram-global`).
 
 ## Interpretation
 

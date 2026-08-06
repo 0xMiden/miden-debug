@@ -14,7 +14,7 @@ pub struct OpHistogramGlobal {
 }
 
 impl InstrumentRegistration for OpHistogramGlobal {
-    const NAME: &'static str = "op-histogram";
+    const NAME: &'static str = "op-histogram-global";
 
     fn build(_config: &crate::profiling::ProfilerConfig) -> Result<Self, super::InstrumentError> {
         Ok(Self::default())

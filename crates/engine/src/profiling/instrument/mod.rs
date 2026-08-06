@@ -5,9 +5,9 @@
 
 use miden_core::operations::Operation;
 
-mod op_histogram;
+mod op_histogram_global;
 
-pub use op_histogram::OpHistogram;
+pub use op_histogram_global::OpHistogramGlobal;
 
 /// The functionality required for an instrument to be plugged in to `Profiler`.
 pub trait Instrument {

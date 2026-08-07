@@ -114,7 +114,7 @@ impl ReplaySnapshotRecorder {
 /// Magic bytes identifying a replay snapshot file, followed by a format version. Bumping the
 /// version invalidates older snapshots, whose serialized shape may differ.
 const SNAPSHOT_MAGIC: [u8; 6] = *b"MDNSNP";
-const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_VERSION: u8 = 2;
 
 /// Everything needed to replay a recorded execution in the debugger.
 pub struct ReplaySnapshot {
@@ -233,8 +233,12 @@ fn write_execution_options<W: ByteWriter>(options: &ExecutionOptions, target: &m
     target.write_usize(options.max_adv_map_value_size());
     target.write_usize(options.max_adv_map_elements());
     target.write_usize(options.max_hash_len_bytes());
+    target.write_usize(options.max_deferred_elements());
+    target.write_bool(options.overlapped_trace_build());
     target.write_usize(options.max_num_continuations());
+    target.write_usize(options.max_merkle_store_nodes());
     target.write_usize(options.max_stack_depth());
+    target.write_usize(options.max_memory_elements());
 }
 
 fn read_execution_options<R: ByteReader>(
@@ -246,8 +250,12 @@ fn read_execution_options<R: ByteReader>(
     let max_adv_map_value_size = source.read_usize()?;
     let max_adv_map_elements = source.read_usize()?;
     let max_hash_len_bytes = source.read_usize()?;
+    let max_deferred_elements = source.read_usize()?;
+    let overlapped_trace_build = source.read_bool()?;
     let max_num_continuations = source.read_usize()?;
+    let max_merkle_store_nodes = source.read_usize()?;
     let max_stack_depth = source.read_usize()?;
+    let max_memory_elements = source.read_usize()?;
 
     ExecutionOptions::new(Some(max_cycles), expected_cycles, core_trace_fragment_size)
         .map_err(|err| {
@@ -258,7 +266,11 @@ fn read_execution_options<R: ByteReader>(
                 .with_max_adv_map_value_size(max_adv_map_value_size)
                 .with_max_adv_map_elements(max_adv_map_elements)
                 .with_max_hash_len_bytes(max_hash_len_bytes)
+                .with_max_deferred_elements(max_deferred_elements)
+                .with_overlapped_trace_build(overlapped_trace_build)
                 .with_max_num_continuations(max_num_continuations)
+                .with_max_merkle_store_nodes(max_merkle_store_nodes)
+                .with_max_memory_elements(max_memory_elements)
                 .with_max_stack_depth(max_stack_depth)
                 .map_err(|err| {
                     DeserializationError::InvalidValue(format!("invalid execution options: {err}"))
@@ -301,7 +313,9 @@ mod tests {
         );
 
         let event_log = vec![
-            vec![AdviceMutation::extend_stack([Felt::from(7u32), Felt::from(8u32)])],
+            vec![AdviceMutation::extend_advice_stack(
+                [Felt::from(7u32), Felt::from(8u32)].into_iter().collect(),
+            )],
             vec![],
             vec![AdviceMutation::extend_merkle_store([InnerNodeInfo {
                 value: word([1, 2, 3, 4]),
@@ -313,13 +327,18 @@ mod tests {
         let snapshot = ReplaySnapshot {
             package: program.clone(),
             stack_inputs: StackInputs::new(&[Felt::from(42u32), Felt::from(43u32)]).unwrap(),
-            advice_inputs: AdviceInputs::default().with_stack([Felt::from(99u32)]),
+            advice_inputs: AdviceInputs::default()
+                .with_advice_stack([Felt::from(99u32)].into_iter().collect()),
             options: ExecutionOptions::new(Some(100_000), 32, 1024)
                 .unwrap()
                 .with_max_adv_map_value_size(64)
                 .with_max_adv_map_elements(256)
                 .with_max_hash_len_bytes(512)
+                .with_max_deferred_elements(768)
+                .with_overlapped_trace_build(false)
                 .with_max_num_continuations(128)
+                .with_max_merkle_store_nodes(384)
+                .with_max_memory_elements(1024)
                 .with_max_stack_depth(128)
                 .unwrap(),
             mast_forests: vec![forest],
@@ -337,8 +356,11 @@ mod tests {
         assert_eq!(restored.event_log.len(), 3);
         assert_eq!(restored.event_log[1].len(), 0, "empty event batch must survive");
         match restored.event_log[0].as_slice() {
-            [AdviceMutation::ExtendStack { values }] => {
-                assert_eq!(values.as_slice(), &[Felt::from(7u32), Felt::from(8u32)]);
+            [AdviceMutation::ExtendStack { stack }] => {
+                assert_eq!(
+                    stack.iter().copied().collect::<Vec<_>>(),
+                    [Felt::from(7u32), Felt::from(8u32)],
+                );
             }
             _ => panic!("unexpected first event batch"),
         }
@@ -357,5 +379,18 @@ mod tests {
     fn replay_snapshot_rejects_bad_magic() {
         let err = ReplaySnapshot::read_from_bytes(b"not a snapshot at all really");
         assert!(err.is_err(), "expected deserialization to fail on bad magic");
+    }
+
+    /// Version 1 snapshots may contain legacy precompile mutations and opcode semantics, so they
+    /// must not be interpreted as version 2 snapshots.
+    #[test]
+    fn replay_snapshot_rejects_previous_version() {
+        let mut bytes = SNAPSHOT_MAGIC.to_vec();
+        bytes.push(SNAPSHOT_VERSION - 1);
+
+        let Err(err) = ReplaySnapshot::read_from_bytes(&bytes) else {
+            panic!("expected deserialization to reject a version 1 snapshot");
+        };
+        assert!(err.to_string().contains("unsupported replay snapshot version 1"));
     }
 }

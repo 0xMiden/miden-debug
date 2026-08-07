@@ -388,10 +388,24 @@ impl FromStr for OperationMatcher {
             ("horner_base", None) => HornerBase,
             ("horner_ext", None) => HornerExt,
             ("eval_circuit", None) => EvalCircuit,
-            ("log_precompile", None) => LogPrecompile,
+            ("log_deferred" | "log_precompile", None) => LogDeferred,
             _ => return Ok(OperationMatcher::Asm(name.to_string())),
         };
 
         Ok(OperationMatcher::Exact(opcode))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OperationMatcher;
+
+    #[test]
+    fn log_deferred_breakpoint_accepts_legacy_name_and_displays_canonically() {
+        let canonical = "log_deferred".parse::<OperationMatcher>().unwrap();
+        let legacy = "log_precompile".parse::<OperationMatcher>().unwrap();
+
+        assert_eq!(canonical, legacy);
+        assert_eq!(canonical.to_string(), "log_deferred");
     }
 }

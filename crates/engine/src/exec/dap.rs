@@ -13,7 +13,7 @@ use std::{
 
 use dap::prelude::*;
 use miden_assembly_syntax::ast::{DebugVarInfo, DebugVarLocation};
-use miden_core::{Word, operations::AssemblyOp, precompile::PrecompileTranscript};
+use miden_core::{Word, operations::AssemblyOp};
 use miden_debug_types::Location;
 use miden_mast_package::{
     MastForest, Package,
@@ -1980,7 +1980,7 @@ impl DapExecutor {
                     stack: StackOutputs::new(&[]).expect("empty stack outputs"),
                     advice: Default::default(),
                     memory: Default::default(),
-                    final_precompile_transcript: PrecompileTranscript::default(),
+                    deferred_state: Default::default(),
                 });
             }
 
@@ -2054,12 +2054,13 @@ impl DapExecutor {
             let stack = StackOutputs::new(&stack_top)
                 .unwrap_or_else(|_| StackOutputs::new(&[]).expect("empty stack outputs"));
 
-            let (advice, memory, final_precompile_transcript) = processor.into_parts();
+            let deferred_state = processor.deferred_state().clone();
+            let (advice, memory) = processor.into_parts();
             return Ok(ExecutionOutput {
                 stack,
                 advice,
                 memory,
-                final_precompile_transcript,
+                deferred_state,
             });
         } // end outer restart loop
     }
@@ -2570,9 +2571,9 @@ mod tests {
             &self,
             _process: &ProcessorState<'_>,
         ) -> Result<Vec<AdviceMutation>, EventError> {
-            Ok(vec![AdviceMutation::ExtendStack {
-                values: vec![Felt::from(7u32)],
-            }])
+            Ok(vec![AdviceMutation::extend_advice_stack(
+                [Felt::from(7u32)].into_iter().collect(),
+            )])
         }
     }
 
@@ -2632,8 +2633,8 @@ mod tests {
         assert_eq!(recorder.len(), 1, "expected one recorded entry for the emitted event");
         let batches = recorder.take();
         match batches[0].as_slice() {
-            [AdviceMutation::ExtendStack { values }] => {
-                assert_eq!(values.as_slice(), &[Felt::from(7u32)]);
+            [AdviceMutation::ExtendStack { stack }] => {
+                assert_eq!(stack.iter().copied().collect::<Vec<_>>(), [Felt::from(7u32)]);
             }
             _ => panic!("unexpected mutations recorded"),
         }

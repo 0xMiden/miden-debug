@@ -1,7 +1,10 @@
 #[cfg(feature = "tui")]
 use std::{ffi::OsStr, path::Path};
 
-use miden_processor::{ExecutionOptions, StackInputs, advice::AdviceInputs};
+use miden_processor::{
+    ExecutionOptions, StackInputs,
+    advice::{AdviceInputs, AdviceStack},
+};
 use serde::Deserialize;
 
 use crate::felt::Felt;
@@ -47,7 +50,9 @@ impl ExecutionConfig {
         let inputs =
             StackInputs::new(&felts).map_err(|err| format!("invalid value for 'stack': {err}"))?;
         let advice_inputs = AdviceInputs::default()
-            .with_stack(file.inputs.advice.stack.into_iter().map(|felt| felt.0))
+            .with_advice_stack(
+                file.inputs.advice.stack.into_iter().map(|felt| felt.0).collect::<AdviceStack>(),
+            )
             .with_map(file.inputs.advice.map.into_iter().map(|entry| {
                 (entry.digest.0, entry.values.into_iter().map(|felt| felt.0).collect::<Vec<_>>())
             }));
@@ -193,7 +198,7 @@ mod tests {
         let file = toml::from_str::<ExecutionConfig>(&text).unwrap();
         let expected_inputs = StackInputs::new(&[]).unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
-        assert!(file.advice_inputs.stack.is_empty());
+        assert!(file.advice_inputs.advice_stack().is_empty());
         assert_eq!(file.options.max_cycles(), ExecutionOptions::MAX_CYCLES);
         assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
@@ -210,7 +215,7 @@ mod tests {
         let file = ExecutionConfig::parse_str(&text).unwrap();
         let expected_inputs = StackInputs::new(&[]).unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
-        assert!(file.advice_inputs.stack.is_empty());
+        assert!(file.advice_inputs.advice_stack().is_empty());
         assert_eq!(file.options.max_cycles(), 100000);
         assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
@@ -234,7 +239,7 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
-        assert!(file.advice_inputs.stack.is_empty());
+        assert!(file.advice_inputs.advice_stack().is_empty());
         assert_eq!(file.options.max_cycles(), 100000);
         assert_eq!(file.options.expected_cycles(), ExecutionOptions::default().expected_cycles());
     }
@@ -269,7 +274,7 @@ mod tests {
         .unwrap();
         assert_eq!(file.inputs.as_ref(), expected_inputs.as_ref());
         assert_eq!(
-            file.advice_inputs.stack,
+            file.advice_inputs.advice_stack().into_elements(),
             &[
                 RawFelt::new(1).expect("value exceeds field modulus"),
                 RawFelt::new(2).expect("value exceeds field modulus"),

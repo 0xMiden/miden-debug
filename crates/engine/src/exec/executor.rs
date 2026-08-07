@@ -544,9 +544,9 @@ mod tests {
                 _process: &ProcessorState<'_>,
             ) -> Result<Vec<AdviceMutation>, EventError> {
                 let call = self.calls.fetch_add(1, Ordering::SeqCst);
-                Ok(vec![AdviceMutation::ExtendStack {
-                    values: vec![Felt::from(100u32 + call as u32)],
-                }])
+                Ok(vec![AdviceMutation::extend_advice_stack(
+                    [Felt::from(100u32 + call as u32)].into_iter().collect(),
+                )])
             }
         }
 
@@ -589,8 +589,11 @@ mod tests {
         assert_eq!(recorded.len(), 2, "expected one recorded entry per emit");
         for (index, batch) in recorded.iter().enumerate() {
             match batch.as_slice() {
-                [AdviceMutation::ExtendStack { values }] => {
-                    assert_eq!(values.as_slice(), &[Felt::from(100u32 + index as u32)]);
+                [AdviceMutation::ExtendStack { stack }] => {
+                    assert_eq!(
+                        stack.iter().copied().collect::<Vec<_>>(),
+                        [Felt::from(100u32 + index as u32)],
+                    );
                 }
                 _ => panic!("unexpected mutations recorded for event {index}"),
             }
@@ -676,9 +679,9 @@ end
                 _process: &ProcessorState<'_>,
             ) -> Result<Vec<AdviceMutation>, EventError> {
                 let call = self.calls.fetch_add(1, Ordering::SeqCst);
-                Ok(vec![AdviceMutation::ExtendStack {
-                    values: vec![Felt::from(100u32 + call as u32)],
-                }])
+                Ok(vec![AdviceMutation::extend_advice_stack(
+                    [Felt::from(100u32 + call as u32)].into_iter().collect(),
+                )])
             }
         }
 

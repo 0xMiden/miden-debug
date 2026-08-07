@@ -184,7 +184,7 @@ const ALL_OPERATIONS: &[Operation] = &[
     Operation::HornerBase,
     Operation::HornerExt,
     Operation::EvalCircuit,
-    Operation::LogPrecompile,
+    Operation::LogDeferred,
 ];
 
 #[cfg(test)]

@@ -28,7 +28,7 @@ let source_manager = Arc::new(DefaultSourceManager::default());
 let package = Package::deserialize_from_file_trusted("path/to/program.masp").map(Arc::new).unwrap();
 
 // Construct the debug executor from the package, and specify the initial args
-let exec = Executor::for_package(package, [RawFelt::new(1)]).expect("invalid package");
+let exec = Executor::for_package(package, [RawFelt::from(1u32)]).expect("invalid package");
 
 // Execute the program
 let execution_trace = exec.execute(&program, source_manager);
@@ -43,13 +43,14 @@ If you have more complex inputs to the program, such as advice data, then you ca
 ```rust
 use miden_debug::{
     Executor, 
-    processor::{StackInputs, advice::AdviceInputs},
+    processor::{StackInputs, advice::{AdviceInputs, AdviceStack}},
     RawFelt
 };
 
 let exec = Executor::from_config(ExecutionConfig {
-    inputs: StackInputs::new(&[RawFelt::new(1)]).expect("invalid stack inputs"),
-    advice_inputs: AdviceInputs::default().with_stack(vec![RawFelt::new(2)]),
+    inputs: StackInputs::new(&[RawFelt::from(1u32)]).expect("invalid stack inputs"),
+    advice_inputs: AdviceInputs::default()
+        .with_advice_stack(AdviceStack::from(vec![RawFelt::from(2u32)])),
     ..Default::default()
 });
 ```
@@ -83,14 +84,14 @@ You can register custom event handlers using `Executor::register_event_handler`,
 use miden_debug::{
     Executor, 
     events::EventName, 
-    processor::host::AdviceMutation, 
+    processor::{advice::AdviceStack, host::AdviceMutation},
     RawFelt
 };
 
 let mut exec = Executor::for_package(program_package, args).unwrap();
 
 exec.register_event_handler(EventName::new("my-event"), |_state| {
-    vec![AdviceMutation::extend_stack([RawFelt::new(1)])]
+    vec![AdviceMutation::extend_advice_stack(AdviceStack::from(vec![RawFelt::from(1u32)]))]
 }).expect("invalid event handler");
 ```
 
@@ -131,11 +132,16 @@ let _ = debug_exec.step().expect("step failed");
 
 // Read a single element from memory at address 1024
 let element = debug_exec.read_element(1024);
-assert_eq!(element, RawFelt::new(42));
+assert_eq!(element, RawFelt::from(42u32));
 
 // Read a word from memory, starting at address 1024
 let word = debug_exec.read_word(1024);
-assert_eq!(word, [RawFelt::new(42), RawFelt::new(0), RawFelt::new(0), RawFelt::new(0)]);
+assert_eq!(word, [
+    RawFelt::from(42u32),
+    RawFelt::from(0u32),
+    RawFelt::from(0u32),
+    RawFelt::from(0u32),
+]);
 
 // Get access to the current state of the operand stack
 let stack = debug_exec.stack();

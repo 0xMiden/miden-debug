@@ -6,10 +6,9 @@ use std::sync::{Arc, Mutex};
 use miden_core::{
     Felt, Word,
     crypto::merkle::InnerNodeInfo,
-    precompile::PrecompileRequest,
     serde::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
 };
-use miden_processor::advice::{AdviceMap, AdviceMutation};
+use miden_processor::advice::{AdviceMap, AdviceMutation, AdviceStack};
 
 /// Clone a single [AdviceMutation].
 ///
@@ -17,8 +16,8 @@ use miden_processor::advice::{AdviceMap, AdviceMutation};
 /// mutations requires reconstructing each variant by hand.
 pub fn clone_advice_mutation(mutation: &AdviceMutation) -> AdviceMutation {
     match mutation {
-        AdviceMutation::ExtendStack { values } => AdviceMutation::ExtendStack {
-            values: values.clone(),
+        AdviceMutation::ExtendStack { stack } => AdviceMutation::ExtendStack {
+            stack: stack.clone(),
         },
         AdviceMutation::ExtendMap { other } => AdviceMutation::ExtendMap {
             other: other.clone(),
@@ -26,9 +25,6 @@ pub fn clone_advice_mutation(mutation: &AdviceMutation) -> AdviceMutation {
         AdviceMutation::ExtendMerkleStore { infos } => AdviceMutation::ExtendMerkleStore {
             infos: infos.clone(),
         },
-        AdviceMutation::ExtendPrecompileRequests { data } => {
-            AdviceMutation::ExtendPrecompileRequests { data: data.clone() }
-        }
     }
 }
 
@@ -45,14 +41,13 @@ pub fn clone_advice_mutations(mutations: &[AdviceMutation]) -> Vec<AdviceMutatio
 const TAG_EXTEND_STACK: u8 = 0;
 const TAG_EXTEND_MAP: u8 = 1;
 const TAG_EXTEND_MERKLE_STORE: u8 = 2;
-const TAG_EXTEND_PRECOMPILE_REQUESTS: u8 = 3;
 
 /// Serialize a single [AdviceMutation] into `target`.
 pub fn write_advice_mutation<W: ByteWriter>(mutation: &AdviceMutation, target: &mut W) {
     match mutation {
-        AdviceMutation::ExtendStack { values } => {
+        AdviceMutation::ExtendStack { stack } => {
             target.write_u8(TAG_EXTEND_STACK);
-            values.write_into(target);
+            stack.iter().copied().collect::<Vec<_>>().write_into(target);
         }
         AdviceMutation::ExtendMap { other } => {
             target.write_u8(TAG_EXTEND_MAP);
@@ -67,10 +62,6 @@ pub fn write_advice_mutation<W: ByteWriter>(mutation: &AdviceMutation, target: &
                 info.right.write_into(target);
             }
         }
-        AdviceMutation::ExtendPrecompileRequests { data } => {
-            target.write_u8(TAG_EXTEND_PRECOMPILE_REQUESTS);
-            data.write_into(target);
-        }
     }
 }
 
@@ -80,7 +71,7 @@ pub fn read_advice_mutation<R: ByteReader>(
 ) -> Result<AdviceMutation, DeserializationError> {
     match source.read_u8()? {
         TAG_EXTEND_STACK => Ok(AdviceMutation::ExtendStack {
-            values: Vec::<Felt>::read_from(source)?,
+            stack: AdviceStack::from(Vec::<Felt>::read_from(source)?),
         }),
         TAG_EXTEND_MAP => Ok(AdviceMutation::ExtendMap {
             other: AdviceMap::read_from(source)?,
@@ -96,9 +87,6 @@ pub fn read_advice_mutation<R: ByteReader>(
             }
             Ok(AdviceMutation::ExtendMerkleStore { infos })
         }
-        TAG_EXTEND_PRECOMPILE_REQUESTS => Ok(AdviceMutation::ExtendPrecompileRequests {
-            data: Vec::<PrecompileRequest>::read_from(source)?,
-        }),
         other => Err(DeserializationError::InvalidValue(format!(
             "unknown AdviceMutation variant tag: {other}"
         ))),
@@ -106,6 +94,9 @@ pub fn read_advice_mutation<R: ByteReader>(
 }
 
 /// Serialize a recorded event log (one entry per `on_event` invocation) into `target`.
+///
+/// This raw encoding is not independently versioned. Use [`super::ReplaySnapshot`] for persistent
+/// storage with an explicit compatibility boundary.
 pub fn write_event_log<W: ByteWriter>(log: &[Vec<AdviceMutation>], target: &mut W) {
     target.write_usize(log.len());
     for batch in log {
@@ -117,6 +108,9 @@ pub fn write_event_log<W: ByteWriter>(log: &[Vec<AdviceMutation>], target: &mut 
 }
 
 /// Deserialize a recorded event log from `source`.
+///
+/// Legacy logs containing the removed precompile-request mutation tag are rejected. Use
+/// [`super::ReplaySnapshot`] for versioned persistent storage.
 pub fn read_event_log<R: ByteReader>(
     source: &mut R,
 ) -> Result<Vec<Vec<AdviceMutation>>, DeserializationError> {

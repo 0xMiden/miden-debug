@@ -1191,6 +1191,10 @@ pub struct StackFrame {
     /// request or to restart the execution of a stackframe.
     pub id: i64,
     /// The name of the stack frame, typically a method name.
+    #[cfg_attr(
+        feature = "integration_testing",
+        dummy(expr = "Arc::<str>::from(Faker.fake_with_rng::<String, _>(rng))")
+    )]
     pub name: Arc<str>,
     /// The source of the frame.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1388,5 +1392,13 @@ mod tests {
         assert_eq!(str, untagged_ser);
         let untagged_deser: InvalidatedAreas = serde_json::from_value(untagged_ser).unwrap();
         assert!(matches!(InvalidatedAreas::String(str), untagged_deser));
+    }
+
+    #[cfg(feature = "integration_testing")]
+    #[test]
+    fn stack_frame_dummy_supports_arc_str_name() {
+        use fake::Fake as _;
+
+        let _: StackFrame = fake::Faker.fake();
     }
 }

@@ -37,6 +37,8 @@ pub enum ReplCommand {
     List,
     /// Show call stack / backtrace
     Backtrace,
+    /// Select a logical stack frame by backtrace index
+    Frame(usize),
     /// Restart program
     Reload,
     /// Show help
@@ -101,6 +103,13 @@ impl FromStr for ReplCommand {
             "where" | "w" => Ok(ReplCommand::Where),
             "l" | "list" => Ok(ReplCommand::List),
             "bt" | "backtrace" => Ok(ReplCommand::Backtrace),
+            "f" | "frame" => {
+                let index = args
+                    .ok_or("frame requires a backtrace index")?
+                    .parse::<usize>()
+                    .map_err(|e| format!("invalid frame index: {e}"))?;
+                Ok(ReplCommand::Frame(index))
+            }
 
             // Control commands
             "reload" => Ok(ReplCommand::Reload),
@@ -141,6 +150,7 @@ Inspection:
   where              Show current source location
   l, list            Show recent instructions
   bt, backtrace      Show call stack
+  f, frame <N>       Select logical frame N
 
 Scripting:
   script <code>      Execute one Python snippet
@@ -192,10 +202,22 @@ Inspection:
   where              Show current source location
   l, list            Show recent instructions
   bt, backtrace      Show call stack
+  f, frame <N>       Select logical frame N
 
 Other:
   h, help            Show this help
   q, quit            Exit debugger
 "#
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_frame_selection() {
+        assert!(matches!("frame 2".parse(), Ok(ReplCommand::Frame(2))));
+        assert!("frame".parse::<ReplCommand>().is_err());
     }
 }

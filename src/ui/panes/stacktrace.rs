@@ -1,7 +1,10 @@
 use miden_assembly_syntax::diagnostics::Report;
 use ratatui::{prelude::*, widgets::*};
 
-use crate::ui::{action::Action, panes::Pane, state::State, tui::Frame};
+use crate::{
+    debug::LogicalFrameKind,
+    ui::{action::Action, panes::Pane, state::State, tui::Frame},
+};
 
 pub struct StackTracePane {
     focused: bool,
@@ -39,10 +42,19 @@ impl Pane for StackTracePane {
         }
     }
 
-    fn update(&mut self, action: Action, _state: &mut State) -> Result<Option<Action>, Report> {
+    fn update(&mut self, action: Action, state: &mut State) -> Result<Option<Action>, Report> {
         match action {
+            Action::Up => {
+                state.select_older_stack_frame();
+                return Ok(Some(Action::Update));
+            }
+            Action::Down => {
+                state.select_newer_stack_frame();
+                return Ok(Some(Action::Update));
+            }
             Action::Focus => {
                 self.focused = true;
+                return Ok(Some(Action::TimedStatusLine("[j,k → frame selection]".into(), 3)));
             }
             Action::UnFocus => {
                 self.focused = false;
@@ -55,13 +67,14 @@ impl Pane for StackTracePane {
 
     fn draw(&mut self, frame: &mut Frame<'_>, area: Rect, state: &State) -> Result<(), Report> {
         let mut lines = Vec::default();
-        let num_frames = state.executor().callstack.frames().len();
+        let logical_frames = state.logical_stack_frames();
+        let num_frames = logical_frames.len();
         // For the top frame, prefer the live AsmOp's context_name over the
         // frame's cached procedure, which is set once on frame entry and
         // stays stale for programs that use `exec` instead of `call`.
         let live_top_name: Option<String> =
             state.executor().current_asmop.as_ref().map(|op| op.context_name().to_string());
-        for (i, frame) in state.executor().callstack.frames().iter().enumerate() {
+        for (i, logical_frame) in logical_frames.iter().enumerate() {
             let is_top = i + 1 == num_frames;
             let mut parts = vec![];
             /*
@@ -73,23 +86,26 @@ impl Pane for StackTracePane {
             */
             let gutter = Span::styled(" ", Color::Gray);
             parts.push(gutter);
-            let name = if is_top {
-                live_top_name.clone().or_else(|| frame.procedure("").map(|p| p.to_string()))
+            let name = if is_top && logical_frame.kind() == LogicalFrameKind::Physical {
+                live_top_name.clone().unwrap_or_else(|| logical_frame.display_name())
             } else {
-                frame.procedure("").map(|p| p.to_string())
+                logical_frame.display_name()
             };
-            let name = name.unwrap_or_else(|| "<unknown>".to_string());
             let name = if is_top {
                 Span::styled(name, Color::Gray)
             } else {
                 Span::styled(name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
             };
             parts.push(name);
-            if let Some(resolved) = frame.last_resolved(&state.source_manager) {
+            if let Some(resolved) = logical_frame.resolved(&*state.source_manager) {
                 parts.push(Span::styled(" in ", Color::DarkGray));
-                let path = std::path::Path::new(resolved.source_file.as_ref().uri().as_str());
-                let path = path.strip_prefix(state.config.working_dir()).ok().unwrap_or(path);
-                let path_str = path.to_string_lossy();
+                let source_path =
+                    std::path::PathBuf::from(resolved.source_file.as_ref().uri().as_str());
+                let path = source_path
+                    .strip_prefix(state.config.working_dir())
+                    .ok()
+                    .unwrap_or(&source_path);
+                let path_str = path.to_string_lossy().into_owned();
                 let max_width = (area.as_size().width as usize).saturating_sub(4);
                 let path_width = path_str.chars().count();
                 if path_width >= max_width {
@@ -128,7 +144,8 @@ impl Pane for StackTracePane {
             lines.push(Line::from(parts));
         }
 
-        let selected_line = lines.len().saturating_sub(1);
+        let selected_line =
+            lines.len().saturating_sub(state.selected_stack_frame().saturating_add(1));
 
         let list = List::new(lines)
             .block(Block::default().borders(Borders::ALL))

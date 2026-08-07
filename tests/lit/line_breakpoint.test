@@ -13,6 +13,6 @@ stack
 
 # CHECK: Breakpoint 0 set: **/breakpoint.masm:6
 # CHECK: at {{.*}}breakpoint.masm:6:5
-# CHECK: breakpoint.masm:6:5 in ::$exec::$main
+# CHECK: breakpoint.masm:6:5 in $exec::$main
 # CHECK: Program terminated successfully
 # CHECK: [0] 150

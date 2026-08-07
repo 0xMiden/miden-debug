@@ -17,4 +17,6 @@ pub struct DapUiFrame {
     pub source_path: Option<String>,
     pub line: i64,
     pub column: i64,
+    #[serde(default)]
+    pub inline: bool,
 }

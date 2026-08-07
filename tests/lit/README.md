@@ -78,3 +78,14 @@ in mind:
 
 Prefer asserting on stable facts (a known computed result) over incidental
 formatting.
+
+For stack-trace tests, `compile-masm` accepts repeated
+`--inline-call <name,line,column>` options. They attach an innermost-first
+inline call chain to the fixture's operations without requiring `midenc` in the
+debugger CI job:
+
+```text
+compile-masm inline_call.masm -o inline_call.masp \
+  --inline-call fixture::inner,3,1 \
+  --inline-call fixture::outer,2,1
+```

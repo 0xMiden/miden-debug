@@ -19,7 +19,7 @@ use crate::{
     Breakpoint, BreakpointType, OperationMatcher,
     debug::{
         CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo,
-        snapshot_transient_debug_values,
+        inline_frames_for_operation, snapshot_transient_debug_values,
     },
     profiling::Profiler,
 };
@@ -284,6 +284,13 @@ impl DebugExecutor {
             Some(op_idx) => source_node.asm_op_for_operation(op_idx as u32),
             None => source_node.asm_op_for_operation(0),
         });
+        let inline_frames = if let (Some(di), Some(dnid), Some(op_idx)) =
+            (debug_info.as_deref(), debug_node_id, op_idx)
+        {
+            inline_frames_for_operation(di, dnid, op_idx as u32)
+        } else {
+            Vec::new()
+        };
 
         // Look up debug vars from MAST forest for the current operation
         let mut debug_var_infos: Vec<_> = source_node
@@ -347,6 +354,7 @@ impl DebugExecutor {
                     asmop: self.current_asmop.as_ref(),
                     clk: RowIndex::from(self.cycle as u32),
                     ctx: self.current_context,
+                    inline_frames: &inline_frames,
                 };
                 let exited = self.callstack.next(&step_info);
 

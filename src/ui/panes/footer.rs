@@ -182,8 +182,10 @@ impl Pane for FooterPane {
             ));
         } else {
             frame.render_widget(
-                Line::from(vec![Span::styled(self.get_status_line(), Style::default())])
-                    .style(Style::default().fg(Color::DarkGray)),
+                Line::from(vec![Span::styled(
+                    self.get_status_line(),
+                    Style::default().fg(Color::Yellow),
+                )]),
                 area,
             );
         }

@@ -1,0 +1,7 @@
+[package]
+name = "project-aware"
+version = "0.1.0"
+
+[[bin]]
+name = "project-aware"
+path = "<virtual>"

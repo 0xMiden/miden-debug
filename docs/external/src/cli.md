@@ -13,6 +13,12 @@ miden-debug [OPTIONS] [FILE] [-- ARGV...]
 optional trailing `-- ARGV...` block whose elements are pushed onto the operand
 stack before the program runs.
 
+When launched as `miden debug` through midenup, `FILE` may be omitted inside a
+Miden project. The debugger finds the nearest `miden-project.toml`, selects the
+matching package from the project's build outputs, and loads `inputs.toml` when
+present. If the project has not been built yet, it runs `miden build` first.
+Direct `miden-debug` invocations continue to require an explicit `FILE`.
+
 Run `miden-debug --help` for the canonical, version-pinned list. The tables
 below describe every option that's stable today.
 
@@ -20,7 +26,7 @@ below describe every option that's stable today.
 
 | Flag | Value | Description |
 | ---- | ----- | ----------- |
-| `FILE` | path or `-` | Path to a `.masp` (compiled Miden Assembly Package) or `.masm` (source) program. Use `-` to read from stdin. Omit when using `--dap-connect`. |
+| `FILE` | path or `-` | Path to a `.masp` (compiled Miden Assembly Package) or `.masm` (source) program. Use `-` to read from stdin. Omit when using `--dap-connect`, or when running `miden debug` inside a built Miden project. |
 | `-- ARGV...` | field elements | Arguments pushed on the operand stack in order — the first element ends up at the top of the stack. Decimal or `0x`-prefixed hex. **These override** any `inputs.stack` set in the inputs file. |
 | `--inputs FILE` | path | TOML file describing program inputs (operand stack, advice stack, advice map) and execution options. See [Program inputs](#program-inputs). |
 | `--entrypoint <module>::<function>` | symbol | Override the program's entrypoint. Defaults to the package's declared entry. |
@@ -60,6 +66,7 @@ debugger picks up `stdlib`, the kernel, and any libraries declared by a
 | `MIDENC_TRACE` | Standard `env_logger` filter (`info`, `miden_debug=debug`, etc.). Logs are emitted to stderr. |
 | `MIDENC_TRACE_TIMING` | Set to `s`, `ms`, `us`, or `ns` to include timestamps with the chosen precision. |
 | `MIDEN_SYSROOT` | Fallback for `--sysroot`. |
+| `MIDENUP_TOOLCHAIN` | Set by midenup for toolchain commands; enables project-aware `miden debug` input discovery. |
 | `NO_COLOR` | When set, suppresses colour even with `--color auto`. |
 
 ## Program inputs
@@ -112,6 +119,9 @@ from the file in either case.
 ## Examples
 
 ```bash
+# Discover the current project's package and inputs through midenup
+miden debug
+
 # TUI on a compiled package
 miden-debug ./target/release/fib.masp
 

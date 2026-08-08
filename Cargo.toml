@@ -167,3 +167,6 @@ futures = "0.3.30"
 
 [build-dependencies]
 pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }
+
+[dev-dependencies]
+tempfile = "3"

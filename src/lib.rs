@@ -9,6 +9,8 @@ mod dap_server;
 pub mod flamegraph;
 mod input;
 mod program_loader;
+#[cfg(feature = "std")]
+mod project;
 
 #[cfg(any(feature = "tui", feature = "repl"))]
 pub mod logger;
@@ -22,6 +24,8 @@ pub mod script;
 
 #[cfg(feature = "dap")]
 pub use self::dap_server::run as run_dap_server;
+#[cfg(feature = "std")]
+pub use self::project::resolve_midenup_project;
 #[cfg(feature = "repl")]
 pub use self::repl::{
     run as run_repl, run_commands, run_with_log_level as run_repl_with_log_level,

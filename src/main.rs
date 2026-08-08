@@ -109,6 +109,8 @@ fn run_debugger(
         return run_with_state(state, _logger, _log_level);
     }
 
+    miden_debug::resolve_midenup_project(&mut config)?;
+
     #[cfg(feature = "dap")]
     if config.start_debug_adapter.is_some() {
         log::set_boxed_logger(_logger).ok();

@@ -181,11 +181,6 @@ description = "Run cargo-bloat"
 command = "cargo"
 args = ["bloat", "${@}"]
 
-[tasks.miden-debug]
-category = "Build"
-description = "Builds miden-debug and installs it to the bin folder"
-run_task = [{ name = ["build", "install-miden-debug-locally"]}]
-
 [tasks.build]
 category = "Build"
 description = "Runs cargo build on the workspace"
@@ -210,17 +205,7 @@ args = [
     "${@}"
 ]
 
-[tasks.install-miden-debug-locally]
-category = "Install"
-description = "miden-debug and installs it globally via the cargo bin directory"
-private = true
-script_runner = "@duckscript"
-script = '''
-mkdir ${LOCAL_BIN_DIR}
-src = concat ${CARGO_ARTIFACT_DIR} "/miden-debug"
-dst = concat ${LOCAL_BIN_DIR} "/miden-debug"
-cp ${src} ${dst}
-'''
+
 
 [tasks.check]
 category = "Build"
@@ -268,7 +253,7 @@ run_task = [
 category = "Dependencies"
 description = "Check for unused dependencies"
 command = "cargo"
-args = ["machete", "--with-metadata"]
+args = ["shear"]
 
 [tasks.duplicates]
 category = "Dependencies"
@@ -316,72 +301,69 @@ args = [
 ]
 dependencies = [
     "litcheck",
-    "install-compile-masm-locally",
-    "install-repl-locally",
-    "install-python-repl-locally",
+    "compile-masm",
+    "miden-debug",
+    "miden-debug-python",
 ]
 
 [tasks.litcheck]
 category = "Test"
 description = "Set up the litcheck utility (provides `lit` and `filecheck`)"
-install_crate = { crate_name = "litcheck", binary = "litcheck", test_arg = "--help" }
+install_crate = { crate_name = "litcheck", min_version = "0.4.6", test_arg = "--help" }
 
-[tasks.repl]
+[tasks.miden-debug]
 category = "Build"
-description = "Builds miden-debug with the `repl` feature, required for `--commands` batch mode"
+description = "Builds miden-debug with default features"
+toolchain = "nightly"
 command = "cargo"
-args = ["build", "--bin", "miden-debug", "--features", "repl", "${@}"]
+args = [
+    "-Z",
+    "unstable-options",
+    "build", 
+    "--bin", 
+    "miden-debug", 
+    "--features",
+    "std",
+    "--artifact-dir",
+    "${LOCAL_BIN_DIR}",
+    "${@}"
+]
 
-[tasks.python-repl]
+[tasks.miden-debug-python]
 category = "Build"
 description = "Builds miden-debug with Python scripting for lit tests"
+toolchain = "nightly"
 command = "cargo"
-args = ["build", "--bin", "miden-debug", "--features", "python", "${@}"]
+args = [
+    "-Z",
+    "unstable-options",
+    "build", 
+    "--bin", 
+    "miden-debug-python", 
+    "--features",
+    "python",
+    "--artifact-dir",
+    "${LOCAL_BIN_DIR}",
+    "${@}"
+]
 
 [tasks.compile-masm]
 category = "Build"
 description = "Builds the MASM-to-package helper used by lit tests"
+toolchain = "nightly"
 command = "cargo"
-args = ["build", "--example", "compile-masm", "--features", "std", "${@}"]
-
-[tasks.install-compile-masm-locally]
-category = "Install"
-description = "Builds the MASM-to-package helper and copies it into the local bin folder for lit tests"
-private = true
-dependencies = ["compile-masm"]
-script_runner = "@duckscript"
-script = '''
-mkdir ${LOCAL_BIN_DIR}
-src = concat ${CARGO_ARTIFACT_DIR} "/examples/compile-masm"
-dst = concat ${LOCAL_BIN_DIR} "/compile-masm"
-cp ${src} ${dst}
-'''
-
-[tasks.install-repl-locally]
-category = "Install"
-description = "Builds miden-debug (with `repl`) and copies it into the local bin folder for lit tests"
-private = true
-dependencies = ["repl"]
-script_runner = "@duckscript"
-script = '''
-mkdir ${LOCAL_BIN_DIR}
-src = concat ${CARGO_ARTIFACT_DIR} "/miden-debug"
-dst = concat ${LOCAL_BIN_DIR} "/miden-debug"
-cp ${src} ${dst}
-'''
-
-[tasks.install-python-repl-locally]
-category = "Install"
-description = "Builds the Python-enabled debugger and copies it into the local bin folder"
-private = true
-dependencies = ["python-repl"]
-script_runner = "@duckscript"
-script = '''
-mkdir ${LOCAL_BIN_DIR}
-src = concat ${CARGO_ARTIFACT_DIR} "/miden-debug"
-dst = concat ${LOCAL_BIN_DIR} "/miden-debug-python"
-cp ${src} ${dst}
-'''
+args = [
+    "-Z",
+    "unstable-options",
+    "build", 
+    "--example", 
+    "compile-masm",
+    "--features",
+    "std",
+    "--artifact-dir",
+    "${LOCAL_BIN_DIR}",
+    "${@}"
+]
 
 [tasks.clippy]
 description = "Runs clippy on the workspace"

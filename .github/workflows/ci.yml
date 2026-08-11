@@ -119,6 +119,8 @@ jobs:
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: ${{ github.ref == 'refs/heads/next' }}
       - *install-cargo-make
+      - name: Install nightly toolchain
+        run: rustup toolchain install nightly --profile minimal
       - name: Install litcheck
         run: |
           if ! litcheck --help >/dev/null 2>&1; then

@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Resolve typed Miden frame-base variable locations safely and treat unavailable locations as
+  explicit variable kills.
+
 ## [0.10.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.9.2...miden-debug-v0.10.0) - 2026-08-07
 
 ### Other

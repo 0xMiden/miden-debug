@@ -1,23 +1,8 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
-use miden_assembly_syntax::ast::{DebugVarInfo, DebugVarLocation};
-use miden_core::{
-    Felt,
-    serde::{ByteReader, Deserializable, SliceReader},
-};
+use miden_assembly_syntax::ast::{DebugFrameBase, DebugVarInfo, DebugVarLocation};
+use miden_core::Felt;
 use miden_processor::trace::RowIndex;
-
-const FRAME_BASE_LOCAL_MARKER: u32 = 1 << 31;
-const DEBUG_VAR_KILL_SENTINEL: &[u8] = b"\0miden.debug.kill";
-
-fn decode_frame_base_local_offset(encoded: u32) -> Option<i16> {
-    if encoded & FRAME_BASE_LOCAL_MARKER == 0 {
-        return None;
-    }
-
-    let low_bits = (encoded & 0xffff) as u16;
-    Some(i16::from_le_bytes(low_bits.to_le_bytes()))
-}
 
 /// A snapshot of a debug variable at a specific clock cycle.
 #[derive(Debug, Clone)]
@@ -121,10 +106,7 @@ pub fn snapshot_transient_debug_values(infos: &mut [DebugVarInfo], stack: &[Felt
 }
 
 fn is_debug_var_kill(info: &DebugVarInfo) -> bool {
-    matches!(
-        info.value_location(),
-        DebugVarLocation::Expression(expression) if expression == DEBUG_VAR_KILL_SENTINEL
-    )
+    matches!(info.value_location(), DebugVarLocation::Unavailable)
 }
 
 /// Resolve a debug variable's value given its location and the current VM state.
@@ -139,182 +121,41 @@ pub fn resolve_variable_value(
         DebugVarLocation::Memory(addr) => get_memory(*addr),
         DebugVarLocation::Const(felt) => Some(*felt),
         DebugVarLocation::Local(offset) => get_local(*offset),
-        DebugVarLocation::FrameBase {
-            global_index,
-            byte_offset,
-        } => resolve_frame_base_value(*global_index, *byte_offset, &get_memory, &get_local),
-        DebugVarLocation::Expression(expression) => {
-            resolve_expression_value(expression, stack, &get_memory, &get_local)
+        DebugVarLocation::Unavailable => None,
+        DebugVarLocation::ResolvedFrameBase { base, byte_offset } => {
+            resolve_frame_base_value(*base, *byte_offset, &get_memory, &get_local)
         }
     }
 }
 
 fn resolve_frame_base_value(
-    global_index: u32,
+    base: DebugFrameBase,
     byte_offset: i64,
     get_memory: &impl Fn(u32) -> Option<Felt>,
     get_local: &impl Fn(i16) -> Option<Felt>,
 ) -> Option<Felt> {
-    if let Some(local_offset) = decode_frame_base_local_offset(global_index) {
-        let base = get_local(local_offset)?;
-        let byte_addr = base.as_canonical_u64() as i64 + byte_offset;
-        let elem_addr = byte_addr / 4;
-        let elem_addr = u32::try_from(elem_addr).ok()?;
-        return get_memory(elem_addr);
-    }
-
-    // global_index was resolved to a Miden byte address during compilation.
-    // Convert to element address (÷4) to read the stack pointer value.
-    let sp_elem_addr = global_index / 4;
-    let base = get_memory(sp_elem_addr)?;
-    // The stack pointer value is also a byte address; apply byte_offset,
-    // then convert to element address to read the variable's value.
-    let byte_addr = base.as_canonical_u64() as i64 + byte_offset;
-    let elem_addr = (byte_addr / 4) as u32;
-    get_memory(elem_addr)
+    let base = match base {
+        DebugFrameBase::Local(offset) => get_local(offset)?,
+        DebugFrameBase::Memory(address) => get_memory(address)?,
+    };
+    resolve_byte_address(base, byte_offset, get_memory)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum DebugExpressionOp {
-    WasmLocal(u32),
-    WasmGlobal(u32),
-    WasmStack(u32),
-    ConstU64(u64),
-    ConstS64(i64),
-    PlusUConst(u64),
-    Minus,
-    Plus,
-    Deref,
-    StackValue,
-    Piece,
-    BitPiece,
-    FrameBase { global_index: u32, byte_offset: i64 },
-    Address(u64),
-    Unsupported,
-}
-
-fn resolve_expression_value(
-    expression: &[u8],
-    stack: &[Felt],
+fn resolve_byte_address(
+    base: Felt,
+    byte_offset: i64,
     get_memory: &impl Fn(u32) -> Option<Felt>,
-    get_local: &impl Fn(i16) -> Option<Felt>,
 ) -> Option<Felt> {
-    let ops = read_expression(expression)?;
-    let mut values = Vec::<Felt>::new();
-
-    for op in ops {
-        match op {
-            DebugExpressionOp::WasmLocal(index) => {
-                values.push(get_local(i16::try_from(index).ok()?)?);
-            }
-            DebugExpressionOp::WasmStack(index) => {
-                values.push(stack.get(index as usize).copied()?);
-            }
-            DebugExpressionOp::ConstU64(value) => {
-                values.push(Felt::new(value).expect("value exceeds field modulus"));
-            }
-            DebugExpressionOp::ConstS64(value) => {
-                values.push(Felt::new(value as u64).expect("value exceeds field modulus"));
-            }
-            DebugExpressionOp::PlusUConst(value) => {
-                let lhs = values.pop()?;
-                values.push(
-                    Felt::new(lhs.as_canonical_u64().wrapping_add(value))
-                        .expect("value exceeds field modulus"),
-                );
-            }
-            DebugExpressionOp::Minus => {
-                let rhs = values.pop()?.as_canonical_u64();
-                let lhs = values.pop()?.as_canonical_u64();
-                values.push(Felt::new(lhs.wrapping_sub(rhs)).expect("value exceeds field modulus"));
-            }
-            DebugExpressionOp::Plus => {
-                let rhs = values.pop()?.as_canonical_u64();
-                let lhs = values.pop()?.as_canonical_u64();
-                values.push(Felt::new(lhs.wrapping_add(rhs)).expect("value exceeds field modulus"));
-            }
-            DebugExpressionOp::Deref => {
-                let addr = u32::try_from(values.pop()?.as_canonical_u64()).ok()?;
-                values.push(get_memory(addr)?);
-            }
-            DebugExpressionOp::StackValue => {}
-            DebugExpressionOp::FrameBase {
-                global_index,
-                byte_offset,
-            } => {
-                values.push(resolve_frame_base_value(
-                    global_index,
-                    byte_offset,
-                    get_memory,
-                    get_local,
-                )?);
-            }
-            DebugExpressionOp::Address(address) => {
-                values.push(Felt::new(address).expect("value exceeds field modulus"));
-            }
-            DebugExpressionOp::WasmGlobal(_)
-            | DebugExpressionOp::Piece
-            | DebugExpressionOp::BitPiece
-            | DebugExpressionOp::Unsupported => return None,
-        }
+    let byte_addr = i128::from(base.as_canonical_u64()) + i128::from(byte_offset);
+    if byte_addr < 0 || byte_addr % 4 != 0 {
+        return None;
     }
-
-    values.pop()
-}
-
-fn read_expression(expression: &[u8]) -> Option<Vec<DebugExpressionOp>> {
-    let mut reader = SliceReader::new(expression);
-    let len = usize::read_from(&mut reader).ok()?;
-    let mut ops = Vec::with_capacity(len);
-    for _ in 0..len {
-        ops.push(read_expression_op(&mut reader)?);
-    }
-    Some(ops)
-}
-
-fn read_expression_op(reader: &mut SliceReader<'_>) -> Option<DebugExpressionOp> {
-    Some(match reader.read_u8().ok()? {
-        0 => DebugExpressionOp::WasmLocal(u32::read_from(reader).ok()?),
-        1 => DebugExpressionOp::WasmGlobal(u32::read_from(reader).ok()?),
-        2 => DebugExpressionOp::WasmStack(u32::read_from(reader).ok()?),
-        3 => DebugExpressionOp::ConstU64(u64::read_from(reader).ok()?),
-        4 => DebugExpressionOp::ConstS64(u64::read_from(reader).ok()? as i64),
-        5 => DebugExpressionOp::PlusUConst(u64::read_from(reader).ok()?),
-        6 => DebugExpressionOp::Minus,
-        7 => DebugExpressionOp::Plus,
-        8 => DebugExpressionOp::Deref,
-        9 => DebugExpressionOp::StackValue,
-        10 => {
-            let _size = u64::read_from(reader).ok()?;
-            DebugExpressionOp::Piece
-        }
-        11 => {
-            let _size = u64::read_from(reader).ok()?;
-            let _offset = u64::read_from(reader).ok()?;
-            DebugExpressionOp::BitPiece
-        }
-        12 => {
-            let global_index = u32::read_from(reader).ok()?;
-            let byte_offset = u64::read_from(reader).ok()? as i64;
-            DebugExpressionOp::FrameBase {
-                global_index,
-                byte_offset,
-            }
-        }
-        13 => DebugExpressionOp::Address(u64::read_from(reader).ok()?),
-        u8::MAX => {
-            let len = usize::read_from(reader).ok()?;
-            let _name = reader.read_slice(len).ok()?;
-            DebugExpressionOp::Unsupported
-        }
-        _ => return None,
-    })
+    let elem_addr = u32::try_from(byte_addr / 4).ok()?;
+    get_memory(elem_addr)
 }
 
 #[cfg(test)]
 mod tests {
-    use miden_core::serde::ByteWriter;
-
     use super::*;
 
     #[test]
@@ -383,23 +224,30 @@ mod tests {
     }
 
     #[test]
-    fn resolves_local_frame_base_as_byte_address() {
-        let encoded =
-            FRAME_BASE_LOCAL_MARKER | u32::from(u16::from_le_bytes((-7i16).to_le_bytes()));
+    fn resolves_explicit_frame_bases() {
+        for (base, memory_base) in
+            [(DebugFrameBase::Local(-7), false), (DebugFrameBase::Memory(9), true)]
+        {
+            let value = resolve_variable_value(
+                &DebugVarLocation::ResolvedFrameBase {
+                    base,
+                    byte_offset: 28,
+                },
+                &[],
+                |address| {
+                    if memory_base && address == 9 {
+                        Some(Felt::new(1_048_528).unwrap())
+                    } else if address == 262_139 {
+                        Some(Felt::new(13).unwrap())
+                    } else {
+                        None
+                    }
+                },
+                |offset| (!memory_base && offset == -7).then_some(Felt::new(1_048_528).unwrap()),
+            );
 
-        let value = resolve_variable_value(
-            &DebugVarLocation::FrameBase {
-                global_index: encoded,
-                byte_offset: 28,
-            },
-            &[],
-            |addr| (addr == 262_139).then_some(Felt::new(13).expect("value exceeds field modulus")),
-            |offset| {
-                (offset == -7).then_some(Felt::new(1_048_528).expect("value exceeds field modulus"))
-            },
-        );
-
-        assert_eq!(value, Some(Felt::new(13).expect("value exceeds field modulus")));
+            assert_eq!(value, Some(Felt::new(13).unwrap()));
+        }
     }
 
     #[test]
@@ -417,10 +265,7 @@ mod tests {
             );
             events.insert(
                 RowIndex::from(2),
-                vec![DebugVarInfo::new(
-                    "x",
-                    DebugVarLocation::Expression(DEBUG_VAR_KILL_SENTINEL.to_vec()),
-                )],
+                vec![DebugVarInfo::new("x", DebugVarLocation::Unavailable)],
             );
         }
 
@@ -432,60 +277,4 @@ mod tests {
         assert!(tracker.get_variable("x").is_none());
     }
 
-    #[test]
-    fn resolves_const_stack_value_expression() {
-        let expression =
-            expression_bytes(&[TestExpressionOp::ConstU64(7), TestExpressionOp::StackValue]);
-
-        let value = resolve_variable_value(
-            &DebugVarLocation::Expression(expression),
-            &[],
-            |_| None,
-            |_| None,
-        );
-
-        assert_eq!(value, Some(Felt::new(7).expect("value exceeds field modulus")));
-    }
-
-    #[test]
-    fn resolves_local_stack_value_expression() {
-        let expression =
-            expression_bytes(&[TestExpressionOp::WasmLocal(0), TestExpressionOp::StackValue]);
-
-        let value = resolve_variable_value(
-            &DebugVarLocation::Expression(expression),
-            &[],
-            |_| None,
-            |offset| (offset == 0).then_some(Felt::new(11).expect("value exceeds field modulus")),
-        );
-
-        assert_eq!(value, Some(Felt::new(11).expect("value exceeds field modulus")));
-    }
-
-    enum TestExpressionOp {
-        WasmLocal(u32),
-        ConstU64(u64),
-        StackValue,
-    }
-
-    fn expression_bytes(ops: &[TestExpressionOp]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        bytes.write_usize(ops.len());
-        for op in ops {
-            match op {
-                TestExpressionOp::WasmLocal(index) => {
-                    bytes.write_u8(0);
-                    bytes.write_u32(*index);
-                }
-                TestExpressionOp::ConstU64(value) => {
-                    bytes.write_u8(3);
-                    bytes.write_u64(*value);
-                }
-                TestExpressionOp::StackValue => {
-                    bytes.write_u8(9);
-                }
-            }
-        }
-        bytes
-    }
 }

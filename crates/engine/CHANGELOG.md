@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Resolve typed Miden frame-base variable locations without conflating Wasm and Miden address
+  spaces or accepting legacy frame-base encodings.
+
 ## [0.11.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.10.1...miden-debug-engine-v0.11.0) - 2026-08-07
 
 ### Other

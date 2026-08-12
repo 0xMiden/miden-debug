@@ -1,15 +1,20 @@
 # Run the debugger through the environment midenup provides, without an explicit package or inputs.
 #
 # RUN: rm -rf %t.project
-# RUN: mkdir -p %t.project/target/miden/dev
+# RUN: rm -rf %t.bin
+# RUN: mkdir -p %t.project %t.bin
 # RUN: cp %S/project-aware/miden-project.toml %t.project/miden-project.toml
 # RUN: cp %S/project-aware/inputs.toml %t.project/inputs.toml
-# RUN: compile-masm %S/add.masm -o %t.project/target/miden/dev/project-aware.masp
-# RUN: cd %t.project && env MIDENUP_TOOLCHAIN=test miden-debug --commands %s 2>&1 | filecheck %s
+# RUN: compile-masm %S/add.masm -o %t.package.masp
+# RUN: cp %S/project-aware/miden %t.bin/miden
+# RUN: chmod +x %t.bin/miden
+# RUN: cd %t.project && env PATH="%t.bin:$PATH" MIDEN_TEST_PACKAGE=%t.package.masp MIDENUP_TOOLCHAIN=test miden-debug --commands %s 2>&1 | filecheck %s
 
 continue
 stack
 
+# CHECK: Building debug package for project 'project-aware'
 # CHECK: Debugging project package
+# CHECK-SAME: target/miden-debug/debug/project-aware:project-aware.masp
 # CHECK: Program terminated successfully
 # CHECK: [0] 32

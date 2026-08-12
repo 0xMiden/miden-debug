@@ -8,7 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Make `miden debug` discover and build the current project's package and load its `inputs.toml`.
+- Make `miden debug` build the current project with the debug profile into a dedicated output and
+  load `inputs.toml` from the debugger working directory when no inputs are explicitly provided.
 
 ## [0.10.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.9.2...miden-debug-v0.10.0) - 2026-08-07
 

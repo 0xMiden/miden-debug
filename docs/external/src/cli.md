@@ -14,10 +14,13 @@ optional trailing `-- ARGV...` block whose elements are pushed onto the operand
 stack before the program runs.
 
 When launched as `miden debug` through midenup, `FILE` may be omitted inside a
-Miden project. The debugger finds the nearest `miden-project.toml`, selects the
-matching package from the project's build outputs, and loads `inputs.toml` when
-present. If the project has not been built yet, it runs `miden build` first.
-Direct `miden-debug` invocations continue to require an explicit `FILE`.
+Miden project. The debugger finds the nearest `miden-project.toml` and always
+builds its executable target with the `debug` profile in the dedicated
+`target/miden-debug/` directory, so
+the package matches the current sources and contains debug information. Unless
+`--inputs` is provided, it loads `inputs.toml` from the debugger working
+directory when present. Direct `miden-debug` invocations continue to require an
+explicit `FILE`.
 
 Run `miden-debug --help` for the canonical, version-pinned list. The tables
 below describe every option that's stable today.
@@ -26,7 +29,7 @@ below describe every option that's stable today.
 
 | Flag | Value | Description |
 | ---- | ----- | ----------- |
-| `FILE` | path or `-` | Path to a `.masp` (compiled Miden Assembly Package) or `.masm` (source) program. Use `-` to read from stdin. Omit when using `--dap-connect`, or when running `miden debug` inside a built Miden project. |
+| `FILE` | path or `-` | Path to a `.masp` (compiled Miden Assembly Package) or `.masm` (source) program. Use `-` to read from stdin. Omit when using `--dap-connect`, or when running `miden debug` inside a Miden project. |
 | `-- ARGV...` | field elements | Arguments pushed on the operand stack in order — the first element ends up at the top of the stack. Decimal or `0x`-prefixed hex. **These override** any `inputs.stack` set in the inputs file. |
 | `--inputs FILE` | path | TOML file describing program inputs (operand stack, advice stack, advice map) and execution options. See [Program inputs](#program-inputs). |
 | `--entrypoint <module>::<function>` | symbol | Override the program's entrypoint. Defaults to the package's declared entry. |
@@ -119,7 +122,7 @@ from the file in either case.
 ## Examples
 
 ```bash
-# Discover the current project's package and inputs through midenup
+# Build and debug the current project through midenup
 miden debug
 
 # TUI on a compiled package

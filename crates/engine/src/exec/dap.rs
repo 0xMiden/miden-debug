@@ -1075,21 +1075,24 @@ fn update_top_frame_with_debug<H: Host>(
 
     let inline_frames = debug_info
         .zip(source_node_id)
-        .zip(op_idx)
-        .map(|((debug_info, source_node_id), op_idx)| {
-            inline_frames_for_operation(debug_info, source_node_id, op_idx as u32)
-                .into_iter()
-                .filter_map(|frame| {
-                    let (source_path, line, column) =
-                        resolve_location_with_column(frame.call_site(), &*host)?;
-                    Some(DapInlineFrame {
-                        name: frame.display_name().to_string(),
-                        source_path,
-                        line,
-                        column,
-                    })
+        .map(|(debug_info, source_node_id)| {
+            inline_frames_for_operation(
+                debug_info,
+                source_node_id,
+                op_idx.unwrap_or_default() as u32,
+            )
+            .into_iter()
+            .filter_map(|frame| {
+                let (source_path, line, column) =
+                    resolve_location_with_column(frame.call_site(), &*host)?;
+                Some(DapInlineFrame {
+                    name: frame.display_name().to_string(),
+                    source_path,
+                    line,
+                    column,
                 })
-                .collect()
+            })
+            .collect()
         })
         .unwrap_or_default();
 

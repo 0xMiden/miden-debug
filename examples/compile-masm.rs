@@ -201,7 +201,12 @@ fn add_inline_calls(
         })
         .collect::<Result<Vec<_>, io::Error>>()?;
     for (source_node_id, operation_range) in source_nodes {
-        for op_idx in operation_range {
+        let operation_indices = if operation_range.is_empty() {
+            0..1
+        } else {
+            operation_range
+        };
+        for op_idx in operation_indices {
             for (callee_idx, call_site_idx) in callees.iter().copied() {
                 debug_info[source_node_id].inline_calls.push(DebugSourceInlineCall {
                     op_idx,

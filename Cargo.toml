@@ -88,7 +88,13 @@ name = "miden-debug"
 path = "src/main.rs"
 test = false
 bench = false
-required-features = ["std"]
+
+[[bin]]
+name = "miden-debug-python"
+path = "src/main.rs"
+test = false
+bench = false
+required-features = ["python"]
 
 [[example]]
 name = "compile-masm"

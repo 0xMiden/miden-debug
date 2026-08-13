@@ -8,6 +8,10 @@ The debugger only loads compiled packages. The lit harness builds the local
 `compile-masm` helper and uses it to assemble each `.masm` fixture into a
 temporary `.masp` package before running `miden-debug`.
 
+Python scripting tests run `miden-debug-python`, a second local copy built with
+the `python` feature, and pass `--no-user-python-init` so user configuration
+cannot affect their output.
+
 ## Layout
 
 ```
@@ -57,9 +61,9 @@ operand stack.
 cargo make test-lit
 ```
 
-This installs the lit tools, builds `miden-debug` with the `repl` feature
-(needed for `--commands`), builds the local MASM-to-package helper, installs the
-binaries into `./bin`, and runs the suite via `litcheck lit run`.
+This installs the lit tools, builds `miden-debug` with the `repl` feature and a
+second copy with the `python` feature, builds the local MASM-to-package helper,
+installs the binaries into `./bin`, and runs the suite via `litcheck lit run`.
 
 ## Adding a test
 

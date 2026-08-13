@@ -23,8 +23,9 @@ begin
 
     push.1 mem_store.150
 
-    # The fixture compiler attaches typed variable declarations to this operation.
-    nop
+    # The fixture compiler replaces these markers with typed debug variable declarations. The
+    # assembler then encodes their types and locations into the package debug-info section.
+    nop nop nop nop nop nop
 
     # Keep the declaration marker away from the final VM operation.
     push.1 drop

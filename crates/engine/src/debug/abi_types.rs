@@ -1,152 +1,30 @@
 use std::{format, string::String, vec::Vec};
 
-use miden_assembly_syntax::ast::types::{EnumType, StructType, Type};
+use miden_assembly_syntax::ast::types::{EnumType, Type};
 use miden_core::Felt;
-
-const MAX_TYPE_FORMAT_DEPTH: usize = 8;
 
 /// Number of memory bytes represented by a single felt in the canonical ABI layout.
 const BYTES_PER_FELT: usize = 4;
 
-/// Returns the number of felts needed to render `ty` as an ABI-shaped value.
-pub fn felts_for_type(ty: &Type) -> Option<usize> {
-    match ty {
-        Type::U256 => Some(8),
-        Type::I1
-        | Type::I8
-        | Type::U8
-        | Type::I16
-        | Type::U16
-        | Type::I32
-        | Type::U32
-        | Type::I64
-        | Type::U64
-        | Type::I128
-        | Type::U128
-        | Type::F64
-        | Type::Felt => Some(1),
-        Type::Array(array) => {
-            let element_size = felts_for_type(array.element_type())?;
-            Some(element_size * array.len())
-        }
-        Type::Struct(fields) => fields
-            .fields()
-            .iter()
-            .map(|field| felts_for_type(&field.ty))
-            .try_fold(0usize, |total, size| Some(total + size?)),
-        Type::Enum(enum_ty) => Some(enum_ty.size_in_bytes().div_ceil(BYTES_PER_FELT)),
-        Type::Unknown | Type::Never | Type::Ptr(_) | Type::List(_) | Type::Function(_) => None,
-    }
-}
-
-/// Formats a type name for DAP's `Variable.type` field.
-pub fn format_type(ty: &Type) -> String {
-    format_type_inner(ty, 0)
-}
-
-/// Decodes `felts` as `ty` and returns a user-facing value string.
-pub fn format_value(ty: &Type, felts: &[Felt]) -> Option<String> {
-    let needed = felts_for_type(ty)?;
-    if needed > felts.len() {
+/// Resolves and decodes the package debug type represented by `ty`.
+///
+/// `ty` is reconstructed from the package debug type table by
+/// `SourceNode::debug_infos_for_operation`; this function only handles value rendering. Type names
+/// are rendered by `Type`'s standard `Display` implementation at the call site.
+pub fn format_value(
+    ty: &Type,
+    resolve_felts: impl FnOnce(usize) -> Option<Vec<Felt>>,
+) -> Option<String> {
+    if matches!(
+        ty,
+        Type::Unknown | Type::Never | Type::Ptr(_) | Type::List(_) | Type::Function(_)
+    ) {
         return None;
     }
 
-    let (value, rest) = decode_value(&felts[..needed], ty)?;
+    let felts = resolve_felts(ty.size_in_felts())?;
+    let (value, rest) = decode_value(&felts, ty)?;
     rest.is_empty().then_some(value)
-}
-
-fn format_type_inner(ty: &Type, depth: usize) -> String {
-    if depth > MAX_TYPE_FORMAT_DEPTH {
-        return "...".into();
-    }
-
-    match ty {
-        Type::Unknown => "?".into(),
-        Type::Never => "!".into(),
-        Type::I1 => "Bool".into(),
-        Type::I8
-        | Type::U8
-        | Type::I16
-        | Type::U16
-        | Type::I32
-        | Type::U32
-        | Type::I64
-        | Type::U64
-        | Type::I128
-        | Type::U128
-        | Type::U256
-        | Type::F64
-        | Type::Felt => format!("{ty:?}"),
-        Type::Ptr(pointer) => {
-            format!("*{}", format_type_inner(pointer.pointee(), depth + 1))
-        }
-        Type::Array(array) => {
-            format!("[{}; {}]", format_type_inner(array.element_type(), depth + 1), array.len())
-        }
-        Type::List(element) => format!("[{}]", format_type_inner(element, depth + 1)),
-        Type::Struct(struct_ty) => format_struct_type(struct_ty, depth),
-        Type::Enum(enum_ty) => format_enum_type(enum_ty, depth),
-        Type::Function(function) => {
-            let params = function
-                .params()
-                .iter()
-                .map(|param| format_type_inner(param, depth + 1))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let ret = match function.results() {
-                [] => "()".into(),
-                [result] => format_type_inner(result, depth + 1),
-                results => {
-                    let results = results
-                        .iter()
-                        .map(|result| format_type_inner(result, depth + 1))
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    format!("({results})")
-                }
-            };
-            format!("fn({params}) -> {ret}")
-        }
-    }
-}
-
-fn format_enum_type(enum_ty: &EnumType, depth: usize) -> String {
-    let short_name = wit_short_name(enum_ty.name());
-    if !short_name.is_empty() {
-        return short_name.into();
-    }
-
-    let variants = enum_ty
-        .variants()
-        .iter()
-        .map(|variant| match &variant.value {
-            Some(payload) => {
-                format!("{}({})", variant.name, format_type_inner(payload, depth + 1))
-            }
-            None => variant.name.as_ref().into(),
-        })
-        .collect::<Vec<_>>()
-        .join(" | ");
-    format!("enum {{{variants}}}")
-}
-
-fn format_struct_type(struct_ty: &StructType, depth: usize) -> String {
-    let short_name = struct_ty.name().map(|name| wit_short_name(&name).to_string());
-    if let Some(short_name) = short_name.filter(|name| !name.is_empty()) {
-        return short_name;
-    }
-
-    let fields = struct_ty
-        .fields()
-        .iter()
-        .map(|field| {
-            let name = field_name(field);
-            let ty = format_type_inner(&field.ty, depth + 1);
-            format!("{name}: {ty}")
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("{{{fields}}}")
 }
 
 fn decode_value<'a>(felts: &'a [Felt], ty: &Type) -> Option<(String, &'a [Felt])> {
@@ -259,10 +137,7 @@ fn decode_primitive<'a>(felts: &'a [Felt], primitive: &Type) -> Option<(String, 
         }
         Type::I128 | Type::U128 | Type::F64 => {
             let (head, rest) = felts.split_first()?;
-            Some((
-                format!("{} (as {})", head.as_canonical_u64(), format_type_inner(primitive, 0)),
-                rest,
-            ))
+            Some((format!("{} (as {primitive})", head.as_canonical_u64()), rest))
         }
         _ => None,
     }
@@ -315,12 +190,16 @@ fn is_account_id_type(name: &str) -> bool {
 mod tests {
     use std::sync::Arc;
 
-    use miden_assembly_syntax::ast::types::{ArrayType, EnumType, Variant};
+    use miden_assembly_syntax::ast::types::{ArrayType, EnumType, StructType, Variant};
 
     use super::*;
 
     fn felt(value: u64) -> Felt {
         Felt::try_from(value).expect("value exceeds field modulus")
+    }
+
+    fn render(ty: &Type, felts: &[Felt]) -> Option<String> {
+        format_value(ty, |count| (felts.len() >= count).then(|| felts[..count].to_vec()))
     }
 
     #[test]
@@ -332,10 +211,8 @@ mod tests {
 
         let felts = [felt(0xa591_009a_3022_e800), felt(0x788f_9ed1_77dc_db00)];
 
-        assert_eq!(format_type(&account_id), "account-id");
-        assert_eq!(felts_for_type(&account_id), Some(2));
         assert_eq!(
-            format_value(&account_id, &felts).as_deref(),
+            render(&account_id, &felts).as_deref(),
             Some("account-id(0xa591009a3022e800788f9ed177dcdb)")
         );
     }
@@ -347,8 +224,7 @@ mod tests {
             (Arc::from("y"), Type::Felt),
         ])));
 
-        assert_eq!(format_type(&point), "{x: Felt, y: Felt}");
-        assert_eq!(format_value(&point, &[felt(3), felt(4)]).as_deref(), Some("{x=3, y=4}"));
+        assert_eq!(render(&point, &[felt(3), felt(4)]).as_deref(), Some("{x=3, y=4}"));
     }
 
     #[test]
@@ -365,24 +241,14 @@ mod tests {
             .expect("valid enum type"),
         ));
 
-        assert_eq!(format_type(&option), "OptionU32");
-        assert_eq!(felts_for_type(&option), Some(2));
-        assert_eq!(
-            format_value(&option, &[felt(1), felt(42)]).as_deref(),
-            Some("OptionU32::Some(42)")
-        );
+        assert_eq!(render(&option, &[felt(1), felt(42)]).as_deref(), Some("OptionU32::Some(42)"));
     }
 
     #[test]
     fn formats_fixed_array() {
         let array = Type::Array(Arc::new(ArrayType::new(Type::U32, 3)));
 
-        assert_eq!(format_type(&array), "[U32; 3]");
-        assert_eq!(felts_for_type(&array), Some(3));
-        assert_eq!(
-            format_value(&array, &[felt(5), felt(6), felt(7)]).as_deref(),
-            Some("[5, 6, 7]")
-        );
+        assert_eq!(render(&array, &[felt(5), felt(6), felt(7)]).as_deref(), Some("[5, 6, 7]"));
     }
 
     #[test]
@@ -390,7 +256,6 @@ mod tests {
         let u256 = Type::U256;
         let felts = (1..=8).map(felt).collect::<Vec<_>>();
 
-        assert_eq!(felts_for_type(&u256), Some(8));
-        assert_eq!(format_value(&u256, &felts).as_deref(), Some("u256([1, 2, 3, 4, 5, 6, 7, 8])"));
+        assert_eq!(render(&u256, &felts).as_deref(), Some("u256([1, 2, 3, 4, 5, 6, 7, 8])"));
     }
 }

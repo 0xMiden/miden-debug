@@ -18,7 +18,7 @@ use crate::{
     config::DebuggerConfig,
     debug::{
         Breakpoint, BreakpointType, OperationMatcher, ReadMemoryExpr, ResolvedLocation,
-        felts_for_type, format_value, resolve_variable_value, resolve_variable_values,
+        format_value, resolve_variable_value, resolve_variable_values,
     },
     exec::{DebugExecutor, ExecutionConfig, Executor},
 };
@@ -1126,15 +1126,11 @@ impl State {
                 read_mem(addr)
             };
 
-            let display_value = if let Some(ty) = var_snapshot.info.ty()
-                && let Some(count) = felts_for_type(ty)
-                && let Some(values) =
+            let display_value = var_snapshot.info.ty().and_then(|ty| {
+                format_value(ty, |count| {
                     resolve_variable_values(location, count, &stack, read_mem, resolve_local)
-            {
-                format_value(ty, &values)
-            } else {
-                None
-            };
+                })
+            });
 
             let value = resolve_variable_value(location, &stack, read_mem, resolve_local);
 

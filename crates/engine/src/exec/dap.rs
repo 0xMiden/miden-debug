@@ -33,8 +33,8 @@ use super::{
 };
 use crate::{
     debug::{
-        DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, felts_for_type, format_type,
-        format_value, resolve_variable_values, snapshot_transient_debug_values,
+        DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, format_value,
+        resolve_variable_values, snapshot_transient_debug_values,
     },
     exec::state::CurrentCycleInfo,
 };
@@ -916,10 +916,9 @@ fn format_debug_var_value(
     let location = var.info.value_location();
 
     if let Some(ty) = var.info.ty() {
-        let type_field = Some(format_type(ty));
-        if let Some(count) = felts_for_type(ty)
-            && let Some(values) = resolve_debug_var_values(processor, location, count)
-            && let Some(value) = format_value(ty, &values)
+        let type_field = Some(ty.to_string());
+        if let Some(value) =
+            format_value(ty, |count| resolve_debug_var_values(processor, location, count))
         {
             return (value, type_field);
         }

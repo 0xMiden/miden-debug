@@ -7,8 +7,8 @@ pure-Rust implementation of LLVM `lit` + `FileCheck`).
 The debugger only loads compiled packages. The lit harness builds the local
 `compile-masm` helper and uses it to assemble each `.masm` fixture into a
 temporary `.masp` package before running `miden-debug`. Tests that need typed
-debug metadata use `compile-abi-fixture` to attach deterministic ABI types and
-variable locations to the assembled package.
+debug metadata use `compile-abi-fixture` to add deterministic ABI types and
+variable locations to the parsed AST; the assembler encodes them in the package.
 
 Python scripting tests run `miden-debug-python`, a second local copy built with
 the `python` feature, and pass `--no-user-python-init` so user configuration

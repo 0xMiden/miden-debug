@@ -337,7 +337,7 @@ impl DebugExecutor {
                         self.recent.pop_front();
                     }
                     self.recent.push_back(op);
-                    self.profiler.on_operation_execution_cycle(op);
+                    self.profiler.on_operation_execution_cycle(op, self.current_proc.as_deref());
                 }
 
                 // Update call stack

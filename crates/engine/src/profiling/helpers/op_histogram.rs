@@ -1,13 +1,11 @@
+use std::fmt::Write;
+
 use miden_core::{Felt, operations::Operation};
 
-use super::{Instrument, InstrumentRegistration};
-use crate::register_instrument;
-
-/// An [`Instrument`] to create operation histograms.
+/// A histogram of executed operations weighted by cycles per operation.
 ///
-/// At each cycle, it records the current operation and produces a histogram of executed operations
-/// weighted by cycles per operation. If `opX` takes 4 cycles and was executed twice, its count
-/// will be 8.
+/// At each cycle, [`OpHistogram::record`] records the current operation. If `opX` takes 4 cycles
+/// and was executed twice, its count will be 8.
 pub struct OpHistogram {
     total_cycles: u128,
     counts: [u64; 256],
@@ -22,68 +20,23 @@ impl Default for OpHistogram {
     }
 }
 
-impl InstrumentRegistration for OpHistogram {
-    const NAME: &'static str = "op-histogram";
-
-    fn build(_config: &crate::profiling::ProfilerConfig) -> Result<Self, super::InstrumentError> {
-        Ok(Self::default())
-    }
-}
-
-register_instrument!(OpHistogram);
-
-impl Instrument for OpHistogram {
-    fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    fn on_operation_execution_cycle(&mut self, op: Operation) {
+impl OpHistogram {
+    /// Records `op` as executed for one cycle.
+    pub fn record(&mut self, op: Operation) {
         self.total_cycles += 1;
         // `op.op_code` returns u8 which can safely be used as index here
         self.counts[usize::from(op.op_code())] += 1;
     }
 
-    fn write_report_to(&self, writer: &mut dyn std::io::Write) -> std::io::Result<()> {
-        const OP_COL_WIDTH: usize = 16;
-        const SHARE_COL_WIDTH: usize = 7;
-
-        let total = self.total_cycles;
-
-        // Header row: the total accounts for 100% of the cycles. Every row is laid out in three
-        // columns (op | share | count) with fixed widths so the output stays aligned. When `total
-        // == 0` there are no data rows, so only this header line is written.
-        writeln!(
-            writer,
-            "{:<col1$} {:>col2$} {}",
-            "total_cycles",
-            "100%",
-            total,
-            col1 = OP_COL_WIDTH,
-            col2 = SHARE_COL_WIDTH,
-        )?;
-
-        for (op, count) in self.sorted_counts() {
-            let share = 100.0 * (count as f64) / (total as f64);
-            // Any payload on the reconstructed `Operation` is just a meaningless placeholder, so
-            // remove it. The report then only contains `push` instead of `push(0)`, for example.
-            let label = op.to_string();
-            let label = label.split('(').next().unwrap();
-            writeln!(
-                writer,
-                "{:<col1$} {:>col2$} {}",
-                label,
-                format!("{share:.2}%"),
-                count,
-                col1 = OP_COL_WIDTH,
-                col2 = SHARE_COL_WIDTH,
-            )?;
-        }
-        Ok(())
+    /// Total number of recorded cycles.
+    pub fn total_cycles(&self) -> u128 {
+        self.total_cycles
     }
-}
 
-impl OpHistogram {
-    fn sorted_counts(&self) -> SortedCounts {
+    /// Counts per operation, sorted in descending order by count.
+    ///
+    /// Only operations with a non-zero count are included.
+    pub fn sorted_counts(&self) -> SortedCounts {
         let mut counts: SortedCounts = ALL_OPERATIONS
             .iter()
             .map(|&op| (op, self.counts[usize::from(op.op_code())]))
@@ -93,10 +46,51 @@ impl OpHistogram {
         counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.op_code().cmp(&b.0.op_code())));
         counts
     }
+
+    /// Renders the histogram as a report.
+    pub fn report(&self) -> String {
+        const OP_COL_WIDTH: usize = 16;
+        const SHARE_COL_WIDTH: usize = 7;
+
+        let total = self.total_cycles;
+        let mut report = String::new();
+
+        // Every row is laid out in three columns (op | share | count) with fixed widths so the
+        // output stays aligned.
+        writeln!(
+            report,
+            "{:<col1$} {:>col2$} {}",
+            "total_cycles",
+            "100%",
+            total,
+            col1 = OP_COL_WIDTH,
+            col2 = SHARE_COL_WIDTH,
+        )
+        .unwrap();
+
+        for (op, count) in self.sorted_counts() {
+            let share = 100.0 * (count as f64) / (total as f64);
+            // Any payload on the reconstructed `Operation` is just a meaningless placeholder, so
+            // remove it. The report then only contains `push` instead of `push(0)`, for example.
+            let label = op.to_string();
+            let label = label.split('(').next().unwrap();
+            writeln!(
+                report,
+                "{:<col1$} {:>col2$} {}",
+                label,
+                format!("{share:.2}%"),
+                count,
+                col1 = OP_COL_WIDTH,
+                col2 = SHARE_COL_WIDTH,
+            )
+            .unwrap();
+        }
+        report
+    }
 }
 
 /// Counts per operation, sorted in descending order by count.
-type SortedCounts = Vec<(Operation, u64)>;
+pub type SortedCounts = Vec<(Operation, u64)>;
 
 /// Every basic-block [`Operation`] variant, with placeholder payloads (`Felt::ZERO`) for the
 /// value-carrying variants. Used to map the `counts` array back into typed operations for
@@ -193,19 +187,16 @@ mod tests {
 
     use miden_core::{Felt, operations::Operation, serde::Deserializable};
 
-    use super::ALL_OPERATIONS;
-    use crate::profiling::instrument::Instrument;
+    use super::{ALL_OPERATIONS, OpHistogram};
 
-    /// `ALL_OPERATIONS` must contain exactly the set of opcodes that map to a
-    /// valid `Operation`.
+    /// `ALL_OPERATIONS` must contain exactly the set of opcodes that map to a valid `Operation`.
     ///
     /// We use `Operation`'s `Deserializable` impl as the source of truth.
     #[test]
     fn all_operations_covers_every_valid_opcode() {
-        // The payload-carrying variants (Push, Assert, MpVerify, U32assert2)
-        // read an extra `Felt` after the opcode byte, so pad with enough zero
-        // bytes for them to deserialize. Trailing bytes are ignored by the
-        // reader, so this is harmless for the 1-byte variants.
+        // The payload-carrying variants (Push, Assert, MpVerify, U32assert2) read an extra `Felt`
+        // after the opcode byte, so pad with enough zero bytes for them to deserialize. Trailing
+        // bytes are ignored by the reader, so this is harmless for the 1-byte variants.
         let valid: BTreeSet<u8> = (0u8..=u8::MAX)
             .filter(|&op| Operation::read_from_bytes(&[op, 0, 0, 0, 0, 0, 0, 0, 0]).is_ok())
             .collect();
@@ -234,45 +225,49 @@ mod tests {
     }
 
     #[test]
-    fn op_histogram_reports_recorded_ops() {
-        let mut hist = super::OpHistogram::default();
+    fn sorted_counts_orders_by_count_desc_then_opcode() {
+        let mut hist = OpHistogram::default();
 
-        // 3 cycles
-        hist.on_operation_execution_cycle(Operation::Add);
-        hist.on_operation_execution_cycle(Operation::Add);
-        hist.on_operation_execution_cycle(Operation::Noop);
+        hist.record(Operation::Add);
+        hist.record(Operation::Add);
+        hist.record(Operation::Noop);
+        hist.record(Operation::Eq);
 
-        let mut buf = Vec::new();
-        hist.write_report_to(&mut buf).unwrap();
-        let report = String::from_utf8(buf).unwrap();
+        let (ops, counts): (Vec<Operation>, Vec<u64>) = hist.sorted_counts().into_iter().unzip();
 
-        let lines: Vec<&str> = report.lines().collect();
-        // First line is the header reporting 100% of 3 cycles.
-        assert!(lines[0].contains("total_cycles") && lines[0].contains('3'));
+        // Most frequent op comes first.
+        assert_eq!(ops[0], Operation::Add);
+        assert_eq!(counts[0], 2);
 
-        // `Add` must preceed `Noop`, due to higher count.
-        assert!(lines[1].contains(Operation::Add.to_string().as_str()) && lines[1].contains("2"));
-        assert!(lines[2].contains(Operation::Noop.to_string().as_str()) && lines[2].contains("1"));
+        // The two single-cycle ops are ordered by opcode, since their counts tie.
+        assert_eq!(counts[1], 1);
+        assert_eq!(counts[2], 1);
+        assert!(ops[1].op_code() < ops[2].op_code());
 
-        // no further lines
-        assert_eq!(lines.len(), 3);
+        // `total_cycles` accounts for every recorded cycle.
+        assert_eq!(hist.total_cycles(), 4);
+    }
+
+    #[test]
+    fn sorted_counts_excludes_unrecorded_operations() {
+        let hist = OpHistogram::default();
+        assert!(hist.sorted_counts().is_empty());
+        assert_eq!(hist.total_cycles(), 0);
     }
 
     /// Payload-carrying operations must render with just their mnemonic, e.g. `push` rather than
     /// `push(0)`.
     #[test]
     fn op_histogram_omits_payload_from_mnemonic() {
-        let mut hist = super::OpHistogram::default();
+        let mut hist = OpHistogram::default();
 
         // All payload carrying variants
-        hist.on_operation_execution_cycle(Operation::Push(Felt::ZERO));
-        hist.on_operation_execution_cycle(Operation::Assert(Felt::ZERO));
-        hist.on_operation_execution_cycle(Operation::MpVerify(Felt::ZERO));
-        hist.on_operation_execution_cycle(Operation::U32assert2(Felt::ZERO));
+        hist.record(Operation::Push(Felt::ZERO));
+        hist.record(Operation::Assert(Felt::ZERO));
+        hist.record(Operation::MpVerify(Felt::ZERO));
+        hist.record(Operation::U32assert2(Felt::ZERO));
 
-        let mut buf = Vec::new();
-        hist.write_report_to(&mut buf).unwrap();
-        let report = String::from_utf8(buf).unwrap();
+        let report = hist.report();
 
         assert!(
             !report.contains("(0)"),

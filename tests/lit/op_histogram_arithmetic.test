@@ -3,9 +3,9 @@
 # RUN: compile-masm %S/op_histogram_arithmetic.masm -o %t.masp
 # RUN: (miden-debug \
 # RUN:   --profiling-reports-dir %t_reports \
-# RUN:   --profiling-instruments op-histogram \
+# RUN:   --profiling-instruments op-histogram-global \
 # RUN:   --commands %s %t.masp 2>&1; \
-# RUN:  cat %t_reports/op-histogram) | filecheck %s
+# RUN:  cat %t_reports/op-histogram-global) | filecheck %s
 
 continue
 stack

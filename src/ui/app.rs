@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use super::{
     Action,
     pages::{Page, home::Home},
-    panes::{Pane, debug::DebugPane, footer::FooterPane, header::HeaderPane},
+    panes::{Pane, debug::DebugPane, error::ErrorPane, footer::FooterPane, header::HeaderPane},
     state::{InputMode, State},
     tui,
 };
@@ -208,6 +208,9 @@ impl App {
                     Action::ShowDebug => {
                         let debug_popup = DebugPane::default();
                         self.popup = Some(Box::new(debug_popup));
+                    }
+                    Action::Error(ref message) => {
+                        self.popup = Some(Box::new(ErrorPane::new(message.clone())));
                     }
                     Action::ClosePopup => {
                         let _ = self.popup.take();

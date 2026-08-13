@@ -13,6 +13,7 @@ use super::{
 pub mod breakpoints;
 pub mod debug;
 pub mod disasm;
+pub mod error;
 pub mod footer;
 pub mod header;
 pub mod source_code;

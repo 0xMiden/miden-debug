@@ -1,6 +1,9 @@
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 
-use miden_assembly_syntax::ast::{DebugFrameBase, DebugVarInfo, DebugVarLocation};
+use miden_assembly_syntax::ast::{
+    DebugFrameBase, DebugLocationExpression, DebugLocationExpressionOp, DebugVarInfo,
+    DebugVarLocation,
+};
 use miden_core::Felt;
 use miden_processor::trace::RowIndex;
 
@@ -97,10 +100,36 @@ impl DebugVarTracker {
 /// when the user inspects variables.
 pub fn snapshot_transient_debug_values(infos: &mut [DebugVarInfo], stack: &[Felt]) {
     for info in infos {
-        if let DebugVarLocation::Stack(pos) = info.value_location()
-            && let Some(value) = stack.get(*pos as usize).copied()
-        {
-            info.set_value_location(DebugVarLocation::Const(value));
+        match info.value_location() {
+            DebugVarLocation::Stack(position) => {
+                let location = stack
+                    .get(*position as usize)
+                    .copied()
+                    .map(DebugVarLocation::Const)
+                    .unwrap_or(DebugVarLocation::Unavailable);
+                info.set_value_location(location);
+            }
+            DebugVarLocation::Expression(expression) => {
+                let operations = expression
+                    .operations()
+                    .iter()
+                    .map(|operation| match operation {
+                        DebugLocationExpressionOp::ReadStack(position) => stack
+                            .get(*position as usize)
+                            .map(|value| {
+                                DebugLocationExpressionOp::ConstU64(value.as_canonical_u64())
+                            })
+                            .ok_or(()),
+                        operation => Ok(*operation),
+                    })
+                    .collect::<Result<Vec<_>, _>>();
+                let location = operations
+                    .map(DebugLocationExpression::new)
+                    .map(DebugVarLocation::Expression)
+                    .unwrap_or(DebugVarLocation::Unavailable);
+                info.set_value_location(location);
+            }
+            _ => {}
         }
     }
 }
@@ -125,7 +154,70 @@ pub fn resolve_variable_value(
         DebugVarLocation::ResolvedFrameBase { base, byte_offset } => {
             resolve_frame_base_value(*base, *byte_offset, &get_memory, &get_local)
         }
+        DebugVarLocation::Expression(expression) => {
+            resolve_location_expression(expression, stack, &get_memory, &get_local)
+        }
     }
+}
+
+fn resolve_location_expression(
+    expression: &DebugLocationExpression,
+    stack: &[Felt],
+    get_memory: &impl Fn(u32) -> Option<Felt>,
+    get_local: &impl Fn(i16) -> Option<Felt>,
+) -> Option<Felt> {
+    let mut values = Vec::<i128>::new();
+
+    for operation in expression.operations() {
+        match operation {
+            DebugLocationExpressionOp::ReadStack(position) => {
+                values.push(i128::from(stack.get(*position as usize)?.as_canonical_u64()));
+            }
+            DebugLocationExpressionOp::ReadMemory(address) => {
+                values.push(i128::from(get_memory(*address)?.as_canonical_u64()));
+            }
+            DebugLocationExpressionOp::ReadLocal(offset) => {
+                values.push(i128::from(get_local(*offset)?.as_canonical_u64()));
+            }
+            DebugLocationExpressionOp::ConstU64(value) => values.push(i128::from(*value)),
+            DebugLocationExpressionOp::ConstI64(value) => values.push(i128::from(*value)),
+            DebugLocationExpressionOp::AddUnsigned(value) => {
+                let lhs = values.pop()?;
+                values.push(lhs.checked_add(i128::from(*value))?);
+            }
+            DebugLocationExpressionOp::Add => {
+                let rhs = values.pop()?;
+                let lhs = values.pop()?;
+                values.push(lhs.checked_add(rhs)?);
+            }
+            DebugLocationExpressionOp::Sub => {
+                let rhs = values.pop()?;
+                let lhs = values.pop()?;
+                values.push(lhs.checked_sub(rhs)?);
+            }
+            DebugLocationExpressionOp::DerefBytes => {
+                let byte_address = values.pop()?;
+                if byte_address < 0 || byte_address % 4 != 0 {
+                    return None;
+                }
+                let element_address = u32::try_from(byte_address / 4).ok()?;
+                values.push(i128::from(get_memory(element_address)?.as_canonical_u64()));
+            }
+            DebugLocationExpressionOp::FrameBaseAddress { base, byte_offset } => {
+                values.push(resolve_frame_base_address(
+                    *base,
+                    *byte_offset,
+                    get_memory,
+                    get_local,
+                )?);
+            }
+        }
+    }
+
+    let [value] = values.as_slice() else {
+        return None;
+    };
+    Felt::new(u64::try_from(*value).ok()?).ok()
 }
 
 fn resolve_frame_base_value(
@@ -134,23 +226,31 @@ fn resolve_frame_base_value(
     get_memory: &impl Fn(u32) -> Option<Felt>,
     get_local: &impl Fn(i16) -> Option<Felt>,
 ) -> Option<Felt> {
+    let byte_address = resolve_frame_base_address(base, byte_offset, get_memory, get_local)?;
+    resolve_byte_address(byte_address, get_memory)
+}
+
+fn resolve_frame_base_address(
+    base: DebugFrameBase,
+    byte_offset: i64,
+    get_memory: &impl Fn(u32) -> Option<Felt>,
+    get_local: &impl Fn(i16) -> Option<Felt>,
+) -> Option<i128> {
     let base = match base {
         DebugFrameBase::Local(offset) => get_local(offset)?,
         DebugFrameBase::Memory(address) => get_memory(address)?,
     };
-    resolve_byte_address(base, byte_offset, get_memory)
+    i128::from(base.as_canonical_u64()).checked_add(i128::from(byte_offset))
 }
 
 fn resolve_byte_address(
-    base: Felt,
-    byte_offset: i64,
+    byte_address: i128,
     get_memory: &impl Fn(u32) -> Option<Felt>,
 ) -> Option<Felt> {
-    let byte_addr = i128::from(base.as_canonical_u64()) + i128::from(byte_offset);
-    if byte_addr < 0 || byte_addr % 4 != 0 {
+    if byte_address < 0 || byte_address % 4 != 0 {
         return None;
     }
-    let elem_addr = u32::try_from(byte_addr / 4).ok()?;
+    let elem_addr = u32::try_from(byte_address / 4).ok()?;
     get_memory(elem_addr)
 }
 
@@ -209,6 +309,13 @@ mod tests {
         let mut infos = vec![
             DebugVarInfo::new("a", DebugVarLocation::Stack(0)),
             DebugVarInfo::new("b", DebugVarLocation::Local(-1)),
+            DebugVarInfo::new(
+                "c",
+                DebugVarLocation::Expression(DebugLocationExpression::new(vec![
+                    DebugLocationExpressionOp::ReadStack(0),
+                    DebugLocationExpressionOp::AddUnsigned(3),
+                ])),
+            ),
         ];
 
         snapshot_transient_debug_values(
@@ -221,6 +328,13 @@ mod tests {
             &DebugVarLocation::Const(Felt::new(7).expect("value exceeds field modulus"))
         );
         assert_eq!(infos[1].value_location(), &DebugVarLocation::Local(-1));
+        assert_eq!(
+            infos[2].value_location(),
+            &DebugVarLocation::Expression(DebugLocationExpression::new(vec![
+                DebugLocationExpressionOp::ConstU64(7),
+                DebugLocationExpressionOp::AddUnsigned(3),
+            ]))
+        );
     }
 
     #[test]
@@ -251,6 +365,48 @@ mod tests {
     }
 
     #[test]
+    fn resolves_structured_location_expressions() {
+        let expression = DebugLocationExpression::new(vec![
+            DebugLocationExpressionOp::FrameBaseAddress {
+                base: DebugFrameBase::Local(-2),
+                byte_offset: 4,
+            },
+            DebugLocationExpressionOp::AddUnsigned(8),
+            DebugLocationExpressionOp::DerefBytes,
+        ]);
+        let value = resolve_variable_value(
+            &DebugVarLocation::Expression(expression),
+            &[],
+            |address| (address == 27).then_some(Felt::new(13).unwrap()),
+            |offset| (offset == -2).then_some(Felt::new(96).unwrap()),
+        );
+
+        assert_eq!(value, Some(Felt::new(13).unwrap()));
+    }
+
+    #[test]
+    fn rejects_invalid_location_expression_results() {
+        for expression in [
+            DebugLocationExpression::new(vec![DebugLocationExpressionOp::ConstI64(-1)]),
+            DebugLocationExpression::new(vec![
+                DebugLocationExpressionOp::ConstU64(u64::MAX),
+                DebugLocationExpressionOp::ConstU64(1),
+                DebugLocationExpressionOp::Add,
+            ]),
+        ] {
+            assert_eq!(
+                resolve_variable_value(
+                    &DebugVarLocation::Expression(expression),
+                    &[],
+                    |_| None,
+                    |_| None,
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
     fn debug_kill_removes_current_variable() {
         let events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
             Rc::new(Default::default());
@@ -276,5 +432,4 @@ mod tests {
         tracker.update_to_cycle(RowIndex::from(2));
         assert!(tracker.get_variable("x").is_none());
     }
-
 }

@@ -20,6 +20,14 @@ name = "println_smoke_test"
 required-features = ["tui"]
 ```
 
+### Testing the behavior of the `print_panic_message` trace event
+
+Related to all tests starting with `panic_message_`.
+
+The same global-`DebugLogger` isolation applies as for the `println` tests above: each
+`panic_message_` test gets its own process-local `DebugLogger` via a separate integration test
+binary, and is gated behind `tui` with a corresponding `[[test]]` entry.
+
 ## lit / FileCheck tests
 
 End-to-end debugger tests live under `tests/lit/` and are driven by

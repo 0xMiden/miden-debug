@@ -1,0 +1,42 @@
+mod common;
+
+use std::sync::Arc;
+
+use log::Level;
+use miden_assembly::DefaultSourceManager;
+use miden_debug::{DebugQuery, event::PRINT_PANIC_MESSAGE_EVENT};
+
+#[test]
+// This verifies the panic message handler behaves as expected when `read_message_from_memory`
+// returns an error: the failure is logged as a warning and execution continues.
+fn trace_panic_message_read_mem_error_logs_warning_and_continues_execution() {
+    common::init_test_debug_logger();
+
+    let source_manager = Arc::new(DefaultSourceManager::default());
+
+    let source = format!(
+        r#"
+begin
+    # Trigger error by reading from uninitialized memory.
+    push.1
+    push.1114112
+    emit.event("{PRINT_PANIC_MESSAGE_EVENT}")
+    drop
+    drop
+
+    # Store 42 at element 278529 to prove execution continued.
+    push.42
+    push.278529
+    mem_store
+end
+"#,
+    );
+    let trace = common::execute_trace(&source, source_manager);
+
+    assert_eq!(
+        trace.read_memory_element(278529).map(|f| f.as_canonical_u64()),
+        Some(42),
+        "expected execution to continue and write 42 to memory",
+    );
+    assert_logged!(entry => entry.level == Level::Warn && entry.message.contains("memory is not initialized"));
+}

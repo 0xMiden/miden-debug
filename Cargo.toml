@@ -109,6 +109,14 @@ name = "println_empty_string"
 required-features = ["tui"]
 
 [[test]]
+name = "panic_message_empty_string"
+required-features = ["tui"]
+
+[[test]]
+name = "panic_message_read_mem_error"
+required-features = ["tui"]
+
+[[test]]
 name = "println_read_mem_error"
 required-features = ["tui"]
 

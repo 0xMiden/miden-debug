@@ -23,7 +23,7 @@ use miden_processor::{
 
 use super::{
     DebugExecutor, DebuggerHost, Event, ExecutionConfig, ExecutionTrace,
-    event::{FRAME_END_EVENT, FRAME_START_EVENT, PRINTLN_EVENT},
+    event::{FRAME_END_EVENT, FRAME_START_EVENT, PRINT_PANIC_MESSAGE_EVENT, PRINTLN_EVENT},
     query::read_memory_bytes,
 };
 use crate::{
@@ -346,7 +346,7 @@ impl Executor {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum PrintLnError {
+pub enum PrintLnError {
     #[error("address should fit in u32")]
     InvalidAddress,
     #[error("string length should fit in usize")]
@@ -365,8 +365,12 @@ fn register_builtin_event_handlers(
     host: &mut DebuggerHost<dyn SourceManager>,
     events: Arc<Mutex<BTreeMap<RowIndex, Event>>>,
 ) {
+    // ---------------------------------------------------------------------
+    // Keep builtin event handlers in sync with `Event::has_builtin_handler`
+    // ---------------------------------------------------------------------
+
     let println_handler = |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
-        match decode_println(process) {
+        match read_message_from_memory(process) {
             Ok(content) => {
                 log::log!(target: "stdout", Level::Info, "{content}");
             }
@@ -382,10 +386,31 @@ fn register_builtin_event_handlers(
         Ok(vec![])
     };
 
-    // Keep builtin event handlers in sync with `Event::has_builtin_handler`
-
     host.register_event_handler(PRINTLN_EVENT, Arc::new(println_handler))
         .expect("failed to register println event handler");
+
+    let panic_message_handle = host.panic_message_handle();
+    let panic_message_handler =
+        move |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
+            match read_message_from_memory(process) {
+                Ok(content) => {
+                    log::log!(target: "stdout", Level::Error, "{content}");
+                    panic_message_handle.lock().unwrap().replace(content);
+                }
+                Err(err) => {
+                    log::warn!(
+                        target: "executor",
+                        "emit.{PRINT_PANIC_MESSAGE_EVENT} failed at cycle {}: {err}",
+                        process.clock(),
+                    );
+                }
+            }
+
+            Ok(vec![])
+        };
+
+    host.register_event_handler(PRINT_PANIC_MESSAGE_EVENT, Arc::new(panic_message_handler))
+        .expect("failed to register panic message event handler");
 
     let frame_start_events = Arc::clone(&events);
     let frame_start_handler =
@@ -413,11 +438,11 @@ fn register_builtin_event_handlers(
      */
 }
 
-/// Decode a [`Event::PrintLn`] event into a UTF-8 string.
+/// Read and decode a message from memory based on the stack contents.
 ///
 /// Expects `[event_id, address, length]` on the operand stack. Reads `length` bytes from `address`
 /// in the current context's memory and returns them as a string.
-fn decode_println(process: &ProcessorState<'_>) -> Result<String, PrintLnError> {
+pub fn read_message_from_memory(process: &ProcessorState<'_>) -> Result<String, PrintLnError> {
     let addr = u32::try_from(process.get_stack_item(1).as_canonical_u64())
         .map_err(|_| PrintLnError::InvalidAddress)?;
     let len = usize::try_from(process.get_stack_item(2).as_canonical_u64())
@@ -759,5 +784,62 @@ end
             .expect("invalid replay result");
         assert_eq!(replayed_result, recorded_result);
         assert_eq!(replayed_result, 208);
+    }
+
+    /// The builtin panic-message event handler stores the emitted message on the debug host.
+    #[test]
+    fn captures_panic_message() {
+        use miden_assembly::DefaultSourceManager;
+
+        let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
+
+        for offset in 1..4 {
+            let base_elem = 278528 + offset;
+            let second_elem = base_elem + 1;
+            let byte_addr = base_elem * 4;
+
+            let source = format!(
+                r#"
+begin
+    # Store 'o' 'h' ' ' 'n' as little-endian bytes packed into felt at element address {base_elem}
+    # (after memory reserved for the Rust stack).
+    push.1847617647
+    push.{base_elem}
+    mem_store
+
+    # Store the trailing 'o' '!' bytes in the next felt.
+    push.8559
+    push.{second_elem}
+    mem_store
+
+    # The panic message event expects [address, string_length] on the stack, so push the byte
+    # length first and the byte address last.
+    push.6
+    push.{byte_addr}
+    emit.event("{PRINT_PANIC_MESSAGE_EVENT}")
+
+    # Drop the address and string length passed to the panic message event.
+    drop
+    drop
+end
+"#
+            );
+            let program = miden_assembly::Assembler::new(source_manager.clone())
+                .assemble_program("program", source)
+                .map(Arc::<Package>::from)
+                .expect("failed to assemble test program");
+
+            let mut debug_executor =
+                Executor::new(Vec::new()).into_debug(program, source_manager.clone());
+            while !debug_executor.stopped {
+                debug_executor.step().expect("step failed");
+            }
+
+            assert_eq!(
+                debug_executor.host.panic_message(),
+                Some("oh no!".to_string()),
+                "expected the panic message to be captured"
+            );
+        }
     }
 }

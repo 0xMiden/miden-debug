@@ -346,7 +346,7 @@ impl Executor {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum PrintLnError {
+pub enum ReadMemMessageError {
     #[error("address should fit in u32")]
     InvalidAddress,
     #[error("string length should fit in usize")]
@@ -442,13 +442,15 @@ fn register_builtin_event_handlers(
 ///
 /// Expects `[event_id, address, length]` on the operand stack. Reads `length` bytes from `address`
 /// in the current context's memory and returns them as a string.
-pub fn read_message_from_memory(process: &ProcessorState<'_>) -> Result<String, PrintLnError> {
+pub fn read_message_from_memory(
+    process: &ProcessorState<'_>,
+) -> Result<String, ReadMemMessageError> {
     let addr = u32::try_from(process.get_stack_item(1).as_canonical_u64())
-        .map_err(|_| PrintLnError::InvalidAddress)?;
+        .map_err(|_| ReadMemMessageError::InvalidAddress)?;
     let len = usize::try_from(process.get_stack_item(2).as_canonical_u64())
-        .map_err(|_| PrintLnError::InvalidLength)?;
+        .map_err(|_| ReadMemMessageError::InvalidLength)?;
     if len > MAX_PRINTLN_BYTES {
-        return Err(PrintLnError::LengthExceeded {
+        return Err(ReadMemMessageError::LengthExceeded {
             requested: len,
             max: MAX_PRINTLN_BYTES,
         });
@@ -457,10 +459,12 @@ pub fn read_message_from_memory(process: &ProcessorState<'_>) -> Result<String, 
     let ctx = process.ctx();
 
     let bytes = read_memory_bytes(ptr, len, |addr| {
-        process.get_mem_value(ctx, addr).ok_or(PrintLnError::MemoryNotInitialized)
+        process
+            .get_mem_value(ctx, addr)
+            .ok_or(ReadMemMessageError::MemoryNotInitialized)
     })?;
 
-    String::from_utf8(bytes).map_err(|_| PrintLnError::InvalidUtf8)
+    String::from_utf8(bytes).map_err(|_| ReadMemMessageError::InvalidUtf8)
 }
 
 #[track_caller]
@@ -841,5 +845,260 @@ end
                 "expected the panic message to be captured"
             );
         }
+    }
+
+    /// The event used to trigger `read_message_from_memory` from masm.
+    const READ_MESSAGE_TEST_EVENT: &str = "miden-debug::test::read-message-errors";
+
+    /// Captures the result of `read_message_from_memory` when invoked from an event handler.
+    ///
+    /// A `ProcessorState` is only obtainable from within an event handler, so the error cases of
+    /// `read_message_from_memory` are observed by registering a handler which invokes it and
+    /// stores the result for inspection after execution.
+    struct ReadMemMsgCapture {
+        captured: Mutex<Option<Result<String, ReadMemMessageError>>>,
+    }
+
+    impl EventHandler for ReadMemMsgCapture {
+        fn on_event(
+            &self,
+            process: &ProcessorState<'_>,
+        ) -> Result<Vec<AdviceMutation>, EventError> {
+            self.captured.lock().unwrap().replace(read_message_from_memory(process));
+            Ok(vec![])
+        }
+    }
+
+    /// Executes `source` and returns the result captured by the `MessageCapture` handler.
+    fn capture_message_result(source: &str) -> Result<String, ReadMemMessageError> {
+        use miden_assembly::DefaultSourceManager;
+
+        let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
+        let program = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program("program", source)
+            .map(Arc::<Package>::from)
+            .expect("failed to assemble test program");
+
+        let capture = Arc::new(ReadMemMsgCapture {
+            captured: Mutex::new(None),
+        });
+        let mut executor = Executor::new(Vec::new());
+        executor
+            .register_event_handler(
+                EventName::from_string(READ_MESSAGE_TEST_EVENT.to_string()),
+                capture.clone(),
+            )
+            .expect("failed to register capture handler");
+
+        let mut debug_executor = executor.into_debug(program, source_manager);
+        while !debug_executor.stopped {
+            debug_executor.step().expect("step failed");
+        }
+
+        capture
+            .captured
+            .lock()
+            .unwrap()
+            .take()
+            .expect("event handler was never invoked")
+    }
+
+    #[test]
+    fn read_message_decodes_a_multi_felt_message() {
+        let source = format!(
+            r#"
+begin
+    # Store 'h' 'e' 'l' 'l' as little-endian bytes packed into felt at element address 278528
+    # (after memory reserved for the Rust stack).
+    push.1819043176
+    push.278528
+    mem_store
+
+    # Store the trailing 'o' byte in the next felt.
+    push.111
+    push.278529
+    mem_store
+
+    # The event expects [address, string_length] on the stack, so push the byte length first and
+    # the byte address last (byte address 1114112 = 278528*4).
+    push.5
+    push.1114112
+    emit.event("{READ_MESSAGE_TEST_EVENT}")
+
+    # Drop the address and string length passed to the event.
+    drop
+    drop
+end
+"#
+        );
+
+        let message =
+            capture_message_result(&source).expect("expected the message to be read successfully");
+        assert_eq!(message, "hello");
+    }
+
+    /// A message may start at any byte inside an element, and span elements.
+    #[test]
+    fn read_message_reads_from_unaligned_addresses() {
+        for offset in 0..4 {
+            let byte_addr = 278528 * 4 + offset;
+            let length = 8 - offset;
+            let expected = &"abcdefgh"[offset..];
+
+            let source = format!(
+                r#"
+begin
+    # Store 'a' 'b' 'c' 'd' as little-endian bytes packed into felt at element address 278528
+    # (after memory reserved for the Rust stack).
+    push.1684234849
+    push.278528
+    mem_store
+
+    # Store 'e' 'f' 'g' 'h' as little-endian bytes packed into felt in the next felt.
+    push.1751606885
+    push.278529
+    mem_store
+
+    push.{length}
+    push.{byte_addr}
+    emit.event("{READ_MESSAGE_TEST_EVENT}")
+    drop
+    drop
+end
+"#
+            );
+
+            let message = capture_message_result(&source)
+                .unwrap_or_else(|err| panic!("unexpected error at offset {offset}: {err}"));
+            assert_eq!(message, expected);
+        }
+    }
+
+    #[test]
+    fn read_message_reads_an_empty_string() {
+        let source = format!(
+            r#"
+begin
+    push.0
+    push.0
+    emit.event("{READ_MESSAGE_TEST_EVENT}")
+    drop
+    drop
+end
+"#
+        );
+
+        let message =
+            capture_message_result(&source).expect("expected the message to be read successfully");
+        assert_eq!(message, "");
+    }
+
+    #[test]
+    fn read_message_rejects_addresses_above_u32_max() {
+        let source = format!(
+            r#"
+begin
+    push.1
+    push.4294967296
+    emit.event("{READ_MESSAGE_TEST_EVENT}")
+    drop
+    drop
+end
+"#
+        );
+
+        let err = capture_message_result(&source).expect_err("expected an invalid address error");
+        assert!(matches!(err, ReadMemMessageError::InvalidAddress));
+    }
+
+    #[test]
+    fn read_message_rejects_lengths_above_the_maximum() {
+        let oversized_length = MAX_PRINTLN_BYTES + 1;
+        let source = format!(
+            r#"
+begin
+    push.{oversized_length}
+    push.0
+    emit.event("{READ_MESSAGE_TEST_EVENT}")
+    drop
+    drop
+end
+"#
+        );
+
+        let err = capture_message_result(&source).expect_err("expected a length exceeded error");
+        assert!(
+            matches!(
+                err,
+                ReadMemMessageError::LengthExceeded { requested, .. } if requested == oversized_length
+            ),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn read_message_rejects_uninitialized_memory() {
+        let source = format!(
+            r#"
+begin
+    push.1
+    push.1114112
+    emit.event("{READ_MESSAGE_TEST_EVENT}")
+    drop
+    drop
+end
+"#
+        );
+
+        let err =
+            capture_message_result(&source).expect_err("expected an uninitialized memory error");
+        assert!(matches!(err, ReadMemMessageError::MemoryNotInitialized));
+    }
+
+    #[test]
+    fn read_message_rejects_invalid_utf8() {
+        let source = format!(
+            r#"
+begin
+    # Store 0xFF as little-endian byte packed into felt at element address 278528
+    # (after memory reserved for the Rust stack).
+    push.255
+    push.278528
+    mem_store
+
+    # The event expects [address, string_length] on the stack, so push the byte length first and
+    # the byte address last (byte address 1114112 = 278528*4).
+    push.1
+    push.1114112
+    emit.event("{READ_MESSAGE_TEST_EVENT}")
+    drop
+    drop
+end
+"#
+        );
+
+        let err = capture_message_result(&source).expect_err("expected an invalid UTF-8 error");
+        assert!(matches!(err, ReadMemMessageError::InvalidUtf8));
+    }
+
+    /// A string length which does not fit in a `usize` is only reachable on 32-bit targets: on
+    /// 64-bit targets every canonical felt representation fits in a `usize`.
+    #[test]
+    #[cfg(target_pointer_width = "32")]
+    fn read_message_rejects_lengths_above_usize_max() {
+        let source = format!(
+            r#"
+begin
+    push.8589934592
+    push.0
+    emit.event("{READ_MESSAGE_TEST_EVENT}")
+    drop
+    drop
+end
+"#
+        );
+
+        let err = capture_message_result(&source).expect_err("expected an invalid length error");
+        assert!(matches!(err, ReadMemMessageError::InvalidLength));
     }
 }

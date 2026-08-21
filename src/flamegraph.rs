@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     fs::File,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
@@ -14,7 +14,7 @@ use miden_processor::ExecutionError;
 use crate::{
     config::{ColorChoice, DebuggerConfig},
     debug::CallFrame,
-    exec::{DebugExecutor, ExecutionConfig},
+    exec::{DebugExecutor, ExecutionConfig, Executor, ReplaySnapshot},
     felt::Felt,
     input::InputFile,
 };
@@ -62,6 +62,31 @@ impl FlamegraphProfile {
         }
 
         Ok(profile)
+    }
+
+    /// Replay a recorded execution and collect its cycle-weighted call stacks.
+    pub fn collect_replay(snapshot: ReplaySnapshot) -> Result<Self, ExecutionError> {
+        let ReplaySnapshot {
+            package,
+            stack_inputs,
+            advice_inputs,
+            options,
+            mast_forests,
+            event_log,
+        } = snapshot;
+        let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
+        let executor = Executor::from_config(ExecutionConfig {
+            inputs: stack_inputs,
+            advice_inputs,
+            options,
+        });
+        let mut debug_executor = executor.into_debug_with_replay(
+            package,
+            source_manager,
+            mast_forests,
+            VecDeque::from(event_log),
+        );
+        Self::collect(&mut debug_executor)
     }
 
     /// Record `cycles` against a call stack from the debugger engine.
@@ -128,10 +153,18 @@ impl FlamegraphProfile {
 }
 
 #[derive(clap::Args, Debug)]
+#[command(group(
+    clap::ArgGroup::new("execution")
+        .required(true)
+        .args(["input", "replay"])
+))]
 pub struct FlamegraphArgs {
     /// Specify the path to a Miden program file to execute.
     #[arg(value_name = "FILE")]
-    pub input: InputFile,
+    pub input: Option<InputFile>,
+    /// Replay a recorded transaction snapshot instead of executing a raw program.
+    #[arg(long, value_name = "FILE")]
+    pub replay: Option<PathBuf>,
     /// Write the generated flame graph SVG or folded stack text to this path.
     #[arg(short, long, default_value = "flamegraph.svg")]
     pub output: PathBuf,
@@ -194,7 +227,7 @@ pub struct FlamegraphArgs {
 impl FlamegraphArgs {
     fn into_debugger_config(self) -> DebuggerConfig {
         DebuggerConfig {
-            input: Some(self.input),
+            input: self.input,
             inputs: self.inputs,
             args: self.args,
             working_dir: self.working_dir,
@@ -221,6 +254,16 @@ impl FlamegraphArgs {
 
 pub fn run(args: FlamegraphArgs) -> Result<(), Report> {
     let output = args.output.clone();
+    let replay = args.replay.clone();
+    if let Some(replay) = replay {
+        let snapshot = ReplaySnapshot::read_from_file(&replay)
+            .map_err(|err| Report::msg(format!("failed to read {}: {err}", replay.display())))?;
+        let profile = FlamegraphProfile::collect_replay(snapshot)
+            .map_err(|err| Report::msg(format!("replay execution failed: {err}")))?;
+        report_and_write_profile(&profile, &output)?;
+        return Ok(());
+    }
+
     let mut config = args.into_debugger_config();
     ensure_working_dir(&mut config)?;
 
@@ -238,14 +281,18 @@ pub fn run(args: FlamegraphArgs) -> Result<(), Report> {
         }
     };
 
+    report_and_write_profile(&profile, &output)?;
+
+    Ok(())
+}
+
+fn report_and_write_profile(profile: &FlamegraphProfile, output: &Path) -> Result<(), Report> {
     eprintln!(
         "Executed {} cycles across {} unique stack paths",
         profile.total_cycles(),
         profile.unique_stack_paths()
     );
-
-    profile.write_to_path(&output)?;
-
+    profile.write_to_path(output)?;
     Ok(())
 }
 

@@ -86,6 +86,13 @@ The recorded events are fed back through the debugger's event-replay host, so yo
 through the identical execution — no network or wallet required. The snapshot carries no
 source files, so the debugger shows disassembly.
 
+To generate a cycle-weighted flamegraph from the same transaction without an interactive
+debugging session, enable the debugger's `flamegraph` feature and run:
+
+```bash
+miden-debug flamegraph --replay "$STORE/p2id.mdsnap" -o p2id.svg
+```
+
 ## Replaying a failed transaction
 
 A snapshot is written even when the debugged transaction **fails** mid-execution (for

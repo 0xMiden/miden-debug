@@ -18,7 +18,7 @@ use crate::{
     config::DebuggerConfig,
     debug::{
         Breakpoint, BreakpointType, OperationMatcher, ReadMemoryExpr, ResolvedLocation,
-        format_value, resolve_variable_value, resolve_variable_values,
+        TypedProcedure, format_value, resolve_variable_value, resolve_variable_values,
     },
     exec::{DebugExecutor, ExecutionConfig, Executor},
 };
@@ -83,6 +83,7 @@ pub struct DebugVariableValue {
 struct LocalState {
     executor: DebugExecutor,
     execution_failed: Option<miden_processor::ExecutionError>,
+    typed_procedure: Option<TypedProcedure>,
 }
 
 #[cfg(feature = "dap")]
@@ -299,6 +300,7 @@ impl State {
             LocalState {
                 executor,
                 execution_failed: None,
+                typed_procedure: None,
             },
         ))
     }
@@ -337,6 +339,7 @@ impl State {
             LocalState {
                 executor: debug_executor,
                 execution_failed: None,
+                typed_procedure: None,
             },
         ))
     }
@@ -915,6 +918,23 @@ impl State {
         }
     }
 
+    /// Decode the completed program's result using its component-model entrypoint signature.
+    pub fn typed_result(&self) -> Result<Option<String>, String> {
+        if !self.executor().stopped || self.execution_failed().is_some() {
+            return Ok(None);
+        }
+        let SessionState::Local(local) = &self.session else {
+            return Ok(None);
+        };
+        let Some(procedure) = local.typed_procedure.as_ref() else {
+            return Ok(None);
+        };
+
+        procedure
+            .decode_result(local.executor.stack_outputs.get_num_elements(16))
+            .map_err(|err| format!("failed to decode program result: {err}"))
+    }
+
     pub fn set_execution_failed(&mut self, error: miden_processor::ExecutionError) {
         match &mut self.session {
             SessionState::Local(local) => local.execution_failed = Some(error),
@@ -1409,9 +1429,10 @@ fn create_local_state(
     config: &DebuggerConfig,
     source_manager: Arc<dyn SourceManager>,
 ) -> Result<LocalState, Report> {
-    let executor = crate::program_loader::load_debug_executor(config, source_manager, "state")?;
+    let loaded = crate::program_loader::load_debug_executor(config, source_manager, "state")?;
     Ok(LocalState {
-        executor,
+        executor: loaded.executor,
         execution_failed: None,
+        typed_procedure: loaded.typed_procedure,
     })
 }

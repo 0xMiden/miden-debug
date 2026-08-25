@@ -15,7 +15,6 @@ use crate::{
     config::{ColorChoice, DebuggerConfig},
     debug::CallFrame,
     exec::{DebugExecutor, ExecutionConfig},
-    felt::Felt,
     input::InputFile,
 };
 
@@ -138,9 +137,9 @@ pub struct FlamegraphArgs {
     /// Specify the path to a file containing program inputs.
     #[arg(long, value_name = "FILE")]
     pub inputs: Option<ExecutionConfig>,
-    /// Arguments to place on the operand stack before calling the program entrypoint.
+    /// Arguments to encode for the selected program entrypoint.
     #[arg(last(true), value_name = "ARGV")]
-    pub args: Vec<Felt>,
+    pub args: Vec<String>,
     /// The working directory for execution.
     #[arg(long, value_name = "DIR", help_heading = "Execution")]
     pub working_dir: Option<PathBuf>,
@@ -226,7 +225,7 @@ pub fn run(args: FlamegraphArgs) -> Result<(), Report> {
 
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
     let mut executor =
-        crate::program_loader::load_debug_executor(&config, source_manager, "flamegraph")?;
+        crate::program_loader::load_debug_executor(&config, source_manager, "flamegraph")?.executor;
 
     let profile = match FlamegraphProfile::collect(&mut executor) {
         Ok(profile) => profile,

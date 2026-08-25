@@ -7,10 +7,11 @@ use miden_assembly_syntax::{
     Parse,
     ast::{
         DebugVarInfo, DebugVarLocation, Instruction, Module, Op,
-        types::{ArrayType, EnumType, StructType, Type, Variant},
+        types::{ArrayType, CallConv, FunctionType, StructType, Type},
     },
     debuginfo::{Span, Spanned},
 };
+use miden_mast_package::{Package, PackageExport};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (input_path, output_path) = parse_args()?;
@@ -19,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     add_abi_debug_vars(&mut module)?;
 
     let package = Assembler::new(source_manager).assemble_program("abi-types", module)?;
+    let package = with_typed_entrypoint(*package)?;
     package.write_to_file(&output_path)?;
 
     Ok(())
@@ -63,23 +65,35 @@ fn add_abi_debug_vars(module: &mut Module) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+fn with_typed_entrypoint(package: Package) -> Result<Package, Box<dyn std::error::Error>> {
+    let entrypoint = package.entrypoint().ok_or_else(|| io::Error::other("missing entrypoint"))?;
+    let mut export = package
+        .manifest
+        .get_export(entrypoint.as_ref())
+        .and_then(PackageExport::as_procedure)
+        .cloned()
+        .ok_or_else(|| io::Error::other("missing entrypoint export"))?;
+    export.signature = Some(FunctionType::new(CallConv::ComponentModel, [Type::U64], [Type::U64]));
+    let dependencies = package.manifest.dependencies().cloned().collect::<Vec<_>>();
+    let mut typed = Package::create(
+        package.name.clone(),
+        package.version.clone(),
+        package.kind,
+        package.mast_forest().clone(),
+        [PackageExport::Procedure(export)],
+        dependencies,
+    )?;
+    typed.description = package.description;
+    typed.sections = package.sections;
+    Ok(typed)
+}
+
 fn abi_debug_vars() -> Result<Vec<DebugVarInfo>, Box<dyn std::error::Error>> {
     let account_ty = Type::Struct(Arc::new(StructType::named(
         Arc::from("miden:base/core-types@1.0.0/account-id"),
         [(Arc::from("prefix"), Type::Felt), (Arc::from("suffix"), Type::Felt)],
     )));
     let array_ty = Type::Array(Arc::new(ArrayType::new(Type::U32, 3)));
-    let option_ty = Type::Enum(Arc::new(
-        EnumType::new(
-            Arc::from("OptionU32"),
-            Type::U32,
-            [
-                Variant::c_like(Arc::from("None"), Some(0)),
-                Variant::new(Arc::from("Some"), Type::U32, Some(1)),
-            ],
-        )
-        .map_err(|err| io::Error::other(err.to_string()))?,
-    ));
     let point_ty = Type::Struct(Arc::new(StructType::new([
         (Arc::from("x"), Type::Felt),
         (Arc::from("y"), Type::Felt),
@@ -89,9 +103,7 @@ fn abi_debug_vars() -> Result<Vec<DebugVarInfo>, Box<dyn std::error::Error>> {
         typed_memory_var("account", 130, account_ty),
         typed_memory_var("array", 110, array_ty),
         typed_memory_var("enabled", 150, Type::I1),
-        typed_memory_var("maybe", 120, option_ty),
         typed_memory_var("point", 100, point_ty),
-        typed_memory_var("wide", 140, Type::U256),
     ];
 
     Ok(variables)

@@ -6,26 +6,14 @@ begin
     push.6 mem_store.111
     push.7 mem_store.112
 
-    push.1 mem_store.120
-    push.42 mem_store.121
-
     push.0xa591009a3022e800 mem_store.130
     push.0x788f9ed177dcdb00 mem_store.131
-
-    push.1 mem_store.140
-    push.2 mem_store.141
-    push.3 mem_store.142
-    push.4 mem_store.143
-    push.5 mem_store.144
-    push.6 mem_store.145
-    push.7 mem_store.146
-    push.8 mem_store.147
 
     push.1 mem_store.150
 
     # The fixture compiler replaces these markers with typed debug variable declarations. The
     # assembler then encodes their types and locations into the package debug-info section.
-    nop nop nop nop nop nop
+    nop nop nop nop
 
     # Keep the declaration marker away from the final VM operation.
     push.1 drop

@@ -239,9 +239,14 @@ impl Page for Home {
                     if let Some(err) = state.execution_failed() {
                         actions.push(Some(Action::StatusLine(err.to_string())));
                     } else {
-                        actions.push(Some(Action::StatusLine(
-                            "program terminated successfully".to_string(),
-                        )));
+                        let status = match state.typed_result() {
+                            Ok(Some(result)) => {
+                                format!("program terminated successfully: {result}")
+                            }
+                            Ok(None) => "program terminated successfully".to_string(),
+                            Err(err) => format!("program terminated successfully; {err}"),
+                        };
+                        actions.push(Some(Action::StatusLine(status)));
                     }
                 }
 

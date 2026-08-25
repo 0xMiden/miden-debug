@@ -140,6 +140,11 @@ impl ScriptDebugger {
             .collect()
     }
 
+    /// Decode the completed program result using its package entrypoint signature.
+    pub fn result(&self) -> Result<Option<String>, String> {
+        self.engine.borrow().state().typed_result()
+    }
+
     /// Source path prefix mappings currently configured for this debugger.
     pub fn source_path_prefixes(&self) -> Vec<String> {
         self.engine.borrow().state().source_path_prefixes()

@@ -10,6 +10,11 @@ temporary `.masp` package before running `miden-debug`. Tests that need typed
 debug metadata use `compile-abi-fixture` to add deterministic ABI types and
 variable locations to the parsed AST; the assembler encodes them in the package.
 
+When a package entrypoint carries a component-model signature, trailing CLI arguments are encoded
+with that signature's canonical ABI and the completed result is decoded with the same metadata.
+This lets Rust values such as `u64` use their multi-felt representation while untyped MASM
+programs retain raw-felt argument handling.
+
 Python scripting tests run `miden-debug-python`, a second local copy built with
 the `python` feature, and pass `--no-user-python-init` so user configuration
 cannot affect their output.

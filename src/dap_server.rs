@@ -28,13 +28,14 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     );
 
     let source_manager = Arc::new(DefaultSourceManager::default());
-    let inputs = crate::program_loader::execution_inputs(&config)?;
     let mut registry = HybridPackageRegistry::new(
         config.sysroot.as_deref(),
         &config.search_path,
         &config.link_libraries,
     )?;
     let program = load_program(&config, source_manager.clone(), &mut registry)?;
+    let typed_procedure = crate::debug::TypedProcedure::for_package_entrypoint(&program);
+    let inputs = crate::program_loader::execution_inputs(&config, typed_procedure.as_ref())?;
     let mut host = StandaloneDapHost::new(source_manager);
 
     for package in registry.all() {

@@ -176,6 +176,15 @@ impl ReplEngine {
                 let _ = writeln!(out, "Program terminated with error: {}", err);
             } else {
                 let _ = writeln!(out, "Program terminated successfully");
+                match self.state.typed_result() {
+                    Ok(Some(result)) => {
+                        let _ = writeln!(out, "Result: {result}");
+                    }
+                    Ok(None) => {}
+                    Err(err) => {
+                        let _ = writeln!(out, "Result unavailable: {err}");
+                    }
+                }
             }
         } else {
             self.print_location(out);

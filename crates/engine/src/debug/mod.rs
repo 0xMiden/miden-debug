@@ -6,7 +6,7 @@ mod stacktrace;
 mod variables;
 
 pub use self::{
-    abi_types::format_value,
+    abi_types::{TypedProcedure, format_value},
     breakpoint::{Breakpoint, BreakpointType, OperationMatcher},
     memory::{FormatType, MemoryMode, ReadMemoryExpr},
     native_ptr::NativePtr,

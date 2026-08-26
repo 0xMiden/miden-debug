@@ -9,31 +9,21 @@ use miden_debug_engine::{LinkLibrary, profiling::ProfilerCliArgs};
 use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile};
 
 /// Run a compiled Miden package with the Miden VM
-#[derive(Default, Debug)]
-#[cfg_attr(
-    any(feature = "tui", feature = "repl", feature = "flamegraph"),
-    derive(clap::Args)
-)]
+#[derive(Default, Debug, clap::Args)]
 pub struct DebuggerConfig {
     /// Specify the path to a Miden package artifact to execute.
     ///
     /// Miden Assembly packages are emitted by the compiler with a `.masp` extension.
     ///
     /// You may use `-` as a file name to read a file from stdin.
-    #[cfg_attr(
-        any(feature = "tui", feature = "repl", feature = "flamegraph"),
-        arg(value_name = "FILE")
-    )]
+    #[arg(value_name = "FILE")]
     pub input: Option<InputFile>,
     /// Specify the path to a file containing program inputs.
     ///
     /// Program inputs are stack and advice provider values which the program can
     /// access during execution. The inputs file is a TOML file which describes
     /// what the inputs are, or where to source them from.
-    #[cfg_attr(
-        any(feature = "tui", feature = "repl", feature = "flamegraph"),
-        arg(long, value_name = "FILE")
-    )]
+    #[arg(long, value_name = "FILE")]
     pub inputs: Option<ExecutionConfig>,
     /// Arguments to place on the operand stack before calling the program entrypoint.
     ///
@@ -44,67 +34,49 @@ pub struct DebuggerConfig {
     /// These arguments must be valid field element values expressed in decimal format.
     ///
     /// NOTE: These arguments will override any stack values provided via --inputs
-    #[cfg_attr(
-        any(feature = "tui", feature = "repl", feature = "flamegraph"),
-        arg(last(true), value_name = "ARGV")
-    )]
+    #[arg(last(true), value_name = "ARGV")]
     pub args: Vec<Felt>,
     /// The working directory for the debugger
     ///
     /// By default this will be the working directory the debugger is executed from
-    #[cfg_attr(
-        any(feature = "tui", feature = "flamegraph"),
-        arg(long, value_name = "DIR", help_heading = "Execution")
-    )]
+    #[arg(long, value_name = "DIR", help_heading = "Execution")]
     pub working_dir: Option<PathBuf>,
     /// The path to the root directory of the current Miden toolchain
     ///
     /// By default this is assumed to be `$(midenup show home)/toolchains/$(midenup show active-toolchain)
-    #[cfg_attr(
-        any(feature = "tui", feature = "flamegraph"),
-        arg(
-            long,
-            value_name = "DIR",
-            env = "MIDEN_SYSROOT",
-            help_heading = "Linker"
-        )
+    #[arg(
+        long,
+        value_name = "DIR",
+        env = "MIDEN_SYSROOT",
+        help_heading = "Linker"
     )]
     pub sysroot: Option<PathBuf>,
     /// Whether, and how, to color terminal output
-    #[cfg_attr(any(feature = "tui", feature = "repl", feature = "flamegraph"), arg(
+    #[arg(
         long,
         value_enum,
         default_value_t = ColorChoice::Auto,
         default_missing_value = "auto",
         num_args(0..=1),
         help_heading = "Output"
-    ))]
+    )]
     pub color: ColorChoice,
     /// Specify the function to call as the entrypoint for the program
     /// in the format `<module_name>::<function>`
-    #[cfg_attr(
-        any(feature = "tui", feature = "repl", feature = "flamegraph"),
-        arg(long, help_heading = "Execution")
-    )]
+    #[arg(long, help_heading = "Execution")]
     pub entrypoint: Option<String>,
     /// Connect to a remote DAP debug server instead of running a local program.
     ///
     /// Specify the address of the DAP server (e.g. "127.0.0.1:4711").
     /// When this flag is set, the debugger connects to an existing remote session.
     #[cfg(feature = "dap")]
-    #[cfg_attr(
-        any(feature = "tui", feature = "flamegraph"),
-        arg(long, value_name = "ADDR", help_heading = "Execution")
-    )]
+    #[arg(long, value_name = "ADDR", help_heading = "Execution")]
     pub dap_connect: Option<String>,
     /// Start a DAP debug server for the local program and wait for a client to connect.
     ///
     /// Specify the address to listen on (e.g. "127.0.0.1:4711").
     #[cfg(feature = "dap")]
-    #[cfg_attr(
-        feature = "tui",
-        arg(long, value_name = "ADDR", help_heading = "Execution")
-    )]
+    #[arg(long, value_name = "ADDR", help_heading = "Execution")]
     pub start_debug_adapter: Option<String>,
     /// Source path prefixes used by the compiler's `-Zremap-path-prefix` option.
     ///
@@ -112,14 +84,11 @@ pub struct DebuggerConfig {
     /// absolute editor paths. These prefixes provide an explicit mapping between
     /// the two forms.
     #[cfg(feature = "dap")]
-    #[cfg_attr(
-        feature = "tui",
-        arg(
-            long = "source-path-prefix",
-            alias = "trim-path-prefix",
-            value_name = "PATH",
-            help_heading = "Debugging"
-        )
+    #[arg(
+        long = "source-path-prefix",
+        alias = "trim-path-prefix",
+        value_name = "PATH",
+        help_heading = "Debugging"
     )]
     pub source_path_prefixes: Vec<PathBuf>,
     /// Replay a recorded execution snapshot in the TUI debugger.
@@ -128,20 +97,14 @@ pub struct DebuggerConfig {
     /// `miden-client exec --start-debug-adapter <ADDR> --record <FILE>`). The recorded program,
     /// inputs, resolved code, and event log are replayed so the same execution can be stepped
     /// through offline, without the original host.
-    #[cfg_attr(
-        feature = "tui",
-        arg(long, value_name = "FILE", help_heading = "Execution")
-    )]
+    #[arg(long, value_name = "FILE", help_heading = "Execution")]
     pub replay: Option<PathBuf>,
     /// Specify one or more search paths for link libraries requested via `-l`
-    #[cfg_attr(
-        any(feature = "tui", feature = "flamegraph"),
-        arg(
-            long = "search-path",
-            short = 'L',
-            value_name = "PATH",
-            help_heading = "Linker"
-        )
+    #[arg(
+        long = "search-path",
+        short = 'L',
+        value_name = "PATH",
+        help_heading = "Linker"
     )]
     pub search_path: Vec<PathBuf>,
     /// Link compiled projects to the specified library NAME.
@@ -154,23 +117,17 @@ pub struct DebuggerConfig {
     /// while the latter will be located in the search path based on its KIND.
     ///
     /// See below for valid KINDs:
-    #[cfg_attr(
-        any(feature = "tui", feature = "flamegraph"),
-        arg(
-            long = "link-library",
-            short = 'l',
-            value_name = "[KIND=]NAME",
-            value_delimiter = ',',
-            next_line_help(true),
-            help_heading = "Linker"
-        )
+    #[arg(
+        long = "link-library",
+        short = 'l',
+        value_name = "[KIND=]NAME",
+        value_delimiter = ',',
+        next_line_help(true),
+        help_heading = "Linker"
     )]
     pub link_libraries: Vec<LinkLibrary>,
     /// Use the REPL (text-mode) debugger instead of the TUI
-    #[cfg_attr(
-        any(feature = "tui", feature = "repl", feature = "flamegraph"),
-        arg(long, help_heading = "Output")
-    )]
+    #[arg(long, help_heading = "Output")]
     pub repl: bool,
     /// Run a script of debugger commands non-interactively, then exit.
     ///
@@ -179,26 +136,20 @@ pub struct DebuggerConfig {
     /// are ignored, so scripts may be commented. This is analogous to
     /// `gdb -x <file> -batch` or `lldb -s <file>`, and is primarily used to
     /// drive the debugger from lit/FileCheck tests.
-    #[cfg_attr(
-        any(feature = "tui", feature = "repl", feature = "flamegraph"),
-        arg(
-            long = "commands",
-            visible_alias = "source",
-            short = 'x',
-            value_name = "FILE",
-            help_heading = "Execution"
-        )
+    #[arg(
+        long = "commands",
+        visible_alias = "source",
+        short = 'x',
+        value_name = "FILE",
+        help_heading = "Execution"
     )]
     pub commands: Option<PathBuf>,
     /// Do not auto-load the project-local `.miden-debug.py` file.
     #[cfg(feature = "python")]
-    #[cfg_attr(feature = "python", arg(long, help_heading = "Scripting"))]
+    #[arg(long, help_heading = "Scripting")]
     pub no_user_python_init: bool,
     /// Profiler configuration.
-    #[cfg_attr(
-        any(feature = "tui", feature = "repl", feature = "flamegraph"),
-        command(flatten)
-    )]
+    #[command(flatten)]
     pub profiler_cli_args: ProfilerCliArgs,
 }
 
@@ -210,11 +161,7 @@ pub struct DebuggerConfig {
 /// The `FromStr` implementation for this type converts a lowercase kebab-case
 /// string of the variant name to the corresponding variant. Any other string
 /// results in an error.
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    any(feature = "tui", feature = "repl", feature = "flamegraph"),
-    derive(clap::ValueEnum)
-)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
 pub enum ColorChoice {
     /// Try very hard to emit colors. This includes emitting ANSI colors
     /// on Windows if the console API is unavailable.

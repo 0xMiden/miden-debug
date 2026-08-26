@@ -1,4 +1,4 @@
-#[cfg(feature = "tui")]
+#[cfg(feature = "std")]
 use std::{ffi::OsStr, path::Path};
 
 use miden_processor::{
@@ -98,7 +98,7 @@ struct AdviceMapEntry {
     values: Vec<Felt>,
 }
 
-#[cfg(feature = "tui")]
+#[cfg(feature = "std")]
 impl clap::builder::ValueParserFactory for ExecutionConfig {
     type Parser = ExecutionConfigParser;
 
@@ -107,12 +107,12 @@ impl clap::builder::ValueParserFactory for ExecutionConfig {
     }
 }
 
-#[cfg(feature = "tui")]
+#[cfg(feature = "std")]
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct ExecutionConfigParser;
 
-#[cfg(feature = "tui")]
+#[cfg(feature = "std")]
 impl clap::builder::TypedValueParser for ExecutionConfigParser {
     type Value = ExecutionConfig;
 

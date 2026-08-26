@@ -88,6 +88,7 @@ name = "miden-debug"
 path = "src/main.rs"
 test = false
 bench = false
+required-features = ["std"]
 
 [[bin]]
 name = "miden-debug-python"
@@ -130,7 +131,7 @@ required-features = ["flamegraph"]
 
 [features]
 default = ["tui", "dap", "repl"]
-flamegraph = ["std", "dep:env_logger", "dep:inferno", "miden-debug-engine/tui"]
+flamegraph = ["std", "dep:env_logger", "dep:inferno"]
 tui = ["std", "flamegraph", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect", "miden-debug-engine/tui"]
 repl = ["std", "dep:env_logger", "dep:rustyline", "miden-debug-engine/tui"]
 dap = ["miden-debug-engine/dap"]

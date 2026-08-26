@@ -136,7 +136,7 @@ pub(crate) fn load_package_from_path(path: &Path) -> Result<Arc<Package>, Report
         .map(Arc::new)
 }
 
-#[cfg(feature = "tui")]
+#[cfg(feature = "std")]
 impl clap::builder::ValueParserFactory for LinkLibrary {
     type Parser = LinkLibraryParser;
 
@@ -145,12 +145,12 @@ impl clap::builder::ValueParserFactory for LinkLibrary {
     }
 }
 
-#[cfg(feature = "tui")]
+#[cfg(feature = "std")]
 #[doc(hidden)]
 #[derive(Clone)]
 pub struct LinkLibraryParser;
 
-#[cfg(feature = "tui")]
+#[cfg(feature = "std")]
 impl clap::builder::TypedValueParser for LinkLibraryParser {
     type Value = LinkLibrary;
 

@@ -19,12 +19,12 @@ doctest = false
 default = ["std"]
 tui = []
 dap = ["dep:miden-debug-dap", "dep:socket2"]
-std = ["dep:glob", "clap/std", "clap/env", "miden-assembly-syntax/std"]
+std = ["clap/std", "clap/env", "miden-assembly-syntax/std"]
 proptest = ["dep:proptest"]
 
 [dependencies]
 clap.workspace = true
-glob = { version = "0.3.1", optional = true }
+glob = "0.3.1"
 inventory.workspace = true
 log.workspace = true
 miden-assembly.workspace = true

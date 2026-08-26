@@ -5,23 +5,16 @@ use miden_assembly_syntax::diagnostics::Report;
 use crate::profiling::{instrument::Instrument, instrument_from_name};
 
 /// Profiler options parsed from the command line.
-#[derive(Default, Clone, Debug)]
-#[cfg_attr(feature = "tui", derive(clap::Args))]
+#[derive(Default, Clone, Debug, clap::Args)]
 pub struct ProfilerCliArgs {
     /// Enables profiling and sets the output dir for reports. Profiling
     /// instruments need to be enabled separately.
-    #[cfg_attr(
-        feature = "tui",
-        arg(long = "profiling-reports-dir", value_name = "DIRECTORY")
-    )]
+    #[arg(long = "profiling-reports-dir", value_name = "DIRECTORY")]
     pub reports_dir: Option<PathBuf>,
-    #[cfg_attr(
-        feature = "tui",
-        arg(
-            long = "profiling-instruments",
-            value_name = "VALUE",
-            value_delimiter = ','
-        )
+    #[arg(
+        long = "profiling-instruments",
+        value_name = "VALUE",
+        value_delimiter = ','
     )]
     pub instruments: Vec<String>,
 }

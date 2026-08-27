@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.11.0...miden-debug-engine-v0.12.0) - 2026-08-27
+
+### Added
+
+- *(profiling)* add instrument `OpHistogramProc`
+
+### Other
+
+- don't require tui feature unless needed
+- [**breaking**] pass `proc` into `on_operation_execution_cycle`
+- [**breaking**] rename Instrument `op-histogram`->`op-histogram-global`
+- make OpHistogram re-usable across Instruments
+
 ## [0.11.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.10.1...miden-debug-engine-v0.11.0) - 2026-08-07
 
 ### Other

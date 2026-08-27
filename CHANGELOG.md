@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.10.0...miden-debug-v0.10.1) - 2026-08-27
+
+### Other
+
+- don't require tui feature unless needed
+- Merge pull request #102 from 0xMiden/feat/python-scripting-tests
+- simplify binary target tasks
+- *(repl)* add Python scripting lit coverage
+
 ## [0.10.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.9.2...miden-debug-v0.10.0) - 2026-08-07
 
 ### Other

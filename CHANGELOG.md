@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.3](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.10.2...miden-debug-v0.10.3) - 2026-08-27
+
+### Other
+
+- enable env_logger under std feature
+
 ## [0.10.2](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.10.1...miden-debug-v0.10.2) - 2026-08-27
 
 ### Other

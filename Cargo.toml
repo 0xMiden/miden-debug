@@ -3,7 +3,7 @@ members = [".", "crates/dap", "crates/engine"]
 resolver = "2"
 
 [workspace.package]
-version = "0.10.2"
+version = "0.10.3"
 rust-version = "1.96"
 authors = ["Miden contributors"]
 repository = "https://github.com/0xMiden/miden-debug"

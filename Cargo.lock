@@ -1758,7 +1758,7 @@ dependencies = [
 
 [[package]]
 name = "miden-debug"
-version = "0.10.2"
+version = "0.10.3"
 dependencies = [
  "clap",
  "compact_str",

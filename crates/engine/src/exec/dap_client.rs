@@ -311,6 +311,14 @@ impl DapClient {
         if content_length == 0 {
             return Err("missing or zero Content-Length header".into());
         }
+        // The length comes from whatever this client is connected to, and feeds the allocation
+        // below directly, so an unbounded value would end the process rather than the read.
+        if content_length > dap::server::MAX_CONTENT_LENGTH {
+            return Err(format!(
+                "Content-Length {content_length} exceeds the maximum of {}",
+                dap::server::MAX_CONTENT_LENGTH
+            ));
+        }
 
         // Read content body
         let mut buf = vec![0u8; content_length];

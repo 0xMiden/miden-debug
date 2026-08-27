@@ -46,6 +46,13 @@ pub struct ServerOutput<W: Write> {
     sequence_number: i64,
 }
 
+/// The largest `Content-Length` this server will act on.
+///
+/// The header is attacker-controlled and feeds two allocations directly, so an unbounded value
+/// ends the process rather than the request. DAP payloads carry source text and variable dumps,
+/// not bulk data, so this ceiling is far above any legitimate message.
+pub const MAX_CONTENT_LENGTH: usize = 16 * 1024 * 1024;
+
 impl<R: Read, W: Write> Server<R, W> {
     /// Construct a new Server using the given input and output streams.
     pub fn new(input: BufReader<R>, output: BufWriter<W>) -> Self {
@@ -82,7 +89,16 @@ impl<R: Read, W: Write> Server<R, W> {
                                 match parts[0] {
                                     "Content-Length" => {
                                         content_length = match parts[1].trim().parse() {
-                                            Ok(val) => val,
+                                            Ok(val) if val <= MAX_CONTENT_LENGTH => val,
+                                            Ok(val) => {
+                                                return Err(ServerError::ProtocolError {
+                                                    reason: format!(
+                                                        "content length {val} exceeds the maximum \
+                                                         of {MAX_CONTENT_LENGTH}"
+                                                    ),
+                                                    line: buffer,
+                                                });
+                                            }
                                             Err(_) => {
                                                 return Err(ServerError::HeaderParseError {
                                                     line: buffer,

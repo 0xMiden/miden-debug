@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.2](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.10.1...miden-debug-v0.10.2) - 2026-08-27
+
+### Other
+
+- ensure nightly toolchain is installed
+
 ## [0.10.1](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.10.0...miden-debug-v0.10.1) - 2026-08-27
 
 ### Other

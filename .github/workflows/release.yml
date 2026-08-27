@@ -65,6 +65,7 @@ jobs:
       - *install-rust
       - name: Add target
         run: |
+          rustup install nightly
           rustup target add ${{ matrix.target }}
       - name: Install cargo-make
         run: |

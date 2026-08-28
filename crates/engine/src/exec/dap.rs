@@ -34,7 +34,7 @@ use super::{
 use crate::{
     debug::{
         DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, format_value,
-        resolve_variable_values, snapshot_transient_debug_values,
+        resolve_typed_variable_values, resolve_variable_values,
     },
     exec::state::CurrentCycleInfo,
 };
@@ -804,9 +804,10 @@ fn record_debug_vars(
     debug_state: &mut DapDebugVarState,
     cycle: usize,
     debug_var_infos: Vec<DebugVarInfo>,
+    stack: &[miden_processor::Felt],
 ) {
     let clk = RowIndex::from(cycle as u32);
-    debug_state.debug_vars.record_events(clk, debug_var_infos);
+    debug_state.debug_vars.record_events_with_stack(clk, debug_var_infos, stack);
     debug_state.debug_vars.update_to_cycle(clk);
 }
 
@@ -861,12 +862,13 @@ fn resolve_debug_var_value(
     processor: &mut FastProcessor,
     location: &DebugVarLocation,
 ) -> Option<miden_processor::Felt> {
-    resolve_debug_var_values(processor, location, 1)?.pop()
+    resolve_debug_var_values(processor, location, None, 1)?.pop()
 }
 
 fn resolve_debug_var_values(
     processor: &mut FastProcessor,
     location: &DebugVarLocation,
+    ty: Option<&miden_assembly_syntax::ast::types::Type>,
     count: usize,
 ) -> Option<Vec<miden_processor::Felt>> {
     let state = processor.state();
@@ -890,15 +892,21 @@ fn resolve_debug_var_values(
         read_mem(addr)
     };
 
-    resolve_variable_values(location, count, &stack, read_mem, resolve_local)
+    match ty {
+        Some(ty) => {
+            resolve_typed_variable_values(location, ty, count, &stack, read_mem, resolve_local)
+        }
+        None => resolve_variable_values(location, count, &stack, read_mem, resolve_local),
+    }
 }
 
 fn debug_var_to_dap_variable(
     processor: &mut FastProcessor,
     var: &DebugVarSnapshot,
+    captured_values: Option<&[miden_processor::Felt]>,
 ) -> types::Variable {
     let name = var.info.name().to_string();
-    let (value, type_field) = format_debug_var_value(processor, var);
+    let (value, type_field) = format_debug_var_value(processor, var, captured_values);
 
     types::Variable {
         name,
@@ -912,23 +920,32 @@ fn debug_var_to_dap_variable(
 fn format_debug_var_value(
     processor: &mut FastProcessor,
     var: &DebugVarSnapshot,
+    captured_values: Option<&[miden_processor::Felt]>,
 ) -> (String, Option<String>) {
     let location = var.info.value_location();
 
     if let Some(ty) = var.info.ty() {
         let type_field = Some(ty.to_string());
-        if let Some(value) =
-            format_value(ty, |count| resolve_debug_var_values(processor, location, count))
-        {
+        if let Some(value) = format_value(ty, |count| {
+            captured_values
+                .filter(|values| values.len() == count)
+                .map(<[miden_processor::Felt]>::to_vec)
+                .or_else(|| resolve_debug_var_values(processor, location, Some(ty), count))
+        }) {
             return (value, type_field);
         }
-        if let Some(felt) = resolve_debug_var_value(processor, location) {
+        if let Some(felt) = captured_values
+            .and_then(|values| values.first().copied())
+            .or_else(|| resolve_debug_var_value(processor, location))
+        {
             return (felt.as_canonical_u64().to_string(), type_field);
         }
         return (location.to_string(), type_field);
     }
 
-    let value = resolve_debug_var_value(processor, location)
+    let value = captured_values
+        .and_then(|values| values.first().copied())
+        .or_else(|| resolve_debug_var_value(processor, location))
         .map(|felt| felt.as_canonical_u64().to_string())
         .unwrap_or_else(|| location.to_string());
     (value, Some("Felt".into()))
@@ -948,7 +965,10 @@ fn debug_variables<H: Host>(
         .filter(|var| {
             is_visible_source_var(var, current_asmop, host, source_path_prefixes, show_all)
         })
-        .map(|var| debug_var_to_dap_variable(processor, var))
+        .map(|var| {
+            let captured_values = debug_state.debug_vars.captured_values(var.info.name());
+            debug_var_to_dap_variable(processor, var, captured_values)
+        })
         .collect()
 }
 
@@ -996,7 +1016,11 @@ fn evaluate_debug_variable<H: Host>(
     if !is_visible_source_var(var, current_asmop, host, source_path_prefixes, false) {
         return None;
     }
-    Some(debug_var_to_dap_variable(processor, var))
+    Some(debug_var_to_dap_variable(
+        processor,
+        var,
+        debug_state.debug_vars.captured_values(expression),
+    ))
 }
 
 /// Update the top frame on the host's frame stack with the current asmop's name and location.
@@ -2170,7 +2194,7 @@ fn advance_one<H: Host>(
     } = extract_current_op(&ctx);
     let debug_info = ctx.debug_info();
     let executed_source_node = source_node_id.zip(debug_info.as_deref()).map(|(id, di)| &di[id]);
-    let (executed_asmop, mut debug_var_infos) = match executed_source_node.zip(op_idx) {
+    let (executed_asmop, debug_var_infos) = match executed_source_node.zip(op_idx) {
         Some((source_node, op_idx)) => {
             let op_idx = op_idx as u32;
             let debug_info = debug_info.as_deref().unwrap();
@@ -2184,7 +2208,6 @@ fn advance_one<H: Host>(
         None => (None, vec![]),
     };
     let pre_step_stack = processor.state().get_stack_state();
-    snapshot_transient_debug_values(&mut debug_var_infos, &pre_step_stack);
     let result = if let Some(debug_info) = debug_info.as_ref() {
         poll_immediately(processor.step_with_package_debug_info(host, ctx, debug_info))
     } else {
@@ -2193,7 +2216,7 @@ fn advance_one<H: Host>(
     match result {
         Ok(Some(new_ctx)) => {
             *cycle += 1;
-            record_debug_vars(debug_state, *cycle, debug_var_infos);
+            record_debug_vars(debug_state, *cycle, debug_var_infos, &pre_step_stack);
             *current_asmop = executed_asmop;
             Ok(Some(new_ctx))
         }

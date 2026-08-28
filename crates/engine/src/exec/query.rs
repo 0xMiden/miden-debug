@@ -29,14 +29,7 @@ pub trait DebugQuery {
         ty: &miden_assembly_syntax::ast::types::Type,
     ) -> Result<Vec<u8>, MemoryReadError> {
         let size = ty.size_in_bytes();
-
-        if addr.is_element_aligned() {
-            read_memory_bytes(addr, size, |addr| {
-                Ok(self.read_memory_element(addr).unwrap_or_default())
-            })
-        } else {
-            Err(MemoryReadError::UnalignedRead)
-        }
+        read_memory_bytes(addr, size, |addr| Ok(self.read_memory_element(addr).unwrap_or_default()))
     }
 
     /// Read a value of the given type, given an address in Rust's address space

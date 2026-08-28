@@ -6,7 +6,8 @@ use miden_assembly::{Assembler, DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::{
     Parse,
     ast::{
-        DebugVarInfo, DebugVarLocation, Instruction, Module, Op,
+        DebugLocationExpression, DebugLocationExpressionOp, DebugVarInfo, DebugVarLocation,
+        Instruction, Module, Op,
         types::{ArrayType, CallConv, FunctionType, StructType, Type},
     },
     debuginfo::{Span, Spanned},
@@ -89,21 +90,34 @@ fn with_typed_entrypoint(package: Package) -> Result<Package, Box<dyn std::error
 }
 
 fn abi_debug_vars() -> Result<Vec<DebugVarInfo>, Box<dyn std::error::Error>> {
-    let account_ty = Type::Struct(Arc::new(StructType::named(
+    let account_ty = Type::from(StructType::named(
         Arc::from("miden:base/core-types@1.0.0/account-id"),
         [(Arc::from("prefix"), Type::Felt), (Arc::from("suffix"), Type::Felt)],
-    )));
+    ));
     let array_ty = Type::Array(Arc::new(ArrayType::new(Type::U32, 3)));
-    let point_ty = Type::Struct(Arc::new(StructType::new([
-        (Arc::from("x"), Type::Felt),
-        (Arc::from("y"), Type::Felt),
-    ])));
+    let point_ty =
+        Type::from(StructType::new([(Arc::from("x"), Type::Felt), (Arc::from("y"), Type::Felt)]));
+    let record_ty = Type::from(StructType::new([
+        (Arc::from("tiny"), Type::U8),
+        (Arc::from("half"), Type::U16),
+    ]));
 
     let variables = vec![
         typed_memory_var("account", 130, account_ty),
         typed_memory_var("array", 110, array_ty),
         typed_memory_var("enabled", 150, Type::I1),
+        typed_expression_var(
+            "record",
+            vec![DebugLocationExpressionOp::ConstU64(641), DebugLocationExpressionOp::DerefBytes],
+            record_ty,
+        )?,
         typed_memory_var("point", 100, point_ty),
+        typed_stack_var("snapshot", 0, Type::U64),
+        typed_expression_var(
+            "wide",
+            vec![DebugLocationExpressionOp::ConstU64(643), DebugLocationExpressionOp::DerefBytes],
+            Type::U64,
+        )?,
     ];
 
     Ok(variables)
@@ -113,4 +127,21 @@ fn typed_memory_var(name: &str, address: u32, ty: Type) -> DebugVarInfo {
     let mut variable = DebugVarInfo::new(name, DebugVarLocation::Memory(address));
     variable.set_ty(ty, None);
     variable
+}
+
+fn typed_stack_var(name: &str, position: u8, ty: Type) -> DebugVarInfo {
+    let mut variable = DebugVarInfo::new(name, DebugVarLocation::Stack(position));
+    variable.set_ty(ty, None);
+    variable
+}
+
+fn typed_expression_var(
+    name: &str,
+    operations: Vec<DebugLocationExpressionOp>,
+    ty: Type,
+) -> Result<DebugVarInfo, Box<dyn std::error::Error>> {
+    let expression = DebugLocationExpression::new(operations)?;
+    let mut variable = DebugVarInfo::new(name, DebugVarLocation::Expression(expression));
+    variable.set_ty(ty, None);
+    Ok(variable)
 }

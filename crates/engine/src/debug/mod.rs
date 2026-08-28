@@ -16,7 +16,7 @@ pub use self::{
         resolve_source_file_for_location, resolve_source_path,
     },
     variables::{
-        DebugVarSnapshot, DebugVarTracker, resolve_variable_value, resolve_variable_values,
-        snapshot_transient_debug_values,
+        DebugVarSnapshot, DebugVarTracker, resolve_typed_variable_values, resolve_variable_value,
+        resolve_variable_values, snapshot_transient_debug_values,
     },
 };

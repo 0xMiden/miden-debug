@@ -14,6 +14,8 @@ When a package entrypoint carries a component-model signature, trailing CLI argu
 with that signature's canonical ABI and the completed result is decoded with the same metadata.
 This lets Rust values such as `u64` use their multi-felt representation while untyped MASM
 programs retain raw-felt argument handling.
+Typed frame-base and expression locations are read from packed byte-addressed memory before being
+lifted into that canonical representation, including values that cross Miden element boundaries.
 
 Python scripting tests run `miden-debug-python`, a second local copy built with
 the `python` feature, and pass `--no-user-python-init` so user configuration

@@ -17,10 +17,7 @@ use miden_processor::{
 use super::{DebuggerHost, ExecutionTrace};
 use crate::{
     Breakpoint, BreakpointType, OperationMatcher,
-    debug::{
-        CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo,
-        snapshot_transient_debug_values,
-    },
+    debug::{CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo},
     profiling::Profiler,
 };
 
@@ -286,7 +283,7 @@ impl DebugExecutor {
         });
 
         // Look up debug vars from MAST forest for the current operation
-        let mut debug_var_infos: Vec<_> = source_node
+        let debug_var_infos: Vec<_> = source_node
             .zip(op_idx)
             .zip(debug_info.as_deref())
             .map(|((source_node, op_idx), di)| {
@@ -294,7 +291,6 @@ impl DebugExecutor {
             })
             .unwrap_or_default();
         let pre_step_stack = self.processor.state().get_stack_state();
-        snapshot_transient_debug_values(&mut debug_var_infos, &pre_step_stack);
 
         // Execute one step
         let step_result = if let Some(debug_info) = debug_info.as_deref() {
@@ -352,8 +348,11 @@ impl DebugExecutor {
 
                 // Record and process debug variable events
                 let debug_var_count = debug_var_infos.len();
-                self.debug_vars
-                    .record_events(RowIndex::from(self.cycle as u32), debug_var_infos);
+                self.debug_vars.record_events_with_stack(
+                    RowIndex::from(self.cycle as u32),
+                    debug_var_infos,
+                    &pre_step_stack,
+                );
                 self.debug_vars.update_to_cycle(RowIndex::from(self.cycle as u32));
                 self.last_debug_var_count = debug_var_count;
 

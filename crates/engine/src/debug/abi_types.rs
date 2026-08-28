@@ -65,13 +65,21 @@ pub fn format_value(
     ty: &Type,
     resolve_felts: impl FnOnce(usize) -> Option<Vec<Felt>>,
 ) -> Option<String> {
-    let decoder = TypedProcedure::new(
+    let decoder = value_decoder(ty)?;
+    let felts = resolve_felts(decoder.output_felt_count().ok()??)?;
+    decoder.decode_result(&felts).ok().flatten()
+}
+
+pub(crate) fn value_felt_count(ty: &Type) -> Option<usize> {
+    value_decoder(ty)?.output_felt_count().ok()?
+}
+
+fn value_decoder(ty: &Type) -> Option<TypedProcedure> {
+    TypedProcedure::new(
         "debug-variable",
         FunctionType::new(CallConv::ComponentModel, [], [ty.clone()]),
     )
-    .ok()?;
-    let felts = resolve_felts(decoder.output_felt_count().ok()??)?;
-    decoder.decode_result(&felts).ok().flatten()
+    .ok()
 }
 
 struct AccountIdCodec;
@@ -154,10 +162,10 @@ mod tests {
 
     #[test]
     fn formats_account_id_struct() {
-        let account_id = Type::Struct(Arc::new(StructType::named(
+        let account_id = Type::from(StructType::named(
             Arc::from("miden:base/core-types@1.0.0/account-id"),
             [(Arc::from("prefix"), Type::Felt), (Arc::from("suffix"), Type::Felt)],
-        )));
+        ));
         let felts = [felt(0xa591_009a_3022_e800), felt(0x788f_9ed1_77dc_db00)];
 
         assert_eq!(
@@ -193,10 +201,10 @@ mod tests {
 
     #[test]
     fn formats_anonymous_struct_shape() {
-        let point = Type::Struct(Arc::new(StructType::new([
+        let point = Type::from(StructType::new([
             (Arc::from("x"), Type::Felt),
             (Arc::from("y"), Type::Felt),
-        ])));
+        ]));
 
         assert_eq!(render(&point, &[felt(3), felt(4)]).as_deref(), Some("{ x: 3, y: 4 }"));
     }

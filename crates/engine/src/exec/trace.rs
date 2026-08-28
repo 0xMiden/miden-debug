@@ -122,14 +122,9 @@ impl ExecutionTrace {
         clk: RowIndex,
     ) -> Result<Vec<u8>, MemoryReadError> {
         let size = ty.size_in_bytes();
-
-        if addr.is_element_aligned() {
-            super::query::read_memory_bytes(addr, size, |addr| {
-                Ok(self.read_memory_element_in_context(addr, ctx, clk).unwrap_or_default())
-            })
-        } else {
-            Err(MemoryReadError::UnalignedRead)
-        }
+        super::query::read_memory_bytes(addr, size, |addr| {
+            Ok(self.read_memory_element_in_context(addr, ctx, clk).unwrap_or_default())
+        })
     }
 
     /// Read a value of the given type, given an address in Rust's address space, under `ctx`, at
@@ -233,9 +228,18 @@ end
                 RowIndex::from(0_u32),
             )
             .unwrap();
+        let unaligned_u32_bytes = trace
+            .read_bytes_for_type_in_context(
+                NativePtr::new(12, 1),
+                &Type::U32,
+                ctx,
+                RowIndex::from(0_u32),
+            )
+            .unwrap();
 
         assert_eq!(u16_bytes, vec![0x34, 0x12]);
         assert_eq!(u64_bytes, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(unaligned_u32_bytes, vec![2, 3, 4, 5]);
     }
 
     #[test]

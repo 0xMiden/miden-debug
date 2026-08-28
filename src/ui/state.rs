@@ -18,7 +18,7 @@ use crate::{
     config::DebuggerConfig,
     debug::{
         Breakpoint, BreakpointType, OperationMatcher, ReadMemoryExpr, ResolvedLocation,
-        TypedProcedure, format_value, resolve_variable_value, resolve_variable_values,
+        TypedProcedure, format_value, resolve_typed_variable_values, resolve_variable_value,
     },
     exec::{DebugExecutor, ExecutionConfig, Executor},
 };
@@ -1148,11 +1148,27 @@ impl State {
 
             let display_value = var_snapshot.info.ty().and_then(|ty| {
                 format_value(ty, |count| {
-                    resolve_variable_values(location, count, &stack, read_mem, resolve_local)
+                    debug_vars
+                        .captured_values(name)
+                        .filter(|values| values.len() == count)
+                        .map(<[Felt]>::to_vec)
+                        .or_else(|| {
+                            resolve_typed_variable_values(
+                                location,
+                                ty,
+                                count,
+                                &stack,
+                                read_mem,
+                                resolve_local,
+                            )
+                        })
                 })
             });
 
-            let value = resolve_variable_value(location, &stack, read_mem, resolve_local);
+            let value = debug_vars
+                .captured_values(name)
+                .and_then(|values| values.first().copied())
+                .or_else(|| resolve_variable_value(location, &stack, read_mem, resolve_local));
 
             let source = var_snapshot.info.location().and_then(|loc| {
                 let loc = self.resolve_op_location(loc)?;

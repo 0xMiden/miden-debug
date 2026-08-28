@@ -11,9 +11,15 @@ begin
 
     push.1 mem_store.150
 
+    # Packed byte memory used by unaligned expression locations. The wide value starts at byte
+    # address 643, crossing three Miden memory elements.
+    push.0x332211aa mem_store.160
+    push.0x77665544 mem_store.161
+    push.0xbbaa9988 mem_store.162
+
     # The fixture compiler replaces these markers with typed debug variable declarations. The
     # assembler then encodes their types and locations into the package debug-info section.
-    nop nop nop nop
+    nop nop nop nop nop nop nop
 
     # Keep the declaration marker away from the final VM operation.
     push.1 drop

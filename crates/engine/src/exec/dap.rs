@@ -515,19 +515,20 @@ fn presented_frames<H: Host>(
     cycle: usize,
 ) -> Vec<DapPresentedFrame> {
     if host.frames.is_empty() {
-        let (name, source_path, line) = match current_asmop {
+        let (name, source_path, line, column) = match current_asmop {
             Some(asmop) => {
-                let loc = resolve_asmop_location(asmop, host);
-                let (source_path, line) = loc.map_or((None, 0), |(path, line)| (Some(path), line));
-                (asmop.context_name().clone(), source_path, line)
+                let loc = resolve_asmop_location_with_column(asmop, host);
+                let (source_path, line, column) =
+                    loc.map_or((None, 0, 0), |(path, line, column)| (Some(path), line, column));
+                (asmop.context_name().clone(), source_path, line, column)
             }
-            None => (Arc::from(format!("cycle {cycle}")), None, 0),
+            None => (Arc::from(format!("cycle {cycle}")), None, 0, 0),
         };
         return vec![DapPresentedFrame {
             name,
             source_path,
             line,
-            column: 0,
+            column,
             inline: false,
         }];
     }
@@ -607,8 +608,14 @@ struct ContinueBreakpoints<'a> {
 
 /// Resolve an `AssemblyOp`'s location to a (file_path, line_number) pair using the host.
 fn resolve_asmop_location<H: Host>(asmop: &AssemblyOp, host: &H) -> Option<(String, i64)> {
-    let location = asmop.location()?;
-    resolve_location(location, host)
+    resolve_asmop_location_with_column(asmop, host).map(|(path, line, _)| (path, line))
+}
+
+fn resolve_asmop_location_with_column<H: Host>(
+    asmop: &AssemblyOp,
+    host: &H,
+) -> Option<(String, i64, i64)> {
+    resolve_location_with_column(asmop.location()?, host)
 }
 
 fn resolve_location<H: Host>(location: &Location, host: &H) -> Option<(String, i64)> {
@@ -1096,13 +1103,14 @@ fn evaluate_debug_variable<H: Host>(
 /// If the frame stack is empty (e.g. before the first FrameStart trace event), a root frame
 /// is pushed so there is always at least one frame visible in the stack trace.
 fn update_top_frame<H: Host>(host: &mut DapHostWrapper<'_, H>, current_asmop: Option<&AssemblyOp>) {
-    let (name, source_path, line) = match current_asmop {
+    let (name, source_path, line, column) = match current_asmop {
         Some(asmop) => {
-            let loc = resolve_asmop_location(asmop, &*host);
-            let (source_path, line) = loc.map_or((None, 0), |(p, l)| (Some(p), l));
-            (asmop.context_name().clone(), source_path, line)
+            let loc = resolve_asmop_location_with_column(asmop, &*host);
+            let (source_path, line, column) =
+                loc.map_or((None, 0, 0), |(path, line, column)| (Some(path), line, column));
+            (asmop.context_name().clone(), source_path, line, column)
         }
-        None => (Arc::default(), None, 0),
+        None => (Arc::default(), None, 0, 0),
     };
 
     if host.frames.is_empty() {
@@ -1110,13 +1118,14 @@ fn update_top_frame<H: Host>(host: &mut DapHostWrapper<'_, H>, current_asmop: Op
             name,
             source_path,
             line,
-            column: 0,
+            column,
             inline_frames: Vec::new(),
         });
     } else if let Some(top) = host.frames.last_mut() {
         top.name = name;
         top.source_path = source_path;
         top.line = line;
+        top.column = column;
     }
 }
 
@@ -2956,6 +2965,55 @@ mod tests {
         assert_eq!((presented[1].line, presented[1].column), (0, 0));
         assert_eq!(presented[2].name.as_ref(), "crate::physical");
         assert!(presented[2].source_path.is_some());
+
+        fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn dap_propagates_asmop_columns_through_frame_presentation() {
+        let path = PathBuf::from("target")
+            .join("dap-source-tests")
+            .join(format!("asmop-column-{}", std::process::id()))
+            .join("source.masm");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "zero\n  add\n    mul\n").unwrap();
+
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let source_file = source_manager.load_file(&path).expect("source should load");
+        let uri = source_file.uri().clone();
+        let mut host = DebuggerHost::new(source_manager);
+        let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+        let add = AssemblyOp::new(
+            Some(Location::new(uri.clone(), ByteIndex::new(7), ByteIndex::new(10))),
+            "crate::physical".to_string(),
+            1,
+            "add".to_string(),
+        );
+        let mul = AssemblyOp::new(
+            Some(Location::new(uri, ByteIndex::new(15), ByteIndex::new(18))),
+            "crate::physical".to_string(),
+            1,
+            "mul".to_string(),
+        );
+
+        let fallback = presented_frames(&wrapper, Some(&add), 0);
+        assert_eq!((fallback[0].line, fallback[0].column), (2, 3));
+
+        update_top_frame(&mut wrapper, Some(&add));
+        assert_eq!((wrapper.frames[0].line, wrapper.frames[0].column), (2, 3));
+
+        update_top_frame(&mut wrapper, Some(&mul));
+        assert_eq!((wrapper.frames[0].line, wrapper.frames[0].column), (3, 5));
+
+        wrapper.frames[0].inline_frames.push(DapInlineFrame {
+            name: "crate::inline".into(),
+            source_path: None,
+            line: 0,
+            column: 0,
+        });
+        let presented = present_recorded_frames(&wrapper.frames);
+        assert_eq!(presented[0].name.as_ref(), "[inlined] crate::inline");
+        assert_eq!((presented[0].line, presented[0].column), (3, 5));
 
         fs::remove_dir_all(path.parent().unwrap()).ok();
     }

@@ -1,0 +1,16 @@
+# Inline rows follow their physical frame in storage, so the current physical row is not the last
+# logical row. Verify it still carries the active `exec` procedure identity.
+#
+# RUN: compile-masm %S/op_histogram_proc.masm -o %t.masp \
+# RUN:   --inline-call fixture::inner,4,1
+# RUN: miden-debug --commands %s %t.masp 2>&1 | filecheck %s
+
+break op_histogram_proc.masm:4
+continue
+backtrace
+frame 1
+
+# CHECK: Backtrace (2 frames):
+# CHECK-NEXT: * #0 [inlined] fixture::inner at {{.*}}op_histogram_proc.masm:4:5
+# CHECK-NEXT:   #1 $exec::double at {{.*}}op_histogram_proc.masm:4:1
+# CHECK: at {{.*}}op_histogram_proc.masm:4:1 in $exec::double

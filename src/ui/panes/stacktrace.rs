@@ -1,10 +1,7 @@
 use miden_assembly_syntax::diagnostics::Report;
 use ratatui::{prelude::*, widgets::*};
 
-use crate::{
-    debug::LogicalFrameKind,
-    ui::{action::Action, panes::Pane, state::State, tui::Frame},
-};
+use crate::ui::{action::Action, panes::Pane, state::State, tui::Frame};
 
 pub struct StackTracePane {
     focused: bool,
@@ -69,11 +66,6 @@ impl Pane for StackTracePane {
         let mut lines = Vec::default();
         let logical_frames = state.logical_stack_frames();
         let num_frames = logical_frames.len();
-        // For the top frame, prefer the live AsmOp's context_name over the
-        // frame's cached procedure, which is set once on frame entry and
-        // stays stale for programs that use `exec` instead of `call`.
-        let live_top_name: Option<String> =
-            state.executor().current_asmop.as_ref().map(|op| op.context_name().to_string());
         for (i, logical_frame) in logical_frames.iter().enumerate() {
             let is_top = i + 1 == num_frames;
             let mut parts = vec![];
@@ -86,11 +78,7 @@ impl Pane for StackTracePane {
             */
             let gutter = Span::styled(" ", Color::Gray);
             parts.push(gutter);
-            let name = if is_top && logical_frame.kind() == LogicalFrameKind::Physical {
-                live_top_name.clone().unwrap_or_else(|| logical_frame.display_name())
-            } else {
-                logical_frame.display_name()
-            };
+            let name = logical_frame.display_name();
             let name = if is_top {
                 Span::styled(name, Color::Gray)
             } else {

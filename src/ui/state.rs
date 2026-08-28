@@ -18,7 +18,7 @@ use crate::{
     config::DebuggerConfig,
     debug::{
         Breakpoint, BreakpointType, OperationMatcher, ReadMemoryExpr, ResolvedLocation,
-        resolve_variable_value,
+        TypedProcedure, format_value, resolve_typed_variable_values, resolve_variable_value,
     },
     exec::{DebugExecutor, ExecutionConfig, Executor},
 };
@@ -75,6 +75,7 @@ pub struct DebugVariableSource {
 pub struct DebugVariableValue {
     pub name: String,
     pub value: Option<Felt>,
+    pub display_value: Option<String>,
     pub location: String,
     pub source: Option<DebugVariableSource>,
 }
@@ -82,6 +83,7 @@ pub struct DebugVariableValue {
 struct LocalState {
     executor: DebugExecutor,
     execution_failed: Option<miden_processor::ExecutionError>,
+    typed_procedure: Option<TypedProcedure>,
 }
 
 #[cfg(feature = "dap")]
@@ -298,6 +300,7 @@ impl State {
             LocalState {
                 executor,
                 execution_failed: None,
+                typed_procedure: None,
             },
         ))
     }
@@ -336,6 +339,7 @@ impl State {
             LocalState {
                 executor: debug_executor,
                 execution_failed: None,
+                typed_procedure: None,
             },
         ))
     }
@@ -914,6 +918,23 @@ impl State {
         }
     }
 
+    /// Decode the completed program's result using its component-model entrypoint signature.
+    pub fn typed_result(&self) -> Result<Option<String>, String> {
+        if !self.executor().stopped || self.execution_failed().is_some() {
+            return Ok(None);
+        }
+        let SessionState::Local(local) = &self.session else {
+            return Ok(None);
+        };
+        let Some(procedure) = local.typed_procedure.as_ref() else {
+            return Ok(None);
+        };
+
+        procedure
+            .decode_result(local.executor.stack_outputs.get_num_elements(16))
+            .map_err(|err| format!("failed to decode program result: {err}"))
+    }
+
     pub fn set_execution_failed(&mut self, error: miden_processor::ExecutionError) {
         match &mut self.session {
             SessionState::Local(local) => local.execution_failed = Some(error),
@@ -1117,14 +1138,37 @@ impl State {
             }
 
             let location = var_snapshot.info.value_location();
-
-            let value = resolve_variable_value(location, &stack, read_mem, |offset| {
+            let resolve_local = |offset: i16| {
                 // Read FMP from live memory, then compute address as FMP + offset
                 let fmp_addr = miden_core::FMP_ADDR.as_canonical_u64() as u32;
                 let fmp = read_mem(fmp_addr)?;
                 let addr = (fmp.as_canonical_u64() as i64 + offset as i64) as u32;
                 read_mem(addr)
+            };
+
+            let display_value = var_snapshot.info.ty().and_then(|ty| {
+                format_value(ty, |count| {
+                    debug_vars
+                        .captured_values(name)
+                        .filter(|values| values.len() == count)
+                        .map(<[Felt]>::to_vec)
+                        .or_else(|| {
+                            resolve_typed_variable_values(
+                                location,
+                                ty,
+                                count,
+                                &stack,
+                                read_mem,
+                                resolve_local,
+                            )
+                        })
+                })
             });
+
+            let value = debug_vars
+                .captured_values(name)
+                .and_then(|values| values.first().copied())
+                .or_else(|| resolve_variable_value(location, &stack, read_mem, resolve_local));
 
             let source = var_snapshot.info.location().and_then(|loc| {
                 let loc = self.resolve_op_location(loc)?;
@@ -1138,6 +1182,7 @@ impl State {
             variables.push(DebugVariableValue {
                 name: name.to_string(),
                 value,
+                display_value,
                 location: location.to_string(),
                 source,
             });
@@ -1165,6 +1210,11 @@ impl State {
             for variable in variables {
                 if !output.is_empty() {
                     output.push_str(", ");
+                }
+
+                if let Some(value) = variable.display_value {
+                    write!(&mut output, "{}={value}", variable.name).unwrap();
+                    continue;
                 }
 
                 match variable.value {
@@ -1395,9 +1445,10 @@ fn create_local_state(
     config: &DebuggerConfig,
     source_manager: Arc<dyn SourceManager>,
 ) -> Result<LocalState, Report> {
-    let executor = crate::program_loader::load_debug_executor(config, source_manager, "state")?;
+    let loaded = crate::program_loader::load_debug_executor(config, source_manager, "state")?;
     Ok(LocalState {
-        executor,
+        executor: loaded.executor,
         execution_failed: None,
+        typed_procedure: loaded.typed_procedure,
     })
 }

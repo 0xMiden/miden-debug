@@ -6,7 +6,7 @@ use std::{
 
 use miden_debug_engine::{LinkLibrary, profiling::ProfilerCliArgs};
 
-use crate::{exec::ExecutionConfig, felt::Felt, input::InputFile};
+use crate::{exec::ExecutionConfig, input::InputFile};
 
 /// Run a compiled Miden package with the Miden VM
 #[derive(Default, Debug, clap::Args)]
@@ -25,17 +25,15 @@ pub struct DebuggerConfig {
     /// what the inputs are, or where to source them from.
     #[arg(long, value_name = "FILE")]
     pub inputs: Option<ExecutionConfig>,
-    /// Arguments to place on the operand stack before calling the program entrypoint.
+    /// Arguments to pass to the program entrypoint.
     ///
-    /// Arguments will be pushed on the operand stack in the order of appearance,
-    ///
-    /// Example: `-- a b` will push `a` on the stack, then `b`.
-    ///
-    /// These arguments must be valid field element values expressed in decimal format.
+    /// When the selected entrypoint has a component-model signature, arguments are encoded using
+    /// its canonical ABI. This supports Rust values such as booleans and integers wider than a
+    /// felt. Otherwise each argument is parsed as a raw field element and pushed in order.
     ///
     /// NOTE: These arguments will override any stack values provided via --inputs
     #[arg(last(true), value_name = "ARGV")]
-    pub args: Vec<Felt>,
+    pub args: Vec<String>,
     /// The working directory for the debugger
     ///
     /// By default this will be the working directory the debugger is executed from

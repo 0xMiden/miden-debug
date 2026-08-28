@@ -48,6 +48,9 @@ miden.process.stack()
 miden.frame.variables()
 ```
 
+Each variable `Value` exposes its first raw field element through `value`. When ABI type metadata
+is available, `display_value` also contains the fully decoded, human-readable value.
+
 ## Module initializer
 
 Imported modules may define:

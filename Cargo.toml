@@ -101,6 +101,10 @@ required-features = ["python"]
 name = "compile-masm"
 required-features = ["std"]
 
+[[example]]
+name = "compile-abi-fixture"
+required-features = ["std"]
+
 [[test]]
 name = "println_smoke_test"
 required-features = ["tui"]

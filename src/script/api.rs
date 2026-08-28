@@ -21,6 +21,7 @@ pub struct ScriptSourceLocation {
 pub struct ScriptValue {
     pub name: String,
     pub value: Option<u64>,
+    pub display_value: Option<String>,
     pub location: String,
     pub source: Option<ScriptSourceLocation>,
 }
@@ -140,6 +141,11 @@ impl ScriptDebugger {
             .collect()
     }
 
+    /// Decode the completed program result using its package entrypoint signature.
+    pub fn result(&self) -> Result<Option<String>, String> {
+        self.engine.borrow().state().typed_result()
+    }
+
     /// Source path prefix mappings currently configured for this debugger.
     pub fn source_path_prefixes(&self) -> Vec<String> {
         self.engine.borrow().state().source_path_prefixes()
@@ -166,6 +172,7 @@ impl ScriptDebugger {
             .map(|variable| ScriptValue {
                 name: variable.name,
                 value: variable.value.map(|felt| felt.as_canonical_u64()),
+                display_value: variable.display_value,
                 location: variable.location,
                 source: variable.source.map(|source| ScriptSourceLocation {
                     path: source.path,

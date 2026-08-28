@@ -50,6 +50,7 @@ pub struct State {
     pub next_breakpoint_id: u8,
     pub stopped: bool,
     pub debug_mode: DebugMode,
+    selected_stack_frame: usize,
     session: SessionState,
 }
 
@@ -269,6 +270,7 @@ impl State {
             next_breakpoint_id: 0,
             stopped: true,
             debug_mode,
+            selected_stack_frame: 0,
             session: SessionState::Local(Box::new(local)),
         }
     }
@@ -380,6 +382,7 @@ impl State {
         let local = create_local_state(&self.config, self.source_manager.clone())?;
 
         self.session = SessionState::Local(Box::new(local));
+        self.selected_stack_frame = 0;
         self.breakpoints_hit.clear();
         let breakpoints = core::mem::take(&mut self.breakpoints);
         self.breakpoints.reserve(breakpoints.len());
@@ -621,6 +624,7 @@ impl State {
 
         self.breakpoints = breakpoints;
         self.stopped = stopped;
+        self.selected_stack_frame = 0;
     }
 
     pub fn create_breakpoint(&mut self, ty: BreakpointType) {
@@ -706,6 +710,31 @@ impl State {
             }
         }
         None
+    }
+
+    pub fn logical_stack_frames(&self) -> Vec<crate::debug::LogicalStackFrame> {
+        self.executor().callstack.logical_frames("")
+    }
+
+    pub fn selected_stack_frame(&self) -> usize {
+        self.selected_stack_frame
+    }
+
+    pub fn select_older_stack_frame(&mut self) {
+        let last = self.logical_stack_frames().len().saturating_sub(1);
+        self.selected_stack_frame = self.selected_stack_frame.saturating_add(1).min(last);
+    }
+
+    pub fn select_newer_stack_frame(&mut self) {
+        self.selected_stack_frame = self.selected_stack_frame.saturating_sub(1);
+    }
+
+    pub fn selected_display_location(&self) -> Option<ResolvedLocation> {
+        self.logical_stack_frames()
+            .iter()
+            .rev()
+            .nth(self.selected_stack_frame)
+            .and_then(|frame| frame.resolved(&*self.source_manager))
     }
 
     /// Return the current source position as seen from the nearest non-internal
@@ -1347,6 +1376,7 @@ impl State {
             next_breakpoint_id: 0,
             stopped: true,
             debug_mode: DebugMode::Remote,
+            selected_stack_frame: 0,
             session: SessionState::Remote(Box::new(remote)),
         })
     }
@@ -1363,6 +1393,7 @@ impl State {
         match &result {
             crate::exec::DapStopReason::Stopped(snapshot) => {
                 remote.refresh_executor(&source_manager, snapshot);
+                self.selected_stack_frame = 0;
                 self.stopped = true;
             }
             crate::exec::DapStopReason::Terminated => {
@@ -1390,6 +1421,7 @@ fn convert_ui_state(
     let call_frames: Vec<CallFrame> = snapshot
         .callstack
         .iter()
+        .rev()
         .map(|frame| {
             let resolved = resolve_remote_frame(frame, source_manager);
             CallFrame::from_remote(Some(frame.name.clone()), resolved)

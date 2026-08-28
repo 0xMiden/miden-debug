@@ -105,11 +105,8 @@ impl SourceCodePane {
 
     /// Get the [ResolvedLocation] for the current state
     fn current_location(&self, state: &State) -> Option<ResolvedLocation> {
-        match state.executor().callstack.current_frame() {
-            Some(frame) => {
-                let resolved = frame.last_resolved(&state.source_manager);
-                resolved.cloned()
-            }
+        match state.selected_display_location() {
+            Some(resolved) => Some(resolved),
             None if !self.current_source_id.is_unknown() => {
                 let source_file = state.source_manager.get(self.current_source_id).ok();
                 source_file.map(|src| ResolvedLocation {
@@ -185,10 +182,8 @@ impl SourceCodePane {
         self.selected_line = 0;
         self.current_file = None;
 
-        if let Some(frame) = state.executor().callstack.current_frame()
-            && let Some(loc) = frame.last_resolved(&state.source_manager)
-        {
-            self.current_file = Some(self.highlight_file(loc));
+        if let Some(loc) = state.selected_display_location() {
+            self.current_file = Some(self.highlight_file(&loc));
             self.current_source_id = loc.source_file.id();
             self.current_span = loc.span;
             self.current_line = loc.line;
@@ -230,10 +225,8 @@ impl Pane for SourceCodePane {
     fn init(&mut self, state: &State) -> Result<(), Report> {
         self.enable_syntax_highlighting(state);
 
-        if let Some(frame) = state.executor().callstack.current_frame()
-            && let Some(loc) = frame.last_resolved(&state.source_manager)
-        {
-            self.current_file = Some(self.highlight_file(loc));
+        if let Some(loc) = state.selected_display_location() {
+            self.current_file = Some(self.highlight_file(&loc));
             self.current_source_id = loc.source_file.id();
             self.current_span = loc.span;
             self.current_line = loc.line;
@@ -291,6 +284,9 @@ impl Pane for SourceCodePane {
                         self.selected_line = loc.line;
                     } else if self.selected_line != loc.line {
                         self.selected_line = loc.line;
+                    }
+                    if let Some(current_file) = self.current_file.as_mut() {
+                        current_file.selected_span = loc.span;
                     }
                     self.current_span = loc.span;
                     self.current_line = loc.line;

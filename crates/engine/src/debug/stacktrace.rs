@@ -39,6 +39,14 @@ pub struct InlineCallFrame {
 }
 
 impl InlineCallFrame {
+    #[cfg(all(test, feature = "dap"))]
+    pub(crate) fn new_for_test(name: impl Into<Arc<str>>, call_site: Location) -> Self {
+        Self {
+            name: name.into(),
+            call_site,
+        }
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

@@ -156,7 +156,7 @@ struct DapCallFrame {
 #[derive(Debug, Clone)]
 struct DapInlineFrame {
     name: String,
-    source_path: String,
+    source_path: Option<String>,
     line: i64,
     column: i64,
 }
@@ -543,7 +543,7 @@ fn present_recorded_frames(frames: &[DapCallFrame]) -> Vec<DapPresentedFrame> {
                 (frame.source_path.clone(), frame.line, frame.column)
             } else {
                 let call_site = &frame.inline_frames[inline_index - 1];
-                (Some(call_site.source_path.clone()), call_site.line, call_site.column)
+                (call_site.source_path.clone(), call_site.line, call_site.column)
             };
             presented.push(DapPresentedFrame {
                 name: Arc::from(format!("[inlined] {}", inline.name)),
@@ -556,7 +556,7 @@ fn present_recorded_frames(frames: &[DapCallFrame]) -> Vec<DapPresentedFrame> {
 
         let (source_path, line, column) = frame.inline_frames.last().map_or_else(
             || (frame.source_path.clone(), frame.line, frame.column),
-            |inline| (Some(inline.source_path.clone()), inline.line, inline.column),
+            |inline| (inline.source_path.clone(), inline.line, inline.column),
         );
         presented.push(DapPresentedFrame {
             name: frame.name.clone(),
@@ -1129,15 +1129,18 @@ fn update_top_frame_with_debug<H: Host>(
 
     let inline_frames = inline_frames
         .iter()
-        .filter_map(|frame| {
+        .map(|frame| {
             let (source_path, line, column) =
-                resolve_location_with_column(frame.call_site(), &*host)?;
-            Some(DapInlineFrame {
+                resolve_location_with_column(frame.call_site(), &*host)
+                    .map_or((None, 0, 0), |(source_path, line, column)| {
+                        (Some(source_path), line, column)
+                    });
+            DapInlineFrame {
                 name: frame.display_name().to_string(),
                 source_path,
                 line,
                 column,
-            })
+            }
         })
         .collect();
 
@@ -2692,11 +2695,14 @@ enum StepResult {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::PathBuf};
+
     use miden_assembly::DefaultSourceManager;
     use miden_core::{
         Felt,
         events::{EventId, EventName},
     };
+    use miden_debug_types::{ByteIndex, Location, SourceManagerExt, Uri};
     use miden_processor::event::EventHandler;
 
     use super::*;
@@ -2883,13 +2889,13 @@ mod tests {
             inline_frames: vec![
                 DapInlineFrame {
                     name: "crate::inner".into(),
-                    source_path: "src/lib.rs".into(),
+                    source_path: Some("src/lib.rs".into()),
                     line: 20,
                     column: 3,
                 },
                 DapInlineFrame {
                     name: "crate::outer".into(),
-                    source_path: "src/lib.rs".into(),
+                    source_path: Some("src/lib.rs".into()),
                     line: 10,
                     column: 1,
                 },
@@ -2905,5 +2911,52 @@ mod tests {
         assert_eq!((presented[1].line, presented[1].column), (20, 3));
         assert_eq!(presented[2].name.as_ref(), "crate::physical");
         assert_eq!((presented[2].line, presented[2].column), (10, 1));
+    }
+
+    #[test]
+    fn dap_retains_unresolved_inline_call_sites_without_shifting_frames() {
+        let path = PathBuf::from("target")
+            .join("dap-source-tests")
+            .join(format!("unresolved-inline-{}", std::process::id()))
+            .join("source.masm");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "physical\nouter call\n").unwrap();
+
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let source_file = source_manager.load_file(&path).expect("source should load");
+        let uri = source_file.uri().clone();
+        let mut host = DebuggerHost::new(source_manager);
+        let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+        let physical = AssemblyOp::new(
+            Some(Location::new(uri.clone(), ByteIndex::new(0), ByteIndex::new(8))),
+            "crate::physical".to_string(),
+            1,
+            "add".to_string(),
+        );
+        let inline_frames = vec![
+            crate::debug::InlineCallFrame::new_for_test(
+                "crate::inner",
+                Location::new(Uri::new("memory://missing"), ByteIndex::new(0), ByteIndex::new(1)),
+            ),
+            crate::debug::InlineCallFrame::new_for_test(
+                "crate::outer",
+                Location::new(uri, ByteIndex::new(9), ByteIndex::new(19)),
+            ),
+        ];
+
+        update_top_frame_with_debug(&mut wrapper, Some(&physical), &inline_frames);
+
+        assert_eq!(wrapper.frames[0].inline_frames.len(), 2);
+        let presented = present_recorded_frames(&wrapper.frames);
+        assert_eq!(presented.len(), 3);
+        assert_eq!(presented[0].name.as_ref(), "[inlined] crate::inner");
+        assert!(presented[0].source_path.is_some());
+        assert_eq!(presented[1].name.as_ref(), "[inlined] crate::outer");
+        assert_eq!(presented[1].source_path, None);
+        assert_eq!((presented[1].line, presented[1].column), (0, 0));
+        assert_eq!(presented[2].name.as_ref(), "crate::physical");
+        assert!(presented[2].source_path.is_some());
+
+        fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }

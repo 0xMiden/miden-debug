@@ -2145,7 +2145,7 @@ fn advance_one<H: Host>(
             let debug_info = debug_info.as_deref().unwrap();
             let asm_op = source_node
                 .asm_op_for_operation(op_idx)
-                .map(|asm_op| asm_op.to_assembly_op(debug_info));
+                .and_then(|asm_op| asm_op.to_assembly_op(debug_info));
             let debug_var_infos =
                 source_node.debug_infos_for_operation(op_idx, debug_info).collect::<Vec<_>>();
             (asm_op, debug_var_infos)
@@ -2196,7 +2196,7 @@ fn extract_asm_op(
 ) -> Option<AssemblyOp> {
     let debug_asm_op = extract_debug_asm_op(debug_info, source_node_id, op_idx)?;
     let debug_info = debug_info?;
-    Some(debug_asm_op.to_assembly_op(debug_info))
+    debug_asm_op.to_assembly_op(debug_info)
 }
 
 fn is_next_source_line(

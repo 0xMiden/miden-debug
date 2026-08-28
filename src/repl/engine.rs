@@ -181,15 +181,7 @@ impl ReplEngine {
         self.state.run_until_stopped();
         self.selected_frame = 0;
 
-        if self.state.executor().stopped {
-            if let Some(err) = self.state.execution_failed() {
-                let _ = writeln!(out, "Program terminated with error: {}", err);
-            } else {
-                let _ = writeln!(out, "Program terminated successfully");
-            }
-        } else {
-            self.report_execution_state(out);
-        }
+        self.report_execution_state(out);
 
         Ok(())
     }

@@ -116,7 +116,8 @@ impl HybridPackageRegistry {
     ) -> Result<miden_project::Version, InstallPackageError> {
         use std::collections::{btree_map::Entry as BTreeMapEntry, hash_map::Entry};
 
-        let version = miden_project::Version::new(package.version.clone(), package.digest());
+        let version =
+            miden_project::Version::new(package.version.clone(), package.dependency_commitment());
         log::trace!(target: "package-registry", "preparing to install package {}@{version}", package.name);
         let record = PackageRecord::new(
             version.clone(),
@@ -136,7 +137,9 @@ impl HybridPackageRegistry {
                 match versions.entry(package.version.clone()) {
                     BTreeMapEntry::Occupied(mut prev) => {
                         let prev_digest = prev.get().digest().copied();
-                        if prev_digest.is_none_or(|prev_digest| prev_digest == package.digest()) {
+                        if prev_digest.is_none_or(|prev_digest| {
+                            prev_digest == package.dependency_commitment()
+                        }) {
                             prev.insert(record);
                         } else {
                             log::trace!(target: "package-registry", "package already installed: {}@{version}", package.name);
@@ -205,7 +208,7 @@ impl PackageProvider for HybridPackageRegistry {
     ) -> Result<Arc<Package>, Report> {
         let found = self.artifacts.get(package).and_then(|versions| versions.get(&version.version));
         match found {
-            Some(artifact) if version.digest != Some(artifact.digest()) => {
+            Some(artifact) if version.digest != Some(artifact.dependency_commitment()) => {
                 Err(Report::msg(format!(
                     "cannot load {package}@{version}: a specific digest was requested, but \
                      differs from the available version"

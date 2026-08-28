@@ -64,7 +64,7 @@ fn load_package_from_bytes(
     source: &str,
     config: &DebuggerConfig,
 ) -> Result<Arc<Package>, Report> {
-    let package = miden_mast_package::Package::read_from_bytes_unchecked(bytes)
+    let package = miden_mast_package::Package::read_from_bytes_trusted(bytes)
         .map(Arc::new)
         .map_err(|e| Report::msg(format!("failed to load Miden package from {source}: {e}")))?;
 

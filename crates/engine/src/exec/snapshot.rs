@@ -114,7 +114,7 @@ impl ReplaySnapshotRecorder {
 /// Magic bytes identifying a replay snapshot file, followed by a format version. Bumping the
 /// version invalidates older snapshots, whose serialized shape may differ.
 const SNAPSHOT_MAGIC: [u8; 6] = *b"MDNSNP";
-const SNAPSHOT_VERSION: u8 = 2;
+const SNAPSHOT_VERSION: u8 = 3;
 
 /// Everything needed to replay a recorded execution in the debugger.
 pub struct ReplaySnapshot {
@@ -199,7 +199,7 @@ impl Deserializable for ReplaySnapshot {
                 "unsupported replay snapshot version {version} (expected {SNAPSHOT_VERSION})"
             )));
         }
-        let package = Arc::new(Package::read_from_unchecked(source)?);
+        let package = Arc::new(Package::read_from_trusted(source)?);
         let stack_inputs = StackInputs::read_from(source)?;
         let advice_inputs = AdviceInputs::read_from(source)?;
         let options = read_execution_options(source)?;
@@ -230,13 +230,10 @@ fn write_execution_options<W: ByteWriter>(options: &ExecutionOptions, target: &m
     target.write_u32(options.max_cycles());
     target.write_u32(options.expected_cycles());
     target.write_usize(options.core_trace_fragment_size());
-    target.write_usize(options.max_adv_map_value_size());
-    target.write_usize(options.max_adv_map_elements());
+    target.write_usize(options.max_advice_size_bytes());
     target.write_usize(options.max_hash_len_bytes());
-    target.write_usize(options.max_deferred_elements());
     target.write_bool(options.overlapped_trace_build());
     target.write_usize(options.max_num_continuations());
-    target.write_usize(options.max_merkle_store_nodes());
     target.write_usize(options.max_stack_depth());
     target.write_usize(options.max_memory_elements());
 }
@@ -247,13 +244,10 @@ fn read_execution_options<R: ByteReader>(
     let max_cycles = source.read_u32()?;
     let expected_cycles = source.read_u32()?;
     let core_trace_fragment_size = source.read_usize()?;
-    let max_adv_map_value_size = source.read_usize()?;
-    let max_adv_map_elements = source.read_usize()?;
+    let max_advice_size_bytes = source.read_usize()?;
     let max_hash_len_bytes = source.read_usize()?;
-    let max_deferred_elements = source.read_usize()?;
     let overlapped_trace_build = source.read_bool()?;
     let max_num_continuations = source.read_usize()?;
-    let max_merkle_store_nodes = source.read_usize()?;
     let max_stack_depth = source.read_usize()?;
     let max_memory_elements = source.read_usize()?;
 
@@ -263,13 +257,10 @@ fn read_execution_options<R: ByteReader>(
         })
         .and_then(|options| {
             options
-                .with_max_adv_map_value_size(max_adv_map_value_size)
-                .with_max_adv_map_elements(max_adv_map_elements)
+                .with_max_advice_size_bytes(max_advice_size_bytes)
                 .with_max_hash_len_bytes(max_hash_len_bytes)
-                .with_max_deferred_elements(max_deferred_elements)
                 .with_overlapped_trace_build(overlapped_trace_build)
                 .with_max_num_continuations(max_num_continuations)
-                .with_max_merkle_store_nodes(max_merkle_store_nodes)
                 .with_max_memory_elements(max_memory_elements)
                 .with_max_stack_depth(max_stack_depth)
                 .map_err(|err| {
@@ -328,16 +319,13 @@ mod tests {
             package: program.clone(),
             stack_inputs: StackInputs::new(&[Felt::from(42u32), Felt::from(43u32)]).unwrap(),
             advice_inputs: AdviceInputs::default()
-                .with_advice_stack([Felt::from(99u32)].into_iter().collect()),
+                .with_stack([Felt::from(99u32)].into_iter().collect()),
             options: ExecutionOptions::new(Some(100_000), 32, 1024)
                 .unwrap()
-                .with_max_adv_map_value_size(64)
-                .with_max_adv_map_elements(256)
+                .with_max_advice_size_bytes(256)
                 .with_max_hash_len_bytes(512)
-                .with_max_deferred_elements(768)
                 .with_overlapped_trace_build(false)
                 .with_max_num_continuations(128)
-                .with_max_merkle_store_nodes(384)
                 .with_max_memory_elements(1024)
                 .with_max_stack_depth(128)
                 .unwrap(),
@@ -348,7 +336,7 @@ mod tests {
         let restored = ReplaySnapshot::read_from_bytes(&snapshot.to_bytes())
             .expect("snapshot failed to deserialize");
 
-        assert_eq!(restored.package.digest(), snapshot.package.digest());
+        assert_eq!(restored.package.commitment(), snapshot.package.commitment());
         assert_eq!(restored.stack_inputs, snapshot.stack_inputs);
         assert_eq!(restored.advice_inputs, snapshot.advice_inputs);
         assert_eq!(restored.options, snapshot.options);
@@ -365,10 +353,10 @@ mod tests {
             _ => panic!("unexpected first event batch"),
         }
         match restored.event_log[2].as_slice() {
-            [AdviceMutation::ExtendMerkleStore { infos }] => {
-                assert_eq!(infos.len(), 1);
-                assert_eq!(infos[0].value, word([1, 2, 3, 4]));
-                assert_eq!(infos[0].right, word([9, 10, 11, 12]));
+            [AdviceMutation::ExtendMerkleStore { inner_nodes }] => {
+                assert_eq!(inner_nodes.len(), 1);
+                assert_eq!(inner_nodes[0].value, word([1, 2, 3, 4]));
+                assert_eq!(inner_nodes[0].right, word([9, 10, 11, 12]));
             }
             _ => panic!("unexpected merkle-store event batch"),
         }
@@ -389,8 +377,8 @@ mod tests {
         bytes.push(SNAPSHOT_VERSION - 1);
 
         let Err(err) = ReplaySnapshot::read_from_bytes(&bytes) else {
-            panic!("expected deserialization to reject a version 1 snapshot");
+            panic!("expected deserialization to reject a snapshot from a previous version");
         };
-        assert!(err.to_string().contains("unsupported replay snapshot version 1"));
+        assert!(err.to_string().contains("unsupported replay snapshot version"));
     }
 }

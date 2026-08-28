@@ -19,11 +19,11 @@ pub fn clone_advice_mutation(mutation: &AdviceMutation) -> AdviceMutation {
         AdviceMutation::ExtendStack { stack } => AdviceMutation::ExtendStack {
             stack: stack.clone(),
         },
-        AdviceMutation::ExtendMap { other } => AdviceMutation::ExtendMap {
-            other: other.clone(),
-        },
-        AdviceMutation::ExtendMerkleStore { infos } => AdviceMutation::ExtendMerkleStore {
-            infos: infos.clone(),
+        AdviceMutation::ExtendMap { map: other } => {
+            AdviceMutation::ExtendMap { map: other.clone() }
+        }
+        AdviceMutation::ExtendMerkleStore { inner_nodes } => AdviceMutation::ExtendMerkleStore {
+            inner_nodes: inner_nodes.clone(),
         },
     }
 }
@@ -49,14 +49,14 @@ pub fn write_advice_mutation<W: ByteWriter>(mutation: &AdviceMutation, target: &
             target.write_u8(TAG_EXTEND_STACK);
             stack.iter().copied().collect::<Vec<_>>().write_into(target);
         }
-        AdviceMutation::ExtendMap { other } => {
+        AdviceMutation::ExtendMap { map } => {
             target.write_u8(TAG_EXTEND_MAP);
-            other.write_into(target);
+            map.write_into(target);
         }
-        AdviceMutation::ExtendMerkleStore { infos } => {
+        AdviceMutation::ExtendMerkleStore { inner_nodes } => {
             target.write_u8(TAG_EXTEND_MERKLE_STORE);
-            target.write_usize(infos.len());
-            for info in infos {
+            target.write_usize(inner_nodes.len());
+            for info in inner_nodes {
                 info.value.write_into(target);
                 info.left.write_into(target);
                 info.right.write_into(target);
@@ -74,18 +74,18 @@ pub fn read_advice_mutation<R: ByteReader>(
             stack: AdviceStack::from(Vec::<Felt>::read_from(source)?),
         }),
         TAG_EXTEND_MAP => Ok(AdviceMutation::ExtendMap {
-            other: AdviceMap::read_from(source)?,
+            map: AdviceMap::read_from(source)?,
         }),
         TAG_EXTEND_MERKLE_STORE => {
             let len = source.read_usize()?;
-            let mut infos = Vec::with_capacity(len);
+            let mut inner_nodes = Vec::with_capacity(len);
             for _ in 0..len {
                 let value = Word::read_from(source)?;
                 let left = Word::read_from(source)?;
                 let right = Word::read_from(source)?;
-                infos.push(InnerNodeInfo { value, left, right });
+                inner_nodes.push(InnerNodeInfo { value, left, right });
             }
-            Ok(AdviceMutation::ExtendMerkleStore { infos })
+            Ok(AdviceMutation::ExtendMerkleStore { inner_nodes })
         }
         other => Err(DeserializationError::InvalidValue(format!(
             "unknown AdviceMutation variant tag: {other}"

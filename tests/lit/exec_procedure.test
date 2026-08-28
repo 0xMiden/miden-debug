@@ -1,0 +1,16 @@
+# An `exec` changes procedure context without creating a physical call frame. Verify the current
+# logical frame follows the live procedure rather than retaining the entry-point name.
+#
+# RUN: compile-masm %S/op_histogram_proc.masm -o %t.masp
+# RUN: miden-debug --commands %s %t.masp 2>&1 | filecheck %s
+
+break op_histogram_proc.masm:4
+continue
+where
+backtrace
+
+# CHECK: Breakpoint 0 set: **/op_histogram_proc.masm:4
+# CHECK: at {{.*}}op_histogram_proc.masm:4:5 in $exec::double
+# CHECK: {{.*}}op_histogram_proc.masm:4:5 in $exec::double
+# CHECK: Backtrace (1 frames):
+# CHECK-NEXT: * #0 $exec::double at {{.*}}op_histogram_proc.masm:4:5

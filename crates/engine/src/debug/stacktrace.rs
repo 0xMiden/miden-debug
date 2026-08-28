@@ -270,6 +270,7 @@ impl CallStack {
                 self.frames.push(CallFrame::new(procedure.clone()));
             }
             self.frames.last_mut().unwrap().inline_frames = info.inline_frames.to_vec();
+            self.update_current_procedure(procedure.clone());
         }
 
         if is_frame_start || is_frame_end {
@@ -308,14 +309,10 @@ impl CallStack {
         // available
         let procedure = procedure.or_else(|| self.frames.last().and_then(|f| f.procedure.clone()));
 
+        // `exec` changes procedure context without creating a physical frame. Keep the physical
+        // frame synchronized with the best context available for the current operation.
+        self.update_current_procedure(procedure);
         let current_frame = self.frames.last_mut().unwrap();
-
-        // Does the current frame have a procedure context/location? Use the one from this op if
-        // so
-        let procedure_context_updated = current_frame.procedure.is_none() && procedure.is_some();
-        if procedure_context_updated {
-            current_frame.procedure.clone_from(&procedure);
-        }
 
         // Push op into call frame if this is any op other than `nop` or frame setup
         if !matches!(op, Operation::Noop) {
@@ -323,9 +320,16 @@ impl CallStack {
             current_frame.push(op, cycle_idx, asmop.as_deref());
         }
 
-        // Check if we should also update the caller frame's exec detail
+        popped_frame
+    }
+
+    fn update_current_procedure(&mut self, procedure: Option<Arc<str>>) {
+        let context_initialized = self
+            .frames
+            .last_mut()
+            .is_some_and(|frame| frame.update_procedure(procedure.clone()));
         let num_frames = self.frames.len();
-        if procedure_context_updated && num_frames > 1 {
+        if context_initialized && num_frames > 1 {
             let caller_frame = &mut self.frames[num_frames - 2];
             if let Some(OpDetail::Exec { callee }) = caller_frame.context.back_mut()
                 && callee.is_none()
@@ -333,8 +337,6 @@ impl CallStack {
                 *callee = procedure;
             }
         }
-
-        popped_frame
     }
 
     // Get or cache procedure name/context as `Arc<str>`
@@ -435,6 +437,23 @@ impl CallFrame {
             Arc::<str>::from(name.into_boxed_str())
         });
         Some(Arc::clone(name))
+    }
+
+    /// Update this physical frame's procedure, returning true only when the context was first
+    /// initialized. Later changes arise from `exec` and must invalidate the cached display name,
+    /// but must not rewrite the caller's recorded callee.
+    fn update_procedure(&mut self, procedure: Option<Arc<str>>) -> bool {
+        let Some(procedure) = procedure else {
+            return false;
+        };
+        if self.procedure.as_ref() == Some(&procedure) {
+            return false;
+        }
+
+        let initialized = self.procedure.is_none();
+        self.procedure = Some(procedure);
+        self.display_name.take();
+        initialized
     }
 
     pub fn push_exec(&mut self, callee: Option<Arc<str>>) {
@@ -931,6 +950,72 @@ mod tests {
         let logical = callstack.logical_frames("");
         assert_eq!(logical.len(), 1);
         assert_eq!(logical[0].name(), "<unknown>");
+    }
+
+    #[test]
+    fn logical_physical_frame_tracks_exec_procedure_changes() {
+        let mut callstack = CallStack::new(Arc::new(Mutex::new(BTreeMap::new())));
+        let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
+        callstack.next(&StepInfo {
+            op: Some(Operation::Add),
+            control: None,
+            asmop: Some(&main),
+            clk: RowIndex::from(0u32),
+            ctx: ContextId::root(),
+            inline_frames: &[],
+        });
+
+        let logical = callstack.logical_frames("");
+        assert_eq!(logical[0].name(), "program::main");
+        assert_eq!(logical[0].display_name(), "program::main");
+
+        let inline = InlineCallFrame {
+            name: Arc::from("source::inline"),
+            call_site: Location::new(Uri::new("test.masm"), ByteIndex::new(0), ByteIndex::new(1)),
+        };
+        let exec = AssemblyOp::new(None, "program::double".to_string(), 1, "mul".to_string());
+        callstack.next(&StepInfo {
+            op: Some(Operation::Mul),
+            control: None,
+            asmop: Some(&exec),
+            clk: RowIndex::from(1u32),
+            ctx: ContextId::root(),
+            inline_frames: std::slice::from_ref(&inline),
+        });
+
+        let logical = callstack.logical_frames("");
+        assert_eq!(logical.len(), 2);
+        assert_eq!(logical[0].kind(), LogicalFrameKind::Physical);
+        assert_eq!(logical[0].name(), "program::double");
+        assert_eq!(logical[0].display_name(), "program::double");
+        assert_eq!(logical[1].kind(), LogicalFrameKind::Inline);
+    }
+
+    #[test]
+    fn control_cycle_tracks_exec_procedure_change_before_first_operation() {
+        let mut callstack = CallStack::new(Arc::new(Mutex::new(BTreeMap::new())));
+        let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
+        callstack.next(&StepInfo {
+            op: Some(Operation::Add),
+            control: None,
+            asmop: Some(&main),
+            clk: RowIndex::from(0u32),
+            ctx: ContextId::root(),
+            inline_frames: &[],
+        });
+
+        let exec = AssemblyOp::new(None, "program::double".to_string(), 1, "if.true".to_string());
+        callstack.next(&StepInfo {
+            op: None,
+            control: Some(ControlFlowOp::Split),
+            asmop: Some(&exec),
+            clk: RowIndex::from(1u32),
+            ctx: ContextId::root(),
+            inline_frames: &[],
+        });
+
+        let logical = callstack.logical_frames("");
+        assert_eq!(logical[0].name(), "program::double");
     }
 
     #[cfg(feature = "dap")]

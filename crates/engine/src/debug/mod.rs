@@ -11,8 +11,9 @@ pub use self::{
     memory::{FormatType, MemoryMode, ReadMemoryExpr},
     native_ptr::NativePtr,
     stacktrace::{
-        CallFrame, CallStack, ControlFlowOp, CurrentFrame, OpDetail, ResolvedLocation, StackTrace,
-        StepInfo, is_internal_source_uri, resolve_location_from_filesystem,
+        CallFrame, CallStack, ControlFlowOp, CurrentFrame, InlineCallFrame, LogicalFrameKind,
+        LogicalStackFrame, OpDetail, ResolvedLocation, StackTrace, StepInfo,
+        inline_frames_for_operation, is_internal_source_uri, resolve_location_from_filesystem,
         resolve_source_file_for_location, resolve_source_path,
     },
     variables::{

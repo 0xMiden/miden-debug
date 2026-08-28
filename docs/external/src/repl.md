@@ -72,6 +72,11 @@ arguments.
 | `where` | `w` | Print the current source location and procedure |
 | `list` | `l` | Print recently executed instructions |
 | `backtrace` | `bt` | Print the call stack |
+| `frame <N>` | `f` | Select logical frame `N` from the backtrace |
+
+Inlined calls appear as `[inlined] <FUNCTION>` frames. Frame `0` is the
+currently executing logical frame; use `frame <N>` before `where` to inspect a
+caller or inlined frame's source location.
 
 ### Other
 

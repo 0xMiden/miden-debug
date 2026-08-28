@@ -1,4 +1,4 @@
-use std::{io::Write, sync::Arc};
+use std::io::Write;
 
 use miden_assembly_syntax::diagnostics::Report;
 
@@ -23,6 +23,7 @@ pub enum Outcome {
 /// [`super::script::run_script`]).
 pub struct ReplEngine {
     state: State,
+    selected_frame: usize,
 }
 
 impl ReplEngine {
@@ -30,12 +31,16 @@ impl ReplEngine {
     pub fn new(config: Box<DebuggerConfig>) -> Result<Self, Report> {
         Ok(Self {
             state: State::new(config)?,
+            selected_frame: 0,
         })
     }
 
     /// Create an engine from an already constructed debugger state.
     pub(crate) fn from_state(state: State) -> Self {
-        Self { state }
+        Self {
+            state,
+            selected_frame: 0,
+        }
     }
 
     /// Create an engine from a debugger configuration.
@@ -90,11 +95,14 @@ impl ReplEngine {
 
     /// Print the current source location / procedure to `out`.
     pub fn print_location(&self, out: &mut dyn Write) {
-        let proc_name = self.state.current_procedure().unwrap_or_else(|| Arc::from("<unknown>"));
-        if let Some(resolved) = self.state.current_display_location() {
-            let _ = writeln!(out, "at {} in {}", resolved, proc_name);
-        } else if self.state.executor().callstack.current_frame().is_some() {
-            let _ = writeln!(out, "in {}", proc_name);
+        let frames = self.state.executor().callstack.logical_frames("");
+        if let Some(frame) = frames.iter().rev().nth(self.selected_frame) {
+            let name = frame.display_name();
+            if let Some(resolved) = frame.resolved(&*self.state.source_manager) {
+                let _ = writeln!(out, "at {} in {}", resolved, name);
+            } else {
+                let _ = writeln!(out, "in {}", name);
+            }
         }
     }
 
@@ -129,6 +137,7 @@ impl ReplEngine {
             ReplCommand::Where => self.cmd_where(out),
             ReplCommand::List => self.cmd_list(out),
             ReplCommand::Backtrace => self.cmd_backtrace(out),
+            ReplCommand::Frame(index) => self.cmd_frame(index, out),
             ReplCommand::Reload => self.cmd_reload(out),
             ReplCommand::Help => self.cmd_help(out),
             ReplCommand::Quit => unreachable!("quit handled in execute_line"),
@@ -153,6 +162,7 @@ impl ReplEngine {
             }
         }
 
+        self.selected_frame = 0;
         self.report_execution_state(out);
         Ok(())
     }
@@ -169,7 +179,10 @@ impl ReplEngine {
         self.ensure_can_continue()?;
 
         self.state.run_until_stopped();
+        self.selected_frame = 0;
+
         self.report_execution_state(out);
+
         Ok(())
     }
 
@@ -186,6 +199,7 @@ impl ReplEngine {
 
         self.state.create_breakpoint(bp_type);
         self.state.run_until_stopped();
+        self.selected_frame = 0;
         self.report_execution_state(out);
         Ok(())
     }
@@ -303,21 +317,20 @@ impl ReplEngine {
     }
 
     fn cmd_where(&mut self, out: &mut dyn Write) -> Result<(), String> {
-        if self.state.executor().callstack.current_frame().is_some() {
-            let proc_name =
-                self.state.current_procedure().unwrap_or_else(|| Arc::from("<unknown>"));
-
-            if let Some(resolved) = self.state.current_display_location() {
+        let frames = self.state.executor().callstack.logical_frames("");
+        if let Some(frame) = frames.iter().rev().nth(self.selected_frame) {
+            let name = frame.display_name();
+            if let Some(resolved) = frame.resolved(&*self.state.source_manager) {
                 let _ = writeln!(
                     out,
                     "{}:{}:{} in {}",
                     resolved.source_file.uri().as_str(),
                     resolved.line,
                     resolved.col,
-                    proc_name
+                    name
                 );
             } else {
-                let _ = writeln!(out, "in {} (no source location available)", proc_name);
+                let _ = writeln!(out, "in {} (no source location available)", name);
             }
         } else {
             let _ = writeln!(out, "No current frame");
@@ -345,7 +358,7 @@ impl ReplEngine {
     }
 
     fn cmd_backtrace(&mut self, out: &mut dyn Write) -> Result<(), String> {
-        let frames = self.state.executor().callstack.frames();
+        let frames = self.state.executor().callstack.logical_frames("");
         if frames.is_empty() {
             let _ = writeln!(out, "No call stack");
             return Ok(());
@@ -353,21 +366,32 @@ impl ReplEngine {
 
         let _ = writeln!(out, "Backtrace ({} frames):", frames.len());
         for (i, frame) in frames.iter().rev().enumerate() {
-            let proc_name = frame.procedure("").unwrap_or_else(|| Arc::from("<unknown>"));
             let loc_str = frame
-                .last_resolved(&*self.state.source_manager)
+                .resolved(&*self.state.source_manager)
                 .map(|r| format!(" at {}", r))
                 .unwrap_or_default();
+            let marker = if i == self.selected_frame { "*" } else { " " };
 
-            let _ = writeln!(out, "  #{} {}{}", i, proc_name, loc_str);
+            let _ = writeln!(out, "{} #{} {}{}", marker, i, frame.display_name(), loc_str);
         }
+        Ok(())
+    }
+
+    fn cmd_frame(&mut self, index: usize, out: &mut dyn Write) -> Result<(), String> {
+        let num_frames = self.state.executor().callstack.logical_frames("").len();
+        if index >= num_frames {
+            return Err(format!("invalid frame index {index}; backtrace has {num_frames} frames"));
+        }
+        self.selected_frame = index;
+        self.print_location(out);
         Ok(())
     }
 
     fn cmd_reload(&mut self, out: &mut dyn Write) -> Result<(), String> {
         self.state.reload().map_err(|e| format!("reload failed: {e}"))?;
+        self.selected_frame = 0;
         let _ = writeln!(out, "Program reloaded");
-        self.print_location(out);
+        self.report_execution_state(out);
         Ok(())
     }
 

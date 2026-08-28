@@ -34,7 +34,7 @@ use super::{
 use crate::{
     debug::{
         DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, format_value,
-        resolve_typed_variable_values, resolve_variable_values,
+        inline_frames_for_operation, resolve_typed_variable_values, resolve_variable_values,
     },
     exec::state::CurrentCycleInfo,
 };
@@ -150,6 +150,24 @@ struct DapCallFrame {
     source_path: Option<String>,
     line: i64,
     column: i64,
+    inline_frames: Vec<DapInlineFrame>,
+}
+
+#[derive(Debug, Clone)]
+struct DapInlineFrame {
+    name: String,
+    source_path: Option<String>,
+    line: i64,
+    column: i64,
+}
+
+#[derive(Debug, Clone)]
+struct DapPresentedFrame {
+    name: Arc<str>,
+    source_path: Option<String>,
+    line: i64,
+    column: i64,
+    inline: bool,
 }
 
 /// A host wrapper that intercepts trace events to track the call stack for DAP stack traces,
@@ -277,6 +295,7 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
                     source_path: None,
                     line: 0,
                     column: 0,
+                    inline_frames: Vec::new(),
                 });
             }
             crate::Event::FrameEnd => {
@@ -465,36 +484,16 @@ fn build_ui_state<H: Host>(
     current_asmop: Option<&AssemblyOp>,
     cycle: usize,
 ) -> crate::exec::DapUiState {
-    // Build callstack from the host's frame stack (bottom-to-top order, reversed so the
-    // top-of-stack / most-recent frame comes first — matching DAP convention).
-    let callstack: Vec<crate::exec::DapUiFrame> = if host.frames.is_empty() {
-        // Fallback when no frames have been recorded yet.
-        let (name, source_path, line) = match current_asmop {
-            Some(asmop) => {
-                let loc = resolve_asmop_location(asmop, host);
-                let (source_path, line) = loc.map_or((None, 0), |(path, line)| (Some(path), line));
-                (asmop.context_name().clone(), source_path, line)
-            }
-            None => (format!("cycle {cycle}").into_boxed_str().into(), None, 0),
-        };
-        vec![crate::exec::DapUiFrame {
-            name,
-            source_path,
-            line,
-            column: 0,
-        }]
-    } else {
-        host.frames
-            .iter()
-            .rev()
-            .map(|frame| crate::exec::DapUiFrame {
-                name: frame.name.clone(),
-                source_path: frame.source_path.clone(),
-                line: frame.line,
-                column: frame.column,
-            })
-            .collect()
-    };
+    let callstack = presented_frames(host, current_asmop, cycle)
+        .into_iter()
+        .map(|frame| crate::exec::DapUiFrame {
+            name: frame.name,
+            source_path: frame.source_path,
+            line: frame.line,
+            column: frame.column,
+            inline: frame.inline,
+        })
+        .collect();
 
     let current_stack = processor
         .state()
@@ -508,6 +507,68 @@ fn build_ui_state<H: Host>(
         current_stack,
         callstack,
     }
+}
+
+fn presented_frames<H: Host>(
+    host: &DapHostWrapper<'_, H>,
+    current_asmop: Option<&AssemblyOp>,
+    cycle: usize,
+) -> Vec<DapPresentedFrame> {
+    if host.frames.is_empty() {
+        let (name, source_path, line, column) = match current_asmop {
+            Some(asmop) => {
+                let loc = resolve_asmop_location_with_column(asmop, host);
+                let (source_path, line, column) =
+                    loc.map_or((None, 0, 0), |(path, line, column)| (Some(path), line, column));
+                (asmop.context_name().clone(), source_path, line, column)
+            }
+            None => (Arc::from(format!("cycle {cycle}")), None, 0, 0),
+        };
+        return vec![DapPresentedFrame {
+            name,
+            source_path,
+            line,
+            column,
+            inline: false,
+        }];
+    }
+
+    present_recorded_frames(&host.frames)
+}
+
+fn present_recorded_frames(frames: &[DapCallFrame]) -> Vec<DapPresentedFrame> {
+    let mut presented = Vec::new();
+    for frame in frames.iter().rev() {
+        for (inline_index, inline) in frame.inline_frames.iter().enumerate() {
+            let (source_path, line, column) = if inline_index == 0 {
+                (frame.source_path.clone(), frame.line, frame.column)
+            } else {
+                let call_site = &frame.inline_frames[inline_index - 1];
+                (call_site.source_path.clone(), call_site.line, call_site.column)
+            };
+            presented.push(DapPresentedFrame {
+                name: Arc::from(format!("[inlined] {}", inline.name)),
+                source_path,
+                line,
+                column,
+                inline: true,
+            });
+        }
+
+        let (source_path, line, column) = frame.inline_frames.last().map_or_else(
+            || (frame.source_path.clone(), frame.line, frame.column),
+            |inline| (inline.source_path.clone(), inline.line, inline.column),
+        );
+        presented.push(DapPresentedFrame {
+            name: frame.name.clone(),
+            source_path,
+            line,
+            column,
+            inline: false,
+        });
+    }
+
+    presented
 }
 
 // BREAKPOINT STORAGE
@@ -547,21 +608,35 @@ struct ContinueBreakpoints<'a> {
 
 /// Resolve an `AssemblyOp`'s location to a (file_path, line_number) pair using the host.
 fn resolve_asmop_location<H: Host>(asmop: &AssemblyOp, host: &H) -> Option<(String, i64)> {
-    let location = asmop.location()?;
-    resolve_location(location, host)
+    resolve_asmop_location_with_column(asmop, host).map(|(path, line, _)| (path, line))
+}
+
+fn resolve_asmop_location_with_column<H: Host>(
+    asmop: &AssemblyOp,
+    host: &H,
+) -> Option<(String, i64, i64)> {
+    resolve_location_with_column(asmop.location()?, host)
 }
 
 fn resolve_location<H: Host>(location: &Location, host: &H) -> Option<(String, i64)> {
+    resolve_location_with_column(location, host).map(|(path, line, _)| (path, line))
+}
+
+fn resolve_location_with_column<H: Host>(
+    location: &Location,
+    host: &H,
+) -> Option<(String, i64, i64)> {
     let (span, source_file) = host.get_label_and_source_file(location);
     if let Some(source_file) = source_file {
         let file_line_col = source_file.location(span);
         let path = file_line_col.uri.as_ref().to_string();
         let line = file_line_col.line.to_u32() as i64;
-        return Some((path, line));
+        let column = file_line_col.column.to_u32() as i64;
+        return Some((path, line, column));
     }
 
     crate::debug::resolve_location_from_filesystem(location)
-        .map(|(path, line)| (path.display().to_string(), line as i64))
+        .map(|(path, line)| (path.display().to_string(), line as i64, 0))
 }
 
 fn should_defer_function_breakpoint(resolved: Option<&(String, i64)>, context_name: &str) -> bool {
@@ -1028,13 +1103,14 @@ fn evaluate_debug_variable<H: Host>(
 /// If the frame stack is empty (e.g. before the first FrameStart trace event), a root frame
 /// is pushed so there is always at least one frame visible in the stack trace.
 fn update_top_frame<H: Host>(host: &mut DapHostWrapper<'_, H>, current_asmop: Option<&AssemblyOp>) {
-    let (name, source_path, line) = match current_asmop {
+    let (name, source_path, line, column) = match current_asmop {
         Some(asmop) => {
-            let loc = resolve_asmop_location(asmop, &*host);
-            let (source_path, line) = loc.map_or((None, 0), |(p, l)| (Some(p), l));
-            (asmop.context_name().clone(), source_path, line)
+            let loc = resolve_asmop_location_with_column(asmop, &*host);
+            let (source_path, line, column) =
+                loc.map_or((None, 0, 0), |(path, line, column)| (Some(path), line, column));
+            (asmop.context_name().clone(), source_path, line, column)
         }
-        None => (Arc::default(), None, 0),
+        None => (Arc::default(), None, 0, 0),
     };
 
     if host.frames.is_empty() {
@@ -1042,12 +1118,43 @@ fn update_top_frame<H: Host>(host: &mut DapHostWrapper<'_, H>, current_asmop: Op
             name,
             source_path,
             line,
-            column: 0,
+            column,
+            inline_frames: Vec::new(),
         });
     } else if let Some(top) = host.frames.last_mut() {
         top.name = name;
         top.source_path = source_path;
         top.line = line;
+        top.column = column;
+    }
+}
+
+fn update_top_frame_with_debug<H: Host>(
+    host: &mut DapHostWrapper<'_, H>,
+    current_asmop: Option<&AssemblyOp>,
+    inline_frames: &[crate::debug::InlineCallFrame],
+) {
+    update_top_frame(host, current_asmop);
+
+    let inline_frames = inline_frames
+        .iter()
+        .map(|frame| {
+            let (source_path, line, column) =
+                resolve_location_with_column(frame.call_site(), &*host)
+                    .map_or((None, 0, 0), |(source_path, line, column)| {
+                        (Some(source_path), line, column)
+                    });
+            DapInlineFrame {
+                name: frame.display_name().to_string(),
+                source_path,
+                line,
+                column,
+            }
+        })
+        .collect();
+
+    if let Some(top) = host.frames.last_mut() {
+        top.inline_frames = inline_frames;
     }
 }
 
@@ -1258,6 +1365,7 @@ impl DapExecutor {
             let mut cycle: usize = 0;
             let mut current_debug_info: Option<Arc<PackageDebugInfo>> = None;
             let mut current_asmop: Option<AssemblyOp> = None;
+            let mut current_inline_frames = Vec::new();
             let mut debug_state = DapDebugVarState::new();
 
             // Extract initial asmop and populate the root frame.
@@ -1270,8 +1378,20 @@ impl DapExecutor {
                 } = extract_current_op(ctx);
                 current_asmop =
                     extract_asm_op(current_debug_info.as_deref(), source_node_id, op_idx);
+                current_inline_frames = inline_frames_for_operation(
+                    current_debug_info.as_deref().zip(source_node_id).map(
+                        |(debug_info, source_node_id)| {
+                            (debug_info, source_node_id, op_idx.unwrap_or_default() as u32)
+                        },
+                    ),
+                    ctx.inherited_inline_call_contexts(),
+                );
             }
-            update_top_frame(&mut wrapper, current_asmop.as_ref());
+            update_top_frame_with_debug(
+                &mut wrapper,
+                current_asmop.as_ref(),
+                &current_inline_frames,
+            );
 
             // On restart, emit initial state immediately (no handshake needed).
             if is_restart {
@@ -1650,59 +1770,28 @@ impl DapExecutor {
                     }
 
                     Command::StackTrace(ref _args) => {
-                        // Build stack frames from the host's frame stack (reversed: top-of-stack
-                        // first, matching DAP convention).
-                        let frames: Vec<types::StackFrame> = if wrapper.frames.is_empty() {
-                            // Fallback when no frames have been recorded.
-                            let (name, source, line) = if let Some(asmop) = current_asmop.as_ref() {
-                                let loc = resolve_asmop_location(asmop, &wrapper);
-                                let (path, line_num) =
-                                    loc.unwrap_or_else(|| ("<unknown>".into(), 0));
-                                let source = types::Source {
-                                    name: Some(
-                                        path.rsplit('/').next().unwrap_or(&path).to_string(),
-                                    ),
-                                    path: Some(path),
+                        let frames = presented_frames(&wrapper, current_asmop.as_ref(), cycle)
+                            .into_iter()
+                            .enumerate()
+                            .map(|(id, frame)| {
+                                let source = frame.source_path.as_ref().map(|path| types::Source {
+                                    name: Some(path.rsplit('/').next().unwrap_or(path).to_string()),
+                                    path: Some(path.clone()),
                                     ..Default::default()
-                                };
-                                (asmop.context_name().clone(), Some(source), line_num)
-                            } else {
-                                (format!("cycle {cycle}").into_boxed_str().into(), None, 0)
-                            };
-                            vec![types::StackFrame {
-                                id: 0,
-                                name,
-                                source,
-                                line,
-                                column: 0,
-                                ..Default::default()
-                            }]
-                        } else {
-                            wrapper
-                                .frames
-                                .iter()
-                                .rev()
-                                .enumerate()
-                                .map(|(id, frame)| {
-                                    let source =
-                                        frame.source_path.as_ref().map(|path| types::Source {
-                                            name: Some(
-                                                path.rsplit('/').next().unwrap_or(path).to_string(),
-                                            ),
-                                            path: Some(path.clone()),
-                                            ..Default::default()
-                                        });
-                                    types::StackFrame {
-                                        id: id as i64,
-                                        name: frame.name.clone(),
-                                        source,
-                                        line: frame.line,
-                                        column: frame.column,
-                                        ..Default::default()
-                                    }
-                                })
-                                .collect()
-                        };
+                                });
+                                types::StackFrame {
+                                    id: id as i64,
+                                    name: frame.name,
+                                    source,
+                                    line: frame.line,
+                                    column: frame.column,
+                                    presentation_hint: frame
+                                        .inline
+                                        .then_some(types::StackFramePresentationhint::Subtle),
+                                    ..Default::default()
+                                }
+                            })
+                            .collect::<Vec<_>>();
 
                         let total = frames.len() as i64;
                         let resp =
@@ -2193,6 +2282,12 @@ fn advance_one<H: Host>(
         ..
     } = extract_current_op(&ctx);
     let debug_info = ctx.debug_info();
+    let inline_frames = inline_frames_for_operation(
+        debug_info.as_deref().zip(source_node_id).map(|(debug_info, source_node_id)| {
+            (debug_info, source_node_id, op_idx.unwrap_or_default() as u32)
+        }),
+        ctx.inherited_inline_call_contexts(),
+    );
     let executed_source_node = source_node_id.zip(debug_info.as_deref()).map(|(id, di)| &di[id]);
     let (executed_asmop, debug_var_infos) = match executed_source_node.zip(op_idx) {
         Some((source_node, op_idx)) => {
@@ -2218,6 +2313,7 @@ fn advance_one<H: Host>(
             *cycle += 1;
             record_debug_vars(debug_state, *cycle, debug_var_infos, &pre_step_stack);
             *current_asmop = executed_asmop;
+            update_top_frame_with_debug(host, current_asmop.as_ref(), &inline_frames);
             Ok(Some(new_ctx))
         }
         Ok(None) => {
@@ -2608,11 +2704,14 @@ enum StepResult {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::PathBuf};
+
     use miden_assembly::DefaultSourceManager;
     use miden_core::{
         Felt,
         events::{EventId, EventName},
     };
+    use miden_debug_types::{ByteIndex, Location, SourceManagerExt, Uri};
     use miden_processor::event::EventHandler;
 
     use super::*;
@@ -2787,5 +2886,135 @@ mod tests {
             &prefixes,
             Some(39),
         ));
+    }
+
+    #[test]
+    fn dap_presents_inline_frames_in_innermost_first_order() {
+        let frames = vec![DapCallFrame {
+            name: "crate::physical".into(),
+            source_path: Some("src/lib.rs".into()),
+            line: 30,
+            column: 5,
+            inline_frames: vec![
+                DapInlineFrame {
+                    name: "crate::inner".into(),
+                    source_path: Some("src/lib.rs".into()),
+                    line: 20,
+                    column: 3,
+                },
+                DapInlineFrame {
+                    name: "crate::outer".into(),
+                    source_path: Some("src/lib.rs".into()),
+                    line: 10,
+                    column: 1,
+                },
+            ],
+        }];
+
+        let presented = present_recorded_frames(&frames);
+
+        assert_eq!(presented.len(), 3);
+        assert_eq!(presented[0].name.as_ref(), "[inlined] crate::inner");
+        assert_eq!((presented[0].line, presented[0].column), (30, 5));
+        assert_eq!(presented[1].name.as_ref(), "[inlined] crate::outer");
+        assert_eq!((presented[1].line, presented[1].column), (20, 3));
+        assert_eq!(presented[2].name.as_ref(), "crate::physical");
+        assert_eq!((presented[2].line, presented[2].column), (10, 1));
+    }
+
+    #[test]
+    fn dap_retains_unresolved_inline_call_sites_without_shifting_frames() {
+        let path = PathBuf::from("target")
+            .join("dap-source-tests")
+            .join(format!("unresolved-inline-{}", std::process::id()))
+            .join("source.masm");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "physical\nouter call\n").unwrap();
+
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let source_file = source_manager.load_file(&path).expect("source should load");
+        let uri = source_file.uri().clone();
+        let mut host = DebuggerHost::new(source_manager);
+        let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+        let physical = AssemblyOp::new(
+            Some(Location::new(uri.clone(), ByteIndex::new(0), ByteIndex::new(8))),
+            "crate::physical".to_string(),
+            1,
+            "add".to_string(),
+        );
+        let inline_frames = vec![
+            crate::debug::InlineCallFrame::new_for_test(
+                "crate::inner",
+                Location::new(Uri::new("memory://missing"), ByteIndex::new(0), ByteIndex::new(1)),
+            ),
+            crate::debug::InlineCallFrame::new_for_test(
+                "crate::outer",
+                Location::new(uri, ByteIndex::new(9), ByteIndex::new(19)),
+            ),
+        ];
+
+        update_top_frame_with_debug(&mut wrapper, Some(&physical), &inline_frames);
+
+        assert_eq!(wrapper.frames[0].inline_frames.len(), 2);
+        let presented = present_recorded_frames(&wrapper.frames);
+        assert_eq!(presented.len(), 3);
+        assert_eq!(presented[0].name.as_ref(), "[inlined] crate::inner");
+        assert!(presented[0].source_path.is_some());
+        assert_eq!(presented[1].name.as_ref(), "[inlined] crate::outer");
+        assert_eq!(presented[1].source_path, None);
+        assert_eq!((presented[1].line, presented[1].column), (0, 0));
+        assert_eq!(presented[2].name.as_ref(), "crate::physical");
+        assert!(presented[2].source_path.is_some());
+
+        fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn dap_propagates_asmop_columns_through_frame_presentation() {
+        let path = PathBuf::from("target")
+            .join("dap-source-tests")
+            .join(format!("asmop-column-{}", std::process::id()))
+            .join("source.masm");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "zero\n  add\n    mul\n").unwrap();
+
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let source_file = source_manager.load_file(&path).expect("source should load");
+        let uri = source_file.uri().clone();
+        let mut host = DebuggerHost::new(source_manager);
+        let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+        let add = AssemblyOp::new(
+            Some(Location::new(uri.clone(), ByteIndex::new(7), ByteIndex::new(10))),
+            "crate::physical".to_string(),
+            1,
+            "add".to_string(),
+        );
+        let mul = AssemblyOp::new(
+            Some(Location::new(uri, ByteIndex::new(15), ByteIndex::new(18))),
+            "crate::physical".to_string(),
+            1,
+            "mul".to_string(),
+        );
+
+        let fallback = presented_frames(&wrapper, Some(&add), 0);
+        assert_eq!((fallback[0].line, fallback[0].column), (2, 3));
+
+        update_top_frame(&mut wrapper, Some(&add));
+        assert_eq!((wrapper.frames[0].line, wrapper.frames[0].column), (2, 3));
+
+        update_top_frame(&mut wrapper, Some(&mul));
+        assert_eq!((wrapper.frames[0].line, wrapper.frames[0].column), (3, 5));
+
+        wrapper.frames[0].inline_frames.push(DapInlineFrame {
+            name: "crate::inline".into(),
+            source_path: None,
+            line: 0,
+            column: 0,
+        });
+        let presented = present_recorded_frames(&wrapper.frames);
+        assert_eq!(presented[0].name.as_ref(), "[inlined] crate::inline");
+        assert_eq!((presented[0].line, presented[0].column), (3, 5));
+
+        fs::remove_dir_all(path.parent().unwrap()).ok();
     }
 }

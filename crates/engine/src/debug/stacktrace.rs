@@ -9,7 +9,8 @@ use std::{
 
 use miden_core::operations::AssemblyOp;
 use miden_debug_types::{Location, SourceFile, SourceManager, SourceManagerExt, SourceSpan, Uri};
-use miden_processor::{ContextId, operation::Operation, trace::RowIndex};
+use miden_mast_package::debug_info::{DebugSourceInlineCall, DebugSourceNodeId, PackageDebugInfo};
+use miden_processor::{ContextId, SourceInlineCallContext, operation::Operation, trace::RowIndex};
 
 use crate::Event;
 
@@ -28,6 +29,120 @@ pub struct StepInfo<'a> {
     pub asmop: Option<&'a AssemblyOp>,
     pub clk: RowIndex,
     pub ctx: ContextId,
+    pub inline_frames: &'a [InlineCallFrame],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineCallFrame {
+    name: Arc<str>,
+    call_site: Location,
+}
+
+impl InlineCallFrame {
+    #[cfg(all(test, feature = "dap"))]
+    pub(crate) fn new_for_test(name: impl Into<Arc<str>>, call_site: Location) -> Self {
+        Self {
+            name: name.into(),
+            call_site,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn call_site(&self) -> &Location {
+        &self.call_site
+    }
+
+    pub fn display_name(&self) -> String {
+        demangle(&self.name)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum LogicalFrameKind {
+    Physical,
+    Inline,
+}
+
+#[derive(Debug, Clone)]
+enum LogicalFrameLocation {
+    Assembly(Location),
+    Resolved(ResolvedLocation),
+}
+
+#[derive(Debug, Clone)]
+pub struct LogicalStackFrame {
+    name: Arc<str>,
+    kind: LogicalFrameKind,
+    location: Option<LogicalFrameLocation>,
+    physical_index: usize,
+}
+
+impl LogicalStackFrame {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn kind(&self) -> LogicalFrameKind {
+        self.kind
+    }
+
+    pub fn physical_index(&self) -> usize {
+        self.physical_index
+    }
+
+    pub fn display_name(&self) -> String {
+        match self.kind {
+            LogicalFrameKind::Physical => self.name.to_string(),
+            LogicalFrameKind::Inline => format!("[inlined] {}", self.name),
+        }
+    }
+
+    pub fn resolved(&self, source_manager: &dyn SourceManager) -> Option<ResolvedLocation> {
+        match self.location.as_ref()? {
+            LogicalFrameLocation::Assembly(location) => {
+                resolve_assembly_location(source_manager, location)
+            }
+            LogicalFrameLocation::Resolved(resolved) => Some(resolved.clone()),
+        }
+    }
+}
+
+/// Resolves the inline frames active for an operation.
+///
+/// Rows owned by the current package come first. Contexts inherited across dynamic/external
+/// package boundaries follow in the VM-provided innermost-to-outermost order.
+pub fn inline_frames_for_operation<'a>(
+    current: Option<(&PackageDebugInfo, DebugSourceNodeId, u32)>,
+    inherited: impl IntoIterator<Item = &'a SourceInlineCallContext>,
+) -> Vec<InlineCallFrame> {
+    let mut frames = Vec::new();
+    if let Some((debug_info, source_node, op_idx)) = current {
+        append_inline_frames(
+            &mut frames,
+            debug_info,
+            debug_info.inline_calls_for_operation(source_node, op_idx),
+        );
+    }
+    for context in inherited {
+        append_inline_frames(&mut frames, context.debug_info(), context.inline_calls());
+    }
+    frames
+}
+
+fn append_inline_frames<'a>(
+    frames: &mut Vec<InlineCallFrame>,
+    debug_info: &PackageDebugInfo,
+    rows: impl IntoIterator<Item = &'a DebugSourceInlineCall>,
+) {
+    frames.extend(rows.into_iter().filter_map(|row| {
+        let function = debug_info.get_function(row.callee_idx)?;
+        let name = debug_info.get_string(function.name_idx)?;
+        let call_site = debug_info.get_location(row.loc_idx)?;
+        Some(InlineCallFrame { name, call_site })
+    }));
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +198,42 @@ impl CallStack {
         self.frames.as_slice()
     }
 
+    pub fn logical_frames(&self, strip_prefix: &str) -> Vec<LogicalStackFrame> {
+        let mut logical = Vec::new();
+        for (physical_index, frame) in self.frames.iter().enumerate() {
+            let current_location = frame.last_logical_location();
+            let location = frame
+                .inline_frames
+                .last()
+                .map(|inline| LogicalFrameLocation::Assembly(inline.call_site.clone()))
+                .or_else(|| current_location.clone());
+            logical.push(LogicalStackFrame {
+                name: frame.procedure(strip_prefix).unwrap_or_else(|| Arc::from("<unknown>")),
+                kind: LogicalFrameKind::Physical,
+                location,
+                physical_index,
+            });
+
+            for inline_index in (0..frame.inline_frames.len()).rev() {
+                let inline = &frame.inline_frames[inline_index];
+                let location = if inline_index == 0 {
+                    current_location.clone()
+                } else {
+                    Some(LogicalFrameLocation::Assembly(
+                        frame.inline_frames[inline_index - 1].call_site.clone(),
+                    ))
+                };
+                logical.push(LogicalStackFrame {
+                    name: Arc::from(inline.display_name().into_boxed_str()),
+                    kind: LogicalFrameKind::Inline,
+                    location,
+                    physical_index,
+                });
+            }
+        }
+        logical
+    }
+
     /// Updates the call stack from `info`
     ///
     /// Returns the call frame exited this cycle, if any
@@ -98,8 +249,8 @@ impl CallStack {
         };
         log::trace!("handling {:?}/{:?} at cycle {}: {:?}", info.control, info.op, info.clk, event);
         let is_frame_start = event.as_ref().is_some_and(|event| event.is_frame_start());
+        let is_frame_end = event.as_ref().is_some_and(|event| event.is_frame_end());
         let popped_frame = self.handle_event(event, procedure.clone(), info.op, info.asmop);
-        let is_frame_end = popped_frame.is_some();
 
         match info.control {
             Some(ControlFlowOp::Span) => {
@@ -122,13 +273,21 @@ impl CallStack {
             Some(ControlFlowOp::Respan) | None => {}
         }
 
-        let Some(op) = info.op else {
-            return popped_frame;
-        };
+        if !is_frame_end {
+            if self.frames.is_empty() {
+                self.frames.push(CallFrame::new(procedure.clone()));
+            }
+            self.frames.last_mut().unwrap().inline_frames = info.inline_frames.to_vec();
+            self.update_current_procedure(procedure.clone());
+        }
 
         if is_frame_start || is_frame_end {
             return popped_frame;
         }
+
+        let Some(op) = info.op else {
+            return popped_frame;
+        };
 
         // Attempt to supply procedure context from the current span context, if needed +
         // available
@@ -158,19 +317,10 @@ impl CallStack {
         // available
         let procedure = procedure.or_else(|| self.frames.last().and_then(|f| f.procedure.clone()));
 
-        // Do we have a frame? If not, create one
-        if self.frames.is_empty() {
-            self.frames.push(CallFrame::new(procedure.clone()));
-        }
-
+        // `exec` changes procedure context without creating a physical frame. Keep the physical
+        // frame synchronized with the best context available for the current operation.
+        self.update_current_procedure(procedure);
         let current_frame = self.frames.last_mut().unwrap();
-
-        // Does the current frame have a procedure context/location? Use the one from this op if
-        // so
-        let procedure_context_updated = current_frame.procedure.is_none() && procedure.is_some();
-        if procedure_context_updated {
-            current_frame.procedure.clone_from(&procedure);
-        }
 
         // Push op into call frame if this is any op other than `nop` or frame setup
         if !matches!(op, Operation::Noop) {
@@ -178,9 +328,16 @@ impl CallStack {
             current_frame.push(op, cycle_idx, asmop.as_deref());
         }
 
-        // Check if we should also update the caller frame's exec detail
+        popped_frame
+    }
+
+    fn update_current_procedure(&mut self, procedure: Option<Arc<str>>) {
+        let context_initialized = self
+            .frames
+            .last_mut()
+            .is_some_and(|frame| frame.update_procedure(procedure.clone()));
         let num_frames = self.frames.len();
-        if procedure_context_updated && num_frames > 1 {
+        if context_initialized && num_frames > 1 {
             let caller_frame = &mut self.frames[num_frames - 2];
             if let Some(OpDetail::Exec { callee }) = caller_frame.context.back_mut()
                 && callee.is_none()
@@ -188,8 +345,6 @@ impl CallStack {
                 *callee = procedure;
             }
         }
-
-        popped_frame
     }
 
     // Get or cache procedure name/context as `Arc<str>`
@@ -240,6 +395,7 @@ pub struct CallFrame {
     context: VecDeque<OpDetail>,
     display_name: std::cell::OnceCell<Arc<str>>,
     finishing: bool,
+    inline_frames: Vec<InlineCallFrame>,
 }
 impl CallFrame {
     pub fn new(procedure: Option<Arc<str>>) -> Self {
@@ -248,6 +404,7 @@ impl CallFrame {
             context: Default::default(),
             display_name: Default::default(),
             finishing: false,
+            inline_frames: Vec::new(),
         }
     }
 
@@ -273,6 +430,7 @@ impl CallFrame {
             context,
             display_name: Default::default(),
             finishing: false,
+            inline_frames: Vec::new(),
         }
     }
 
@@ -287,6 +445,23 @@ impl CallFrame {
             Arc::<str>::from(name.into_boxed_str())
         });
         Some(Arc::clone(name))
+    }
+
+    /// Update this physical frame's procedure, returning true only when the context was first
+    /// initialized. Later changes arise from `exec` and must invalidate the cached display name,
+    /// but must not rewrite the caller's recorded callee.
+    fn update_procedure(&mut self, procedure: Option<Arc<str>>) -> bool {
+        let Some(procedure) = procedure else {
+            return false;
+        };
+        if self.procedure.as_ref() == Some(&procedure) {
+            return false;
+        }
+
+        let initialized = self.procedure.is_none();
+        self.procedure = Some(procedure);
+        self.display_name.take();
+        initialized
     }
 
     pub fn push_exec(&mut self, callee: Option<Arc<str>>) {
@@ -336,15 +511,17 @@ impl CallFrame {
     }
 
     pub fn last_location(&self) -> Option<&Location> {
-        match self.context.back() {
-            Some(OpDetail::Full { location, .. }) => location.as_ref(),
-            Some(OpDetail::Basic { .. }) => None,
-            Some(OpDetail::Exec { .. }) => {
-                let op = self.context.iter().rev().nth(1)?;
-                op.location()
-            }
-            None => None,
-        }
+        self.context.iter().rev().find_map(OpDetail::location)
+    }
+
+    fn last_logical_location(&self) -> Option<LogicalFrameLocation> {
+        self.context.iter().rev().find_map(|detail| {
+            detail
+                .location()
+                .cloned()
+                .map(LogicalFrameLocation::Assembly)
+                .or_else(|| detail.cached_resolved().cloned().map(LogicalFrameLocation::Resolved))
+        })
     }
 
     pub fn last_resolved(&self, source_manager: &dyn SourceManager) -> Option<&ResolvedLocation> {
@@ -431,23 +608,34 @@ impl OpDetail {
     pub fn resolve(&self, source_manager: &dyn SourceManager) -> Option<&ResolvedLocation> {
         match self {
             Self::Full {
-                location: Some(loc),
-                resolved,
-                ..
-            } => resolved
-                .get_or_init(|| {
-                    let source_file = resolve_source_file_for_location(source_manager, loc)?;
-                    let span = SourceSpan::new(source_file.id(), loc.start..loc.end);
-                    let file_line_col = source_file.location(span);
-                    Some(ResolvedLocation {
-                        source_file,
-                        line: file_line_col.line.to_u32(),
-                        col: file_line_col.column.to_u32(),
-                        span,
+                location, resolved, ..
+            } => {
+                if let Some(cached) = resolved.get() {
+                    return cached.as_ref();
+                }
+                let loc = location.as_ref()?;
+                resolved
+                    .get_or_init(|| {
+                        let source_file = resolve_source_file_for_location(source_manager, loc)?;
+                        let span = SourceSpan::new(source_file.id(), loc.start..loc.end);
+                        let file_line_col = source_file.location(span);
+                        Some(ResolvedLocation {
+                            source_file,
+                            line: file_line_col.line.to_u32(),
+                            col: file_line_col.column.to_u32(),
+                            span,
+                        })
                     })
-                })
-                .as_ref(),
+                    .as_ref()
+            }
             _ => None,
+        }
+    }
+
+    fn cached_resolved(&self) -> Option<&ResolvedLocation> {
+        match self {
+            Self::Full { resolved, .. } => resolved.get().and_then(Option::as_ref),
+            Self::Exec { .. } | Self::Basic { .. } => None,
         }
     }
 }
@@ -537,9 +725,9 @@ impl<'a> StackTrace<'a> {
         recent: &'a VecDeque<Operation>,
         source_manager: &'a dyn SourceManager,
     ) -> Self {
-        let current_frame = callstack.current_frame().map(|frame| {
-            let location = frame.last_resolved(source_manager).cloned();
-            let procedure = frame.procedure("");
+        let current_frame = callstack.logical_frames("").last().map(|frame| {
+            let location = frame.resolved(source_manager);
+            let procedure = Some(Arc::from(frame.display_name().into_boxed_str()));
             CurrentFrame {
                 procedure,
                 location,
@@ -562,29 +750,30 @@ impl fmt::Display for StackTrace<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use std::fmt::Write;
 
-        let num_frames = self.callstack.frames.len();
+        let frames = self.callstack.logical_frames("");
+        let num_frames = frames.len();
 
         writeln!(f, "\nStack Trace:")?;
 
-        for (i, frame) in self.callstack.frames.iter().enumerate() {
+        for (i, frame) in frames.iter().enumerate() {
             let is_top = i + 1 == num_frames;
-            let name = frame.procedure("");
-            let name = name.as_deref().unwrap_or("<unknown>");
+            let name = frame.display_name();
             if is_top {
                 write!(f, " `-> {name}")?;
             } else {
                 write!(f, " |-> {name}")?;
             }
-            if let Some(resolved) = frame.last_resolved(self.source_manager) {
+            if let Some(resolved) = frame.resolved(self.source_manager) {
                 write!(f, " in {resolved}")?;
             } else {
                 write!(f, " in <unavailable>")?;
             }
             if is_top {
+                let physical_frame = &self.callstack.frames[frame.physical_index()];
                 // Print op context
-                let context_size = frame.context.len();
+                let context_size = physical_frame.context.len();
                 writeln!(f, ":\n\nLast {context_size} Instructions (of current frame):")?;
-                for (i, op) in frame.context.iter().enumerate() {
+                for (i, op) in physical_frame.context.iter().enumerate() {
                     let is_last = i + 1 == context_size;
                     if let Some(callee) = op.callee("") {
                         write!(f, " |   exec.{callee}")?;
@@ -616,6 +805,21 @@ impl fmt::Display for StackTrace<'_> {
 
         Ok(())
     }
+}
+
+fn resolve_assembly_location(
+    source_manager: &dyn SourceManager,
+    location: &Location,
+) -> Option<ResolvedLocation> {
+    let source_file = resolve_source_file_for_location(source_manager, location)?;
+    let span = SourceSpan::new(source_file.id(), location.start..location.end);
+    let file_line_col = source_file.location(span);
+    Some(ResolvedLocation {
+        source_file,
+        line: file_line_col.line.to_u32(),
+        col: file_line_col.column.to_u32(),
+        span,
+    })
 }
 
 fn demangle(name: &str) -> String {
@@ -657,6 +861,209 @@ mod tests {
         let resolved = detail.resolve(&source_manager).expect("source should resolve");
         assert_eq!(resolved.line, 2);
         assert!(resolved.source_file.uri().as_str().ends_with("src/lib.rs"));
+
+        fs::remove_dir_all(path.parent().unwrap().parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn logical_frames_place_innermost_inline_frame_on_top() {
+        let path = test_source_path("inline-frames");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let source = "physical call\nouter call\ninner body\n";
+        fs::write(&path, source).unwrap();
+        let uri = Uri::from(path.display().to_string());
+
+        let mut frame = CallFrame::new(Some(Arc::from("crate::physical")));
+        let outer_start = "physical call\n".len() as u32;
+        frame.inline_frames = vec![
+            InlineCallFrame {
+                name: Arc::from("crate::inner"),
+                call_site: Location::new(
+                    uri.clone(),
+                    ByteIndex::new(outer_start),
+                    ByteIndex::new(outer_start + "outer call".len() as u32),
+                ),
+            },
+            InlineCallFrame {
+                name: Arc::from("crate::outer"),
+                call_site: Location::new(
+                    uri.clone(),
+                    ByteIndex::new(0),
+                    ByteIndex::new("physical call".len() as u32),
+                ),
+            },
+        ];
+        let inner_start = "physical call\nouter call\n".len() as u32;
+        let asmop = AssemblyOp::new(
+            Some(Location::new(
+                uri,
+                ByteIndex::new(inner_start),
+                ByteIndex::new(inner_start + "inner body".len() as u32),
+            )),
+            "crate::physical".to_string(),
+            1,
+            "add".to_string(),
+        );
+        frame.push(Operation::Add, 1, Some(&asmop));
+
+        let mut callstack = CallStack::new(Arc::new(Mutex::new(BTreeMap::new())));
+        callstack.frames.push(frame);
+        let source_manager = DefaultSourceManager::default();
+        let logical = callstack.logical_frames("");
+
+        assert_eq!(logical.len(), 3);
+        assert_eq!(logical[0].name(), "crate::physical");
+        assert_eq!(logical[0].kind(), LogicalFrameKind::Physical);
+        assert_eq!(logical[0].resolved(&source_manager).unwrap().line, 1);
+        assert_eq!(logical[1].name(), "crate::outer");
+        assert_eq!(logical[1].resolved(&source_manager).unwrap().line, 2);
+        assert_eq!(logical[2].name(), "crate::inner");
+        assert_eq!(logical[2].kind(), LogicalFrameKind::Inline);
+        assert_eq!(logical[2].resolved(&source_manager).unwrap().line, 3);
+
+        fs::remove_dir_all(path.parent().unwrap().parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn control_cycles_replace_and_clear_inline_frames() {
+        let inline = InlineCallFrame {
+            name: Arc::from("crate::inline"),
+            call_site: Location::new(Uri::new("test.masm"), ByteIndex::new(0), ByteIndex::new(1)),
+        };
+        let mut callstack = CallStack::new(Arc::new(Mutex::new(BTreeMap::new())));
+
+        callstack.next(&StepInfo {
+            op: None,
+            control: Some(ControlFlowOp::Split),
+            asmop: None,
+            clk: RowIndex::from(0u32),
+            ctx: ContextId::root(),
+            inline_frames: std::slice::from_ref(&inline),
+        });
+
+        let logical = callstack.logical_frames("");
+        assert_eq!(logical.len(), 2);
+        assert_eq!(logical[0].name(), "<unknown>");
+        assert_eq!(logical[1].name(), "crate::inline");
+
+        callstack.next(&StepInfo {
+            op: None,
+            control: Some(ControlFlowOp::Respan),
+            asmop: None,
+            clk: RowIndex::from(1u32),
+            ctx: ContextId::root(),
+            inline_frames: &[],
+        });
+
+        let logical = callstack.logical_frames("");
+        assert_eq!(logical.len(), 1);
+        assert_eq!(logical[0].name(), "<unknown>");
+    }
+
+    #[test]
+    fn logical_physical_frame_tracks_exec_procedure_changes() {
+        let mut callstack = CallStack::new(Arc::new(Mutex::new(BTreeMap::new())));
+        let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
+        callstack.next(&StepInfo {
+            op: Some(Operation::Add),
+            control: None,
+            asmop: Some(&main),
+            clk: RowIndex::from(0u32),
+            ctx: ContextId::root(),
+            inline_frames: &[],
+        });
+
+        let logical = callstack.logical_frames("");
+        assert_eq!(logical[0].name(), "program::main");
+        assert_eq!(logical[0].display_name(), "program::main");
+
+        let inline = InlineCallFrame {
+            name: Arc::from("source::inline"),
+            call_site: Location::new(Uri::new("test.masm"), ByteIndex::new(0), ByteIndex::new(1)),
+        };
+        let exec = AssemblyOp::new(None, "program::double".to_string(), 1, "mul".to_string());
+        callstack.next(&StepInfo {
+            op: Some(Operation::Mul),
+            control: None,
+            asmop: Some(&exec),
+            clk: RowIndex::from(1u32),
+            ctx: ContextId::root(),
+            inline_frames: std::slice::from_ref(&inline),
+        });
+
+        let logical = callstack.logical_frames("");
+        assert_eq!(logical.len(), 2);
+        assert_eq!(logical[0].kind(), LogicalFrameKind::Physical);
+        assert_eq!(logical[0].name(), "program::double");
+        assert_eq!(logical[0].display_name(), "program::double");
+        assert_eq!(logical[1].kind(), LogicalFrameKind::Inline);
+    }
+
+    #[test]
+    fn control_cycle_tracks_exec_procedure_change_before_first_operation() {
+        let mut callstack = CallStack::new(Arc::new(Mutex::new(BTreeMap::new())));
+        let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
+        callstack.next(&StepInfo {
+            op: Some(Operation::Add),
+            control: None,
+            asmop: Some(&main),
+            clk: RowIndex::from(0u32),
+            ctx: ContextId::root(),
+            inline_frames: &[],
+        });
+
+        let exec = AssemblyOp::new(None, "program::double".to_string(), 1, "if.true".to_string());
+        callstack.next(&StepInfo {
+            op: None,
+            control: Some(ControlFlowOp::Split),
+            asmop: Some(&exec),
+            clk: RowIndex::from(1u32),
+            ctx: ContextId::root(),
+            inline_frames: &[],
+        });
+
+        let logical = callstack.logical_frames("");
+        assert_eq!(logical[0].name(), "program::double");
+    }
+
+    #[cfg(feature = "dap")]
+    #[test]
+    fn remote_logical_frames_preserve_pre_resolved_locations() {
+        let path = test_source_path("remote-logical-frame");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "first line\nsecond line\n").unwrap();
+
+        let source_manager = DefaultSourceManager::default();
+        let source_file = source_manager.load_file(&path).expect("source should load");
+        let span = SourceSpan::new(source_file.id(), ByteIndex::new(11)..ByteIndex::new(17));
+        let remote = ResolvedLocation {
+            source_file,
+            line: 77,
+            col: 13,
+            span,
+        };
+        let callstack = CallStack::from_remote_frames(vec![CallFrame::from_remote(
+            Some(Arc::from("remote::procedure")),
+            Some(remote.clone()),
+        )]);
+
+        let recent = callstack
+            .current_frame()
+            .unwrap()
+            .last_resolved(&source_manager)
+            .expect("remote frame should retain its cached location");
+        assert_eq!(recent.line, remote.line);
+        assert_eq!(recent.col, remote.col);
+        assert_eq!(recent.span, remote.span);
+
+        let logical = callstack.logical_frames("");
+        let resolved = logical[0]
+            .resolved(&source_manager)
+            .expect("logical frame should retain its cached location");
+        assert_eq!(resolved.source_file.uri(), remote.source_file.uri());
+        assert_eq!(resolved.line, remote.line);
+        assert_eq!(resolved.col, remote.col);
+        assert_eq!(resolved.span, remote.span);
 
         fs::remove_dir_all(path.parent().unwrap().parent().unwrap()).ok();
     }

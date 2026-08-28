@@ -28,6 +28,7 @@ pub struct SourceCodePane {
     current_col: u32,
     num_lines: u32,
     selected_line: u32,
+    last_selected_stack_frame: usize,
     syntax_highlighter: Box<dyn Highlighter>,
     syntax_highlighting_states: BTreeMap<SourceId, Box<dyn HighlighterState>>,
     current_file: Option<HighlightedFile>,
@@ -103,27 +104,41 @@ impl SourceCodePane {
         }
     }
 
-    /// Get the [ResolvedLocation] for the current state
-    fn current_location(&self, state: &State) -> Option<ResolvedLocation> {
-        match state.executor().callstack.current_frame() {
-            Some(frame) => {
-                let resolved = frame.last_resolved(&state.source_manager);
-                resolved.cloned()
+    fn clear_location(&mut self) {
+        self.current_source_id = SourceId::UNKNOWN;
+        self.current_span = SourceSpan::default();
+        self.current_line = 0;
+        self.current_col = 0;
+        self.num_lines = 0;
+        self.selected_line = 0;
+        self.current_file = None;
+    }
+
+    fn update_location(&mut self, location: Option<ResolvedLocation>, selected_stack_frame: usize) {
+        match location {
+            Some(loc) => {
+                let source_id = loc.source_file.id();
+                if source_id != self.current_source_id {
+                    self.current_file = Some(self.highlight_file(&loc));
+                    self.current_source_id = source_id;
+                    self.num_lines = loc.source_file.line_count() as u32;
+                    self.selected_line = loc.line;
+                } else if self.selected_line != loc.line {
+                    self.selected_line = loc.line;
+                }
+                if let Some(current_file) = self.current_file.as_mut() {
+                    current_file.selected_span = loc.span;
+                }
+                self.current_span = loc.span;
+                self.current_line = loc.line;
+                self.current_col = loc.col;
             }
-            None if !self.current_source_id.is_unknown() => {
-                let source_file = state.source_manager.get(self.current_source_id).ok();
-                source_file.map(|src| ResolvedLocation {
-                    source_file: src,
-                    line: self.current_line,
-                    col: self.current_col,
-                    span: self.current_span,
-                })
+            None if selected_stack_frame != self.last_selected_stack_frame => {
+                self.clear_location();
             }
-            None => {
-                // Render empty source pane
-                None
-            }
+            None => {}
         }
+        self.last_selected_stack_frame = selected_stack_frame;
     }
 }
 
@@ -166,6 +181,7 @@ impl SourceCodePane {
             current_source_id: SourceId::UNKNOWN,
             num_lines: 0,
             selected_line: 0,
+            last_selected_stack_frame: 0,
             current_line: 0,
             current_col: 0,
             current_span: SourceSpan::default(),
@@ -177,25 +193,8 @@ impl SourceCodePane {
     }
 
     fn reload(&mut self, state: &State) {
-        self.current_source_id = SourceId::UNKNOWN;
-        self.current_span = SourceSpan::default();
-        self.current_line = 0;
-        self.current_col = 0;
-        self.num_lines = 0;
-        self.selected_line = 0;
-        self.current_file = None;
-
-        if let Some(frame) = state.executor().callstack.current_frame()
-            && let Some(loc) = frame.last_resolved(&state.source_manager)
-        {
-            self.current_file = Some(self.highlight_file(loc));
-            self.current_source_id = loc.source_file.id();
-            self.current_span = loc.span;
-            self.current_line = loc.line;
-            self.current_col = loc.col;
-            self.num_lines = loc.source_file.line_count() as u32;
-            self.selected_line = loc.line;
-        }
+        self.clear_location();
+        self.update_location(state.selected_display_location(), state.selected_stack_frame());
     }
 
     fn border_style(&self) -> Style {
@@ -229,18 +228,7 @@ impl SourceCodePane {
 impl Pane for SourceCodePane {
     fn init(&mut self, state: &State) -> Result<(), Report> {
         self.enable_syntax_highlighting(state);
-
-        if let Some(frame) = state.executor().callstack.current_frame()
-            && let Some(loc) = frame.last_resolved(&state.source_manager)
-        {
-            self.current_file = Some(self.highlight_file(loc));
-            self.current_source_id = loc.source_file.id();
-            self.current_span = loc.span;
-            self.current_line = loc.line;
-            self.current_col = loc.col;
-            self.num_lines = loc.source_file.line_count() as u32;
-            self.selected_line = loc.line;
-        }
+        self.update_location(state.selected_display_location(), state.selected_stack_frame());
 
         Ok(())
     }
@@ -277,25 +265,14 @@ impl Pane for SourceCodePane {
                 self.focused = false;
             }
             Action::Submit => {}
-            Action::Update | Action::Reload => {
-                if action == Action::Reload {
-                    self.reload(state);
-                }
-
-                if let Some(loc) = self.current_location(state) {
-                    let source_id = loc.source_file.id();
-                    if source_id != self.current_source_id {
-                        self.current_file = Some(self.highlight_file(&loc));
-                        self.current_source_id = source_id;
-                        self.num_lines = loc.source_file.line_count() as u32;
-                        self.selected_line = loc.line;
-                    } else if self.selected_line != loc.line {
-                        self.selected_line = loc.line;
-                    }
-                    self.current_span = loc.span;
-                    self.current_line = loc.line;
-                    self.current_col = loc.col;
-                }
+            Action::Update => {
+                self.update_location(
+                    state.selected_display_location(),
+                    state.selected_stack_frame(),
+                );
+            }
+            Action::Reload => {
+                self.reload(state);
             }
             _ => {}
         }
@@ -465,5 +442,66 @@ fn strip_newline(s: &[u8]) -> std::borrow::Cow<'_, str> {
         String::from_utf8_lossy(sans_newline)
     } else {
         String::from_utf8_lossy(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::PathBuf};
+
+    use miden_assembly::DefaultSourceManager;
+    use miden_debug_types::{ByteIndex, SourceManagerExt};
+
+    use super::*;
+
+    #[test]
+    fn clears_cached_source_when_selection_becomes_unresolvable() {
+        let (location, path) = test_location("clear-unresolvable");
+        let mut pane = SourceCodePane::new(false, Style::default());
+        pane.update_location(Some(location), 0);
+        assert!(pane.current_file.is_some());
+
+        pane.update_location(None, 1);
+
+        assert!(pane.current_file.is_none());
+        assert!(pane.current_source_id.is_unknown());
+        assert_eq!(pane.current_line, 0);
+        fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn retains_cached_source_for_unresolved_instruction_in_same_frame() {
+        let (location, path) = test_location("retain-transient");
+        let mut pane = SourceCodePane::new(false, Style::default());
+        pane.update_location(Some(location), 0);
+
+        pane.update_location(None, 0);
+
+        assert!(pane.current_file.is_some());
+        assert!(!pane.current_source_id.is_unknown());
+        assert_eq!(pane.current_line, 1);
+        fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    fn test_location(test_name: &str) -> (ResolvedLocation, PathBuf) {
+        let path = PathBuf::from("target")
+            .join("source-pane-tests")
+            .join(format!("{test_name}-{}", std::process::id()))
+            .join("source.masm");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "line one\nline two\n").unwrap();
+
+        let source_manager = DefaultSourceManager::default();
+        let source_file = source_manager.load_file(&path).expect("source should load");
+        let span = SourceSpan::new(source_file.id(), ByteIndex::new(0)..ByteIndex::new(4));
+        (
+            ResolvedLocation {
+                source_file,
+                line: 1,
+                col: 1,
+                span,
+            },
+            path,
+        )
     }
 }

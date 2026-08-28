@@ -17,7 +17,9 @@ use miden_processor::{
 use super::{DebuggerHost, ExecutionTrace};
 use crate::{
     Breakpoint, BreakpointType, OperationMatcher,
-    debug::{CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo},
+    debug::{
+        CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo, inline_frames_for_operation,
+    },
     profiling::Profiler,
 };
 
@@ -281,6 +283,12 @@ impl DebugExecutor {
             Some(op_idx) => source_node.asm_op_for_operation(op_idx as u32),
             None => source_node.asm_op_for_operation(0),
         });
+        let inline_frames = inline_frames_for_operation(
+            debug_info.as_deref().zip(debug_node_id).map(|(debug_info, debug_node_id)| {
+                (debug_info, debug_node_id, op_idx.unwrap_or_default() as u32)
+            }),
+            resume_ctx.inherited_inline_call_contexts(),
+        );
 
         // Look up debug vars from MAST forest for the current operation
         let debug_var_infos: Vec<_> = source_node
@@ -343,6 +351,7 @@ impl DebugExecutor {
                     asmop: self.current_asmop.as_ref(),
                     clk: RowIndex::from(self.cycle as u32),
                     ctx: self.current_context,
+                    inline_frames: &inline_frames,
                 };
                 let exited = self.callstack.next(&step_info);
 

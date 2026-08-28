@@ -19,17 +19,18 @@ when:
 miden-debug --repl sum.masp
 ```
 
-:::warning REPL is opt-in
+:::info Feature selection
 
-The default build enables `tui` and `dap` only. Rebuild with the `repl`
-feature to make `--repl` actually drop into the prompt:
+The default build includes the `repl` feature. For a minimal build without the
+TUI or DAP implementation, enable it explicitly:
 
 ```bash
-cargo build --release --features repl --bin miden-debug
+cargo build --release --no-default-features --features repl --bin miden-debug
 ```
 
-Without that feature, `--repl` (and `--commands`) exit with an error
-explaining that the build lacks the `repl` feature.
+The non-interactive `--commands` mode only needs the smaller `script` feature;
+it does not pull in the `rustyline` dependency used by the interactive prompt.
+Without the appropriate feature, either flag exits with a targeted error.
 
 :::
 

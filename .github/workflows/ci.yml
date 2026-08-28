@@ -53,6 +53,26 @@ jobs:
         run: |
           cargo make clippy
 
+  feature_combinations:
+    name: feature combinations
+    runs-on: ubuntu-latest
+    steps:
+      - *checkout
+      - *install-rust
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ github.workflow }}-shared-feature-combinations
+          prefix-key: ${{ env.RUST_CACHE_KEY }}
+          save-if: ${{ github.ref == 'refs/heads/next' }}
+      - *install-cargo-make
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack@0.6.44
+      - name: Check feature combinations
+        run: |
+          cargo make check-feature-combinations
+
   check_format:
     name: check formatting
     runs-on: ubuntu-latest

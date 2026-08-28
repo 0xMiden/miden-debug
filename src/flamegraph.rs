@@ -205,22 +205,6 @@ pub struct FlamegraphArgs {
         help_heading = "Linker"
     )]
     pub link_libraries: Vec<LinkLibrary>,
-    /// Source path prefixes used by the compiler's `-Zremap-path-prefix` option.
-    ///
-    /// When debug info stores trimmed source paths, DAP clients may still send
-    /// absolute editor paths. These prefixes provide an explicit mapping between
-    /// the two forms.
-    #[cfg(feature = "dap")]
-    #[cfg_attr(
-        feature = "tui",
-        arg(
-            long = "source-path-prefix",
-            alias = "trim-path-prefix",
-            value_name = "PATH",
-            help_heading = "Debugging"
-        )
-    )]
-    pub source_path_prefixes: Vec<PathBuf>,
 }
 
 impl FlamegraphArgs {
@@ -233,16 +217,16 @@ impl FlamegraphArgs {
             sysroot: self.sysroot,
             color: ColorChoice::Auto,
             entrypoint: self.entrypoint,
-            #[cfg(feature = "dap")]
+            #[cfg(all(feature = "dap", feature = "tui"))]
             dap_connect: None,
             #[cfg(feature = "dap")]
             start_debug_adapter: None,
-            #[cfg(feature = "dap")]
-            source_path_prefixes: self.source_path_prefixes,
+            source_path_prefixes: Vec::new(),
             search_path: self.search_path,
             link_libraries: self.link_libraries,
             repl: false,
             commands: None,
+            #[cfg(feature = "tui")]
             replay: None,
             #[cfg(feature = "python")]
             no_user_python_init: true,

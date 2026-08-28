@@ -30,8 +30,8 @@ below describe every option that's stable today.
 | Flag | Value | Description |
 | ---- | ----- | ----------- |
 | `--working-dir DIR` | path | Working directory the debugger uses for source lookups. Defaults to the current shell `cwd`. |
-| `--repl` | _flag_ | Use the plain-text REPL instead of the TUI. Requires the binary to be built with `--features repl` (not in the default feature set). See [REPL mode](./repl.md). |
-| `-x`, `--commands FILE` | path | Run a script of REPL commands non-interactively, then exit — analogous to `gdb -x FILE -batch`. Blank lines and lines starting with `#` are skipped. Requires the `repl` feature. |
+| `--repl` | _flag_ | Use the plain-text REPL instead of the TUI. Requires the binary to be built with the `repl` feature. See [REPL mode](./repl.md). |
+| `-x`, `--commands FILE` | path | Run a script of REPL commands non-interactively, then exit — analogous to `gdb -x FILE -batch`. Blank lines and lines starting with `#` are skipped. Requires the `script` feature (also enabled by `repl`). |
 | `--dap-connect ADDR` | `host:port` | Connect to a remote DAP server (e.g. `127.0.0.1:4711`) and drive it through the TUI. Mutually exclusive with passing a `FILE`. See [DAP](./dap.md). |
 
 ## Linker

@@ -3,7 +3,7 @@ use std::{
     time::Duration,
 };
 
-use futures::{FutureExt, StreamExt};
+use futures_util::{FutureExt, StreamExt};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 use ratatui::{
     backend::CrosstermBackend as Backend,

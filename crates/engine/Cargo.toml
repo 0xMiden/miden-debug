@@ -17,7 +17,6 @@ doctest = false
 
 [features]
 default = ["std"]
-tui = []
 dap = ["dep:miden-debug-dap", "dep:socket2"]
 std = ["clap/std", "clap/env", "miden-assembly-syntax/std"]
 proptest = ["dep:proptest"]

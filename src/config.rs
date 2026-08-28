@@ -67,7 +67,7 @@ pub struct DebuggerConfig {
     ///
     /// Specify the address of the DAP server (e.g. "127.0.0.1:4711").
     /// When this flag is set, the debugger connects to an existing remote session.
-    #[cfg(feature = "dap")]
+    #[cfg(all(feature = "dap", feature = "tui"))]
     #[arg(long, value_name = "ADDR", help_heading = "Execution")]
     pub dap_connect: Option<String>,
     /// Start a DAP debug server for the local program and wait for a client to connect.
@@ -81,7 +81,6 @@ pub struct DebuggerConfig {
     /// When debug info stores trimmed source paths, DAP clients may still send
     /// absolute editor paths. These prefixes provide an explicit mapping between
     /// the two forms.
-    #[cfg(feature = "dap")]
     #[arg(
         long = "source-path-prefix",
         alias = "trim-path-prefix",
@@ -95,6 +94,7 @@ pub struct DebuggerConfig {
     /// `miden-client exec --start-debug-adapter <ADDR> --record <FILE>`). The recorded program,
     /// inputs, resolved code, and event log are replayed so the same execution can be stepped
     /// through offline, without the original host.
+    #[cfg(feature = "tui")]
     #[arg(long, value_name = "FILE", help_heading = "Execution")]
     pub replay: Option<PathBuf>,
     /// Specify one or more search paths for link libraries requested via `-l`

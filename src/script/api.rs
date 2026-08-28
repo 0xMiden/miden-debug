@@ -85,11 +85,13 @@ impl ScriptDebugger {
     }
 
     /// Render the normal debugger prompt.
+    #[cfg(feature = "repl")]
     pub(crate) fn make_prompt(&self, color: bool) -> String {
         self.engine.borrow().make_prompt(color)
     }
 
     /// Print the current source location / procedure.
+    #[cfg(feature = "repl")]
     pub(crate) fn print_location(&self, out: &mut dyn Write) {
         self.engine.borrow().print_location(out);
     }

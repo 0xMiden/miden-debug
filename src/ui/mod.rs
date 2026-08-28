@@ -19,7 +19,6 @@ use log::LevelFilter;
 #[cfg(feature = "tui")]
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 
-#[cfg(feature = "tui")]
 pub use self::state::{DebugMode, State};
 #[cfg(feature = "tui")]
 use self::{action::Action, app::App};
@@ -70,6 +69,7 @@ pub fn run_with_state_and_log_level(
 /// (e.g. `miden-client exec --start-debug-adapter ... --record <FILE>`) and re-runs the same
 /// program with its captured inputs, forests, and event log fed back through the event-replay
 /// host — so the transaction can be stepped through offline, without the original host.
+#[cfg(feature = "tui")]
 pub fn run_replay_and_log_level(
     snapshot_path: &std::path::Path,
     logger: Box<dyn log::Log>,

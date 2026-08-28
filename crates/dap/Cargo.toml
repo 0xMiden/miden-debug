@@ -16,7 +16,7 @@ edition.workspace = true
 name = "dap"
 
 [features]
-integration_testing = ["fake", "rand"]
+integration_testing = ["dep:fake", "dep:rand"]
 client = []
 
 [dependencies]

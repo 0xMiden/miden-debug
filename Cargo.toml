@@ -95,7 +95,7 @@ name = "miden-debug-python"
 path = "src/main.rs"
 test = false
 bench = false
-required-features = ["python"]
+required-features = ["python", "repl"]
 
 [[example]]
 name = "compile-masm"
@@ -107,46 +107,47 @@ required-features = ["std"]
 
 [[test]]
 name = "println_smoke_test"
-required-features = ["tui"]
+required-features = ["std"]
 
 [[test]]
 name = "println_empty_string"
-required-features = ["tui"]
+required-features = ["std"]
 
 [[test]]
 name = "println_invalid_utf8"
-required-features = ["tui"]
+required-features = ["std"]
 
 [[test]]
 name = "println_oversized_length"
-required-features = ["tui"]
+required-features = ["std"]
 
 [[test]]
 name = "println_uninitialized_memory"
-required-features = ["tui"]
+required-features = ["std"]
 
 [[test]]
 name = "println_multiple_prints"
-required-features = ["tui"]
+required-features = ["std"]
 
 [[test]]
 name = "flamegraph_profile"
 required-features = ["flamegraph"]
 
 [features]
-default = ["tui", "dap", "repl"]
-flamegraph = ["std", "dep:env_logger", "dep:inferno"]
-tui = ["std", "flamegraph", "dep:crossterm", "dep:env_logger", "dep:ratatui", "dep:tui-input", "dep:signal-hook", "dep:syntect", "miden-debug-engine/tui"]
-repl = ["std", "dep:rustyline", "miden-debug-engine/tui"]
-dap = ["miden-debug-engine/dap"]
-python = ["repl", "dep:pyo3"]
+default = ["tui", "dap", "repl", "flamegraph"]
+flamegraph = ["std", "dep:inferno"]
+tui = ["std", "dep:crossterm", "dep:futures-util", "dep:ratatui", "dep:signal-hook", "dep:syntect", "dep:tokio", "dep:tokio-util", "dep:tui-input"]
+script = ["std"]
+repl = ["script", "dep:rustyline"]
+dap = ["std", "dep:futures-executor", "miden-debug-engine/dap"]
+python = ["script", "dep:pyo3", "dep:pyo3-build-config"]
 std = ["dep:env_logger", "clap/std", "clap/env", "compact_str/std", "miden-assembly-syntax/std", "miden-debug-engine/std"]
 proptest = ["miden-debug-engine/proptest"]
 
 [dependencies]
 clap.workspace = true
 crossterm = { version = "0.29.0", optional = true, features = ["event-stream"] }
-compact_str = { version = "0.9", default-features = false }
+compact_str = { version = "0.9", optional = true, default-features = false }
 miden-debug-engine.workspace = true
 env_logger = { version = "0.11", optional = true }
 inferno = { version = "0.12", optional = true, default-features = false }
@@ -161,7 +162,7 @@ miden-processor.workspace = true
 miden-project.workspace = true
 pyo3 = { version = "0.28.3", optional = true, features = ["auto-initialize"] }
 ratatui = { version = "0.30.0", optional = true }
-signal-hook = { version = "0.4.4", optional = true }
+signal-hook = { version = "0.4.4", optional = true, default-features = false }
 syntect = { version = "5.2.0", optional = true, default-features = false, features = [
     "parsing",
     "default-syntaxes",
@@ -171,13 +172,14 @@ syntect = { version = "5.2.0", optional = true, default-features = false, featur
 ] }
 thiserror.workspace = true
 tui-input = { version = "0.15", optional = true }
-rustyline = { version = "18.0", optional = true }
-tokio = { version = "1.39.2", features = ["rt", "time", "macros", "rt-multi-thread"] }
-tokio-util = "0.7.11"
-futures = "0.3.30"
+rustyline = { version = "18.0", optional = true, default-features = false }
+tokio = { version = "1.39.2", optional = true, features = ["rt", "time", "macros"] }
+tokio-util = { version = "0.7.11", optional = true }
+futures-executor = { version = "0.3.30", optional = true }
+futures-util = { version = "0.3.30", optional = true, default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
 
 [build-dependencies]
-pyo3-build-config = { version = "0.28.3", features = ["resolve-config"] }
+pyo3-build-config = { version = "0.28.3", optional = true, features = ["resolve-config"] }

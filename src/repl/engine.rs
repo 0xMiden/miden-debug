@@ -63,6 +63,7 @@ impl ReplEngine {
     /// When `color` is true, ANSI escape codes are emitted (for interactive
     /// use). When false, the prompt is plain text, which keeps scripted
     /// transcripts stable and matchable.
+    #[cfg(feature = "repl")]
     pub fn make_prompt(&self, color: bool) -> String {
         let cycle = self.state.executor().cycle;
 

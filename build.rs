@@ -1,17 +1,19 @@
+#[cfg(feature = "python")]
 use std::{
-    env,
     path::{Path, PathBuf},
     process::Command,
 };
 
 fn main() {
+    #[cfg(feature = "python")]
+    configure_python();
+}
+
+#[cfg(feature = "python")]
+fn configure_python() {
     println!("cargo:rerun-if-env-changed=PYO3_PYTHON");
     println!("cargo:rerun-if-env-changed=PYO3_CONFIG_FILE");
     println!("cargo:rerun-if-env-changed=PYO3_NO_PYTHON");
-
-    if env::var_os("CARGO_FEATURE_PYTHON").is_none() {
-        return;
-    }
 
     pyo3_build_config::use_pyo3_cfgs();
     pyo3_build_config::add_libpython_rpath_link_args();
@@ -20,6 +22,7 @@ fn main() {
     validate_python();
 }
 
+#[cfg(feature = "python")]
 fn validate_python() {
     let config = pyo3_build_config::get();
 
@@ -64,6 +67,7 @@ fn validate_python() {
     }
 }
 
+#[cfg(feature = "python")]
 fn validate_python_executable(executable: &str, expected_version: &str) {
     let output = Command::new(executable)
         .arg("-c")
@@ -89,6 +93,7 @@ fn validate_python_executable(executable: &str, expected_version: &str) {
     }
 }
 
+#[cfg(feature = "python")]
 fn validate_framework_prefix(prefix: &str) {
     let prefix = Path::new(prefix);
     if !prefix.exists() {
@@ -111,6 +116,7 @@ fn validate_framework_prefix(prefix: &str) {
     );
 }
 
+#[cfg(feature = "python")]
 fn validate_lib_dir(lib_dir: &str) {
     let lib_dir = PathBuf::from(lib_dir);
     if !lib_dir.exists() {

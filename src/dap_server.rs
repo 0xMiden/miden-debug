@@ -46,7 +46,7 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     }
 
     let executor = DapExecutor::new(inputs.inputs, inputs.advice_inputs, inputs.options);
-    futures::executor::block_on(executor.execute_async(program, &mut host))
+    futures_executor::block_on(executor.execute_async(program, &mut host))
         .map(|_| ())
         .map_err(|err| Report::msg(format!("program execution failed: {err}")))
 }

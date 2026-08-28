@@ -135,13 +135,14 @@ backend feature-branch requirements.
 `miden-debug` defaults to building with the `dap` feature on:
 
 ```bash
-cargo build --bin miden-debug                  # tui + repl + dap
+cargo build --bin miden-debug                  # tui + repl + dap + flamegraph
 cargo build --bin miden-debug --no-default-features --features tui,repl
                                                # tui + repl, no DAP
 ```
 
-`--dap-connect` is gated behind the `dap` feature; it disappears from
-`--help` when the feature is off.
+`--dap-connect` is gated behind both the `dap` and `tui` features because the
+remote session is rendered in the TUI; it disappears from `--help` when either
+feature is off. The DAP server (`--start-debug-adapter`) only requires `dap`.
 
 On the `miden-client` side, the DAP support is gated by its own `dap`
 feature, also enabled by default:

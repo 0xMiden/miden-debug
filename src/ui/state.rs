@@ -858,30 +858,22 @@ impl State {
     }
 
     pub(crate) fn source_path_prefixes(&self) -> Vec<String> {
-        #[cfg(feature = "dap")]
-        {
-            let mut prefixes = self
-                .config
-                .source_path_prefixes
+        let mut prefixes = self
+            .config
+            .source_path_prefixes
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        if let Ok(cwd) = std::env::current_dir() {
+            let cwd = cwd.to_string_lossy().into_owned();
+            if !prefixes
                 .iter()
-                .map(|path| path.to_string_lossy().into_owned())
-                .collect::<Vec<_>>();
-            if let Ok(cwd) = std::env::current_dir() {
-                let cwd = cwd.to_string_lossy().into_owned();
-                if !prefixes
-                    .iter()
-                    .any(|prefix| normalize_source_path(prefix) == normalize_source_path(&cwd))
-                {
-                    prefixes.push(cwd);
-                }
+                .any(|prefix| normalize_source_path(prefix) == normalize_source_path(&cwd))
+            {
+                prefixes.push(cwd);
             }
-            prefixes
         }
-
-        #[cfg(not(feature = "dap"))]
-        {
-            Vec::new()
-        }
+        prefixes
     }
 
     fn resolve_op_location(&self, loc: &Location) -> Option<ResolvedLocation> {
@@ -955,8 +947,10 @@ impl State {
         if !self.executor().stopped || self.execution_failed().is_some() {
             return Ok(None);
         }
-        let SessionState::Local(local) = &self.session else {
-            return Ok(None);
+        let local = match &self.session {
+            SessionState::Local(local) => local,
+            #[cfg(feature = "dap")]
+            SessionState::Remote(_) => return Ok(None),
         };
         let Some(procedure) = local.typed_procedure.as_ref() else {
             return Ok(None);

@@ -220,6 +220,20 @@ workspace = true
 command = "cargo"
 args = ["check", "${@}"]
 
+[tasks.check-feature-combinations]
+category = "Build"
+description = "Checks every feature combination for each workspace crate"
+command = "cargo"
+args = [
+    "hack",
+    "check",
+    "--workspace",
+    "--feature-powerset",
+    "--locked",
+    "--keep-going",
+    "--all-targets",
+]
+
 [tasks.clean]
 category = "Build"
 description = "Clean build artifacts"

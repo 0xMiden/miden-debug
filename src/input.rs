@@ -35,7 +35,6 @@ impl InputFile {
     /// Get an [InputFile] representing the contents of `path`.
     ///
     /// This function returns an error if the contents are not a valid supported file type.
-    #[cfg(feature = "std")]
     pub fn from_path<P: AsRef<Path>>(path: P) -> Self {
         let path = path.as_ref();
         Self::Real(path.to_path_buf())
@@ -44,7 +43,6 @@ impl InputFile {
     /// Get an [InputFile] representing the contents received from standard input.
     ///
     /// This function returns an error if the contents are not a valid supported file type.
-    #[cfg(feature = "std")]
     pub fn from_stdin() -> Result<Self, std::io::Error> {
         use std::io::Read;
 

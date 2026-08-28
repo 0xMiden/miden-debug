@@ -9,7 +9,7 @@ Python scripting is available only when `miden-debug` is built with the
 `python` feature:
 
 ```bash
-cargo build --features "repl,python" --bin miden-debug
+cargo build --no-default-features --features "repl,python" --bin miden-debug
 ```
 
 Python scripts are arbitrary local code. Only run scripts you trust. The

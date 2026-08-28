@@ -13,7 +13,7 @@ use miden_debug::run_repl_with_log_level as run_repl;
 use miden_debug::run_replay_and_log_level;
 #[cfg(feature = "tui")]
 use miden_debug::run_with_log_level as run;
-#[cfg(feature = "dap")]
+#[cfg(all(feature = "dap", feature = "tui"))]
 use miden_debug::{State, run_with_state_and_log_level as run_with_state};
 
 #[derive(Parser)]
@@ -103,7 +103,7 @@ fn run_debugger(
         return run_replay_and_log_level(&snapshot_path, _logger, _log_level);
     }
 
-    #[cfg(feature = "dap")]
+    #[cfg(all(feature = "dap", feature = "tui"))]
     if let Some(addr) = config.dap_connect.as_ref() {
         let state = State::new_for_dap(addr)?;
         return run_with_state(state, _logger, _log_level);
@@ -116,7 +116,7 @@ fn run_debugger(
         return miden_debug::run_dap_server(config);
     }
 
-    #[cfg(feature = "repl")]
+    #[cfg(feature = "script")]
     if let Some(commands) = config.commands.clone() {
         // Batch mode: install the logger directly (no interactive frontend),
         // then run the command script to completion and exit.
@@ -130,12 +130,17 @@ fn run_debugger(
         return run_repl(config, _logger, _log_level);
     }
 
-    // The `--repl`/`--commands` flags exist whenever any interactive frontend is compiled in;
-    // if the REPL itself is not, fail loudly rather than silently launching the TUI.
-    #[cfg(all(not(feature = "repl"), any(feature = "tui", feature = "flamegraph")))]
-    if config.repl || config.commands.is_some() {
+    #[cfg(not(feature = "repl"))]
+    if config.repl {
         return Err(Report::msg(
             "this build does not include the REPL; rebuild with `--features repl`",
+        ));
+    }
+
+    #[cfg(not(feature = "script"))]
+    if config.commands.is_some() {
+        return Err(Report::msg(
+            "this build does not include command scripting; rebuild with `--features script`",
         ));
     }
 

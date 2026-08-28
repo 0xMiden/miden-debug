@@ -370,36 +370,39 @@ impl State {
                         return Err(Report::msg("server terminated without restart signal"));
                     }
                 }
-                self.breakpoints_hit.clear();
-                self.stopped = true;
-                return Ok(());
             }
             #[cfg(not(feature = "dap"))]
             return Err(Report::msg("remote debug mode requires the `dap` feature"));
+        } else {
+            log::debug!("reloading program");
+            let local = create_local_state(&self.config, self.source_manager.clone())?;
+
+            self.session = SessionState::Local(Box::new(local));
+            let breakpoints = core::mem::take(&mut self.breakpoints);
+            self.breakpoints.reserve(breakpoints.len());
+            self.next_breakpoint_id = 0;
+            for bp in breakpoints {
+                // Drop in-flight step breakpoints (next/next-line/finish): they
+                // refer to execution state (e.g. a frame flagged break-on-exit)
+                // that no longer exists after a restart. Carrying one over would
+                // also permanently suppress user breakpoints, since they are
+                // skipped while an internal breakpoint is pending.
+                if bp.is_internal() {
+                    continue;
+                }
+                self.create_breakpoint(bp.ty);
+            }
         }
 
-        log::debug!("reloading program");
-        let local = create_local_state(&self.config, self.source_manager.clone())?;
+        self.finish_reload();
+        Ok(())
+    }
 
-        self.session = SessionState::Local(Box::new(local));
+    fn finish_reload(&mut self) {
+        self.executor_mut().stopped = false;
         self.selected_stack_frame = 0;
         self.breakpoints_hit.clear();
-        let breakpoints = core::mem::take(&mut self.breakpoints);
-        self.breakpoints.reserve(breakpoints.len());
-        self.next_breakpoint_id = 0;
         self.stopped = true;
-        for bp in breakpoints {
-            // Drop in-flight step breakpoints (next/next-line/finish): they
-            // refer to execution state (e.g. a frame flagged break-on-exit)
-            // that no longer exists after a restart. Carrying one over would
-            // also permanently suppress user breakpoints, since they are
-            // skipped while an internal breakpoint is pending.
-            if bp.is_internal() {
-                continue;
-            }
-            self.create_breakpoint(bp.ty);
-        }
-        Ok(())
     }
 
     /// Resume local execution until the VM terminates, errors, or a breakpoint is hit.
@@ -1483,4 +1486,26 @@ fn create_local_state(
         execution_failed: None,
         typed_procedure: loaded.typed_procedure,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn successful_reload_epilogue_resets_stack_selection() {
+        let mut state =
+            State::from_masm_source("begin push.1 end", Vec::new()).expect("state should build");
+        state.selected_stack_frame = 3;
+        state.breakpoints_hit.push(Breakpoint::default());
+        state.stopped = false;
+        state.executor_mut().stopped = true;
+
+        state.finish_reload();
+
+        assert!(!state.executor().stopped);
+        assert_eq!(state.selected_stack_frame, 0);
+        assert!(state.breakpoints_hit.is_empty());
+        assert!(state.stopped);
+    }
 }

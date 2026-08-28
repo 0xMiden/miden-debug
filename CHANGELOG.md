@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Generate flamegraphs from replay snapshots with `miden-debug flamegraph --replay <FILE>`, or
+  programmatically with `FlamegraphProfile::collect_replay`.
+
+
 ## [0.10.3](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.10.2...miden-debug-v0.10.3) - 2026-08-27
 
 ### Other

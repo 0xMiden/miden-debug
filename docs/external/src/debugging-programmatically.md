@@ -178,6 +178,16 @@ assert!(profile.total_cycles() > 0);
 profile.write_svg("target/miden-flamegraph.svg").expect("failed to write flamegraph");
 ```
 
+A recorded transaction can be profiled without its original host by loading its replay snapshot:
+
+```rust
+use miden_debug::{ReplaySnapshot, flamegraph::FlamegraphProfile};
+
+let snapshot = ReplaySnapshot::read_from_file("transaction.mdsnap").unwrap();
+let profile = FlamegraphProfile::collect_replay(snapshot).unwrap();
+profile.write_svg("target/transaction.svg").unwrap();
+```
+
 If you are integrating with another executor, you can also build a profile from
 already resolved stack names by calling `FlamegraphProfile::record_stack` or
 `FlamegraphProfile::record_stack_path`, then write the result as either SVG or

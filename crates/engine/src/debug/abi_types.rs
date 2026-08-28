@@ -116,6 +116,8 @@ impl WitScalarCodec for AccountIdCodec {
         let suffix = Felt::try_from(suffix).map_err(|_| {
             self.invalid_scalar(token, "account ID suffix exceeds the field modulus")
         })?;
+        Self::validate_felts(prefix, suffix)
+            .map_err(|reason| self.invalid_scalar(token, reason))?;
 
         Ok(vec![prefix, suffix])
     }
@@ -127,14 +129,34 @@ impl WitScalarCodec for AccountIdCodec {
                 reason: "an account ID occupies exactly two felts",
             });
         };
-        let mut hex =
-            format!("0x{:016x}{:016x}", prefix.as_canonical_u64(), suffix.as_canonical_u64());
-        hex.truncate(32);
+        Self::validate_felts(*prefix, *suffix).map_err(|reason| TypedError::MalformedResult {
+            ty: self.wit_name().into(),
+            reason,
+        })?;
+        let hex =
+            format!("0x{:016x}{:014x}", prefix.as_canonical_u64(), suffix.as_canonical_u64() >> 8);
         Ok(format!("account-id({hex})"))
     }
 }
 
 impl AccountIdCodec {
+    fn validate_felts(prefix: Felt, suffix: Felt) -> Result<(), &'static str> {
+        let prefix = prefix.as_canonical_u64();
+        let suffix = suffix.as_canonical_u64();
+
+        if prefix & 0x0f != 1 {
+            return Err("unsupported account ID version");
+        }
+        if suffix >> 63 != 0 {
+            return Err("the account ID suffix's most significant bit must be zero");
+        }
+        if suffix & 0xff != 0 {
+            return Err("the account ID suffix's least significant byte must be zero");
+        }
+
+        Ok(())
+    }
+
     fn invalid_scalar(&self, token: &str, reason: &str) -> TypedError {
         TypedError::InvalidScalar {
             wit_name: self.wit_name().into(),
@@ -166,11 +188,11 @@ mod tests {
             Arc::from("miden:base/core-types@1.0.0/account-id"),
             [(Arc::from("prefix"), Type::Felt), (Arc::from("suffix"), Type::Felt)],
         ));
-        let felts = [felt(0xa591_009a_3022_e800), felt(0x788f_9ed1_77dc_db00)];
+        let felts = [felt(0xa591_009a_3022_e801), felt(0x788f_9ed1_77dc_db00)];
 
         assert_eq!(
             render(&account_id, &felts).as_deref(),
-            Some("account-id(0xa591009a3022e800788f9ed177dcdb)")
+            Some("account-id(0xa591009a3022e801788f9ed177dcdb)")
         );
 
         let procedure = TypedProcedure::new(
@@ -178,7 +200,32 @@ mod tests {
             FunctionType::new(CallConv::ComponentModel, [account_id], []),
         )
         .unwrap();
-        assert_eq!(procedure.encode_args(&["0xa591009a3022e800788f9ed177dcdb"]).unwrap(), felts);
+        assert_eq!(procedure.encode_args(&["0xa591009a3022e801788f9ed177dcdb"]).unwrap(), felts);
+    }
+
+    #[test]
+    fn rejects_structurally_invalid_account_ids() {
+        let codec = AccountIdCodec;
+
+        for account_id in [
+            // Only version 1 is supported by the current core-types ABI.
+            "0xa591009a3022e800788f9ed177dcdb",
+            "0xa591009a3022e802788f9ed177dcdb",
+            // The suffix must fit in 63 bits before its padding byte is removed.
+            "0xa591009a3022e801f88f9ed177dcdb",
+        ] {
+            assert!(codec.encode(account_id).is_err(), "accepted invalid account ID {account_id}");
+        }
+
+        let valid_prefix = felt(0xa591_009a_3022_e801);
+        let valid_suffix = felt(0x788f_9ed1_77dc_db00);
+        for felts in [
+            [felt(valid_prefix.as_canonical_u64() & !0x0f), valid_suffix],
+            [valid_prefix, felt(valid_suffix.as_canonical_u64() | 1)],
+            [valid_prefix, felt(0x8000_0000_0000_0000)],
+        ] {
+            assert!(codec.decode(&felts).is_err(), "rendered invalid account ID {felts:?}");
+        }
     }
 
     #[test]

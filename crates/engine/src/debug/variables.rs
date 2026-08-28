@@ -247,7 +247,8 @@ pub fn resolve_variable_values(
                     (count == 1).then(|| integer_to_felt(value)).flatten().map(|value| vec![value])
                 }
                 ResolvedExpression::ByteAddress(address) => {
-                    resolve_byte_address_values(address, count, &get_memory)
+                    let element_address = u32::try_from(address / 4).ok()?;
+                    resolve_consecutive_memory(element_address, count, &get_memory)
                 }
             }
         }
@@ -351,7 +352,8 @@ fn resolve_expression(
                 if index + 1 == ops.len() {
                     return Some(ResolvedExpression::ByteAddress(byte_address));
                 }
-                values.push(i128::from(read_u32_at_byte_address(byte_address, get_memory)?));
+                let element_address = u32::try_from(byte_address / 4).ok()?;
+                values.push(i128::from(get_memory(element_address)?.as_canonical_u64()));
             }
             DebugLocationExpressionOp::FrameBaseAddress { base, byte_offset } => {
                 values.push(i128::from(resolve_frame_base_address(
@@ -396,25 +398,15 @@ fn resolve_byte_address_values(
     count: usize,
     get_memory: &impl Fn(u32) -> Option<Felt>,
 ) -> Option<Vec<Felt>> {
-    let byte_count = count.checked_mul(4)?;
-    let bytes = read_memory_bytes(byte_address, byte_count, get_memory)?;
-    let mut values = Vec::with_capacity(count);
-    for chunk in bytes.chunks_exact(4) {
-        values.push(Felt::from_u32(u32::from_le_bytes(chunk.try_into().ok()?)));
+    if !byte_address.is_multiple_of(4) {
+        return None;
     }
-    Some(values)
+    let element_address = u32::try_from(byte_address / 4).ok()?;
+    resolve_consecutive_memory(element_address, count, get_memory)
 }
 
 fn integer_to_felt(value: i128) -> Option<Felt> {
     Felt::new(u64::try_from(value).ok()?).ok()
-}
-
-fn read_u32_at_byte_address(
-    byte_address: u64,
-    get_memory: &impl Fn(u32) -> Option<Felt>,
-) -> Option<u32> {
-    let bytes = read_memory_bytes(byte_address, 4, get_memory)?;
-    Some(u32::from_le_bytes(bytes.try_into().ok()?))
 }
 
 fn read_memory_bytes(
@@ -672,6 +664,7 @@ mod tests {
 
     #[test]
     fn resolves_explicit_frame_bases() {
+        let expected = Felt::new(4_294_967_303).unwrap();
         for (base, memory_base) in
             [(DebugFrameBase::Local(-7), false), (DebugFrameBase::Memory(9), true)]
         {
@@ -685,14 +678,14 @@ mod tests {
                     if memory_base && address == 9 {
                         Some(Felt::new(1_048_528).unwrap())
                     } else if address == 262_139 {
-                        Some(Felt::new(13).unwrap())
+                        Some(expected)
                     } else {
                         None
                     }
                 },
                 |offset| (!memory_base && offset == -7).then_some(Felt::new(1_048_528).unwrap()),
             );
-            assert_eq!(value, Some(Felt::new(13).expect("value exceeds field modulus")));
+            assert_eq!(value, Some(expected));
         }
     }
 
@@ -718,24 +711,39 @@ mod tests {
     }
 
     #[test]
-    fn resolves_torn_byte_dereferences_without_rounding_down() {
+    fn resolves_untyped_byte_dereferences_as_memory_elements() {
         let expression = DebugLocationExpression::new(vec![
             DebugLocationExpressionOp::ConstU64(1),
             DebugLocationExpressionOp::DerefBytes,
         ])
         .unwrap();
+        let expected = Felt::new(4_294_967_303).unwrap();
         let value = resolve_variable_value(
             &DebugVarLocation::Expression(expression),
             &[],
-            |address| match address {
-                0 => Some(Felt::from_u32(0x3322_11aa)),
-                1 => Some(Felt::from_u32(0x7766_5544)),
-                _ => None,
-            },
+            |address| (address == 0).then_some(expected),
             |_| None,
         );
 
-        assert_eq!(value, Some(Felt::from_u32(0x4433_2211)));
+        assert_eq!(value, Some(expected));
+    }
+
+    #[test]
+    fn preserves_whole_felts_after_nonterminal_byte_dereferences() {
+        let expression = DebugLocationExpression::new(vec![
+            DebugLocationExpressionOp::ConstU64(1),
+            DebugLocationExpressionOp::DerefBytes,
+            DebugLocationExpressionOp::AddUnsigned(1),
+        ])
+        .unwrap();
+        let value = resolve_variable_value(
+            &DebugVarLocation::Expression(expression),
+            &[],
+            |address| (address == 0).then(|| Felt::new(4_294_967_303).unwrap()),
+            |_| None,
+        );
+
+        assert_eq!(value, Some(Felt::new(4_294_967_304).unwrap()));
     }
 
     #[test]

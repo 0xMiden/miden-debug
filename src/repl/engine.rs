@@ -147,14 +147,13 @@ impl ReplEngine {
             match self.state.executor_mut().step() {
                 Ok(_) => {}
                 Err(err) => {
-                    let msg = format!("execution error: {err}");
                     self.state.set_execution_failed(err);
-                    return Err(msg);
+                    break;
                 }
             }
         }
 
-        self.print_location(out);
+        self.report_execution_state(out);
         Ok(())
     }
 
@@ -170,26 +169,7 @@ impl ReplEngine {
         self.ensure_can_continue()?;
 
         self.state.run_until_stopped();
-
-        if self.state.executor().stopped {
-            if let Some(err) = self.state.execution_failed() {
-                let _ = writeln!(out, "Program terminated with error: {}", err);
-            } else {
-                let _ = writeln!(out, "Program terminated successfully");
-                match self.state.typed_result() {
-                    Ok(Some(result)) => {
-                        let _ = writeln!(out, "Result: {result}");
-                    }
-                    Ok(None) => {}
-                    Err(err) => {
-                        let _ = writeln!(out, "Result unavailable: {err}");
-                    }
-                }
-            }
-        } else {
-            self.print_location(out);
-        }
-
+        self.report_execution_state(out);
         Ok(())
     }
 
@@ -206,8 +186,31 @@ impl ReplEngine {
 
         self.state.create_breakpoint(bp_type);
         self.state.run_until_stopped();
-        self.print_location(out);
+        self.report_execution_state(out);
         Ok(())
+    }
+
+    fn report_execution_state(&self, out: &mut dyn Write) {
+        if !self.state.executor().stopped {
+            self.print_location(out);
+            return;
+        }
+
+        if let Some(err) = self.state.execution_failed() {
+            let _ = writeln!(out, "Program terminated with error: {}", err);
+            return;
+        }
+
+        let _ = writeln!(out, "Program terminated successfully");
+        match self.state.typed_result() {
+            Ok(Some(result)) => {
+                let _ = writeln!(out, "Result: {result}");
+            }
+            Ok(None) => {}
+            Err(err) => {
+                let _ = writeln!(out, "Result unavailable: {err}");
+            }
+        }
     }
 
     fn ensure_can_continue(&self) -> Result<(), String> {

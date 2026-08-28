@@ -752,6 +752,7 @@ impl PyBreakpoint {
 pub struct PyValue {
     name: String,
     value: Option<u64>,
+    display_value: Option<String>,
     location: String,
     source: Option<PySourceLocation>,
 }
@@ -761,6 +762,7 @@ impl From<ScriptValue> for PyValue {
         Self {
             name: value.name,
             value: value.value,
+            display_value: value.display_value,
             location: value.location,
             source: value.source.map(PySourceLocation::from),
         }
@@ -777,6 +779,11 @@ impl PyValue {
     #[getter]
     fn value(&self) -> Option<u64> {
         self.value
+    }
+
+    #[getter]
+    fn display_value(&self) -> Option<String> {
+        self.display_value.clone()
     }
 
     #[getter]

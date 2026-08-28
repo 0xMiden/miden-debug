@@ -383,7 +383,7 @@ impl ReplEngine {
             return Err(format!("invalid frame index {index}; backtrace has {num_frames} frames"));
         }
         self.selected_frame = index;
-        self.report_execution_state(out);
+        self.print_location(out);
         Ok(())
     }
 

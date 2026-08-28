@@ -61,6 +61,7 @@ pub enum LogicalFrameKind {
 #[derive(Debug, Clone)]
 enum LogicalFrameLocation {
     Assembly(Location),
+    Resolved(ResolvedLocation),
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +97,7 @@ impl LogicalStackFrame {
             LogicalFrameLocation::Assembly(location) => {
                 resolve_assembly_location(source_manager, location)
             }
+            LogicalFrameLocation::Resolved(resolved) => Some(resolved.clone()),
         }
     }
 }
@@ -191,8 +193,7 @@ impl CallStack {
     pub fn logical_frames(&self, strip_prefix: &str) -> Vec<LogicalStackFrame> {
         let mut logical = Vec::new();
         for (physical_index, frame) in self.frames.iter().enumerate() {
-            let current_location =
-                frame.last_location().cloned().map(LogicalFrameLocation::Assembly);
+            let current_location = frame.last_logical_location();
             let location = frame
                 .inline_frames
                 .last()
@@ -485,15 +486,17 @@ impl CallFrame {
     }
 
     pub fn last_location(&self) -> Option<&Location> {
-        match self.context.back() {
-            Some(OpDetail::Full { location, .. }) => location.as_ref(),
-            Some(OpDetail::Basic { .. }) => None,
-            Some(OpDetail::Exec { .. }) => {
-                let op = self.context.iter().rev().nth(1)?;
-                op.location()
-            }
-            None => None,
-        }
+        self.context.iter().rev().find_map(OpDetail::location)
+    }
+
+    fn last_logical_location(&self) -> Option<LogicalFrameLocation> {
+        self.context.iter().rev().find_map(|detail| {
+            detail
+                .location()
+                .cloned()
+                .map(LogicalFrameLocation::Assembly)
+                .or_else(|| detail.cached_resolved().cloned().map(LogicalFrameLocation::Resolved))
+        })
     }
 
     pub fn last_resolved(&self, source_manager: &dyn SourceManager) -> Option<&ResolvedLocation> {
@@ -580,23 +583,34 @@ impl OpDetail {
     pub fn resolve(&self, source_manager: &dyn SourceManager) -> Option<&ResolvedLocation> {
         match self {
             Self::Full {
-                location: Some(loc),
-                resolved,
-                ..
-            } => resolved
-                .get_or_init(|| {
-                    let source_file = resolve_source_file_for_location(source_manager, loc)?;
-                    let span = SourceSpan::new(source_file.id(), loc.start..loc.end);
-                    let file_line_col = source_file.location(span);
-                    Some(ResolvedLocation {
-                        source_file,
-                        line: file_line_col.line.to_u32(),
-                        col: file_line_col.column.to_u32(),
-                        span,
+                location, resolved, ..
+            } => {
+                if let Some(cached) = resolved.get() {
+                    return cached.as_ref();
+                }
+                let loc = location.as_ref()?;
+                resolved
+                    .get_or_init(|| {
+                        let source_file = resolve_source_file_for_location(source_manager, loc)?;
+                        let span = SourceSpan::new(source_file.id(), loc.start..loc.end);
+                        let file_line_col = source_file.location(span);
+                        Some(ResolvedLocation {
+                            source_file,
+                            line: file_line_col.line.to_u32(),
+                            col: file_line_col.column.to_u32(),
+                            span,
+                        })
                     })
-                })
-                .as_ref(),
+                    .as_ref()
+            }
             _ => None,
+        }
+    }
+
+    fn cached_resolved(&self) -> Option<&ResolvedLocation> {
+        match self {
+            Self::Full { resolved, .. } => resolved.get().and_then(Option::as_ref),
+            Self::Exec { .. } | Self::Basic { .. } => None,
         }
     }
 }
@@ -881,6 +895,48 @@ mod tests {
         assert_eq!(logical[2].name(), "crate::inner");
         assert_eq!(logical[2].kind(), LogicalFrameKind::Inline);
         assert_eq!(logical[2].resolved(&source_manager).unwrap().line, 3);
+
+        fs::remove_dir_all(path.parent().unwrap().parent().unwrap()).ok();
+    }
+
+    #[cfg(feature = "dap")]
+    #[test]
+    fn remote_logical_frames_preserve_pre_resolved_locations() {
+        let path = test_source_path("remote-logical-frame");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "first line\nsecond line\n").unwrap();
+
+        let source_manager = DefaultSourceManager::default();
+        let source_file = source_manager.load_file(&path).expect("source should load");
+        let span = SourceSpan::new(source_file.id(), ByteIndex::new(11)..ByteIndex::new(17));
+        let remote = ResolvedLocation {
+            source_file,
+            line: 77,
+            col: 13,
+            span,
+        };
+        let callstack = CallStack::from_remote_frames(vec![CallFrame::from_remote(
+            Some(Arc::from("remote::procedure")),
+            Some(remote.clone()),
+        )]);
+
+        let recent = callstack
+            .current_frame()
+            .unwrap()
+            .last_resolved(&source_manager)
+            .expect("remote frame should retain its cached location");
+        assert_eq!(recent.line, remote.line);
+        assert_eq!(recent.col, remote.col);
+        assert_eq!(recent.span, remote.span);
+
+        let logical = callstack.logical_frames("");
+        let resolved = logical[0]
+            .resolved(&source_manager)
+            .expect("logical frame should retain its cached location");
+        assert_eq!(resolved.source_file.uri(), remote.source_file.uri());
+        assert_eq!(resolved.line, remote.line);
+        assert_eq!(resolved.col, remote.col);
+        assert_eq!(resolved.span, remote.span);
 
         fs::remove_dir_all(path.parent().unwrap().parent().unwrap()).ok();
     }

@@ -241,9 +241,8 @@ impl CallStack {
         };
         log::trace!("handling {:?}/{:?} at cycle {}: {:?}", info.control, info.op, info.clk, event);
         let is_frame_start = event.as_ref().is_some_and(|event| event.is_frame_start());
-        let popped_frame =
-            self.handle_event(event, procedure.clone(), info.op, info.asmop, info.inline_frames);
-        let is_frame_end = popped_frame.is_some();
+        let is_frame_end = event.as_ref().is_some_and(|event| event.is_frame_end());
+        let popped_frame = self.handle_event(event, procedure.clone(), info.op, info.asmop);
 
         match info.control {
             Some(ControlFlowOp::Span) => {
@@ -266,13 +265,20 @@ impl CallStack {
             Some(ControlFlowOp::Respan) | None => {}
         }
 
-        let Some(op) = info.op else {
-            return popped_frame;
-        };
+        if !is_frame_end {
+            if self.frames.is_empty() {
+                self.frames.push(CallFrame::new(procedure.clone()));
+            }
+            self.frames.last_mut().unwrap().inline_frames = info.inline_frames.to_vec();
+        }
 
         if is_frame_start || is_frame_end {
             return popped_frame;
         }
+
+        let Some(op) = info.op else {
+            return popped_frame;
+        };
 
         // Attempt to supply procedure context from the current span context, if needed +
         // available
@@ -302,13 +308,7 @@ impl CallStack {
         // available
         let procedure = procedure.or_else(|| self.frames.last().and_then(|f| f.procedure.clone()));
 
-        // Do we have a frame? If not, create one
-        if self.frames.is_empty() {
-            self.frames.push(CallFrame::new(procedure.clone()));
-        }
-
         let current_frame = self.frames.last_mut().unwrap();
-        current_frame.inline_frames = info.inline_frames.to_vec();
 
         // Does the current frame have a procedure context/location? Use the one from this op if
         // so
@@ -355,7 +355,6 @@ impl CallStack {
         procedure: Option<Arc<str>>,
         op: Option<Operation>,
         asmop: Option<&AssemblyOp>,
-        inline_frames: &[InlineCallFrame],
     ) -> Option<CallFrame> {
         // Do we need to handle any frame events?
         match event? {
@@ -366,7 +365,6 @@ impl CallStack {
                 }
                 // The event is emitted at the start of the callee.
                 let mut frame = CallFrame::new(procedure);
-                frame.inline_frames = inline_frames.to_vec();
                 if let Some(op) = op {
                     frame.push(op, 0, asmop);
                 }
@@ -897,6 +895,42 @@ mod tests {
         assert_eq!(logical[2].resolved(&source_manager).unwrap().line, 3);
 
         fs::remove_dir_all(path.parent().unwrap().parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn control_cycles_replace_and_clear_inline_frames() {
+        let inline = InlineCallFrame {
+            name: Arc::from("crate::inline"),
+            call_site: Location::new(Uri::new("test.masm"), ByteIndex::new(0), ByteIndex::new(1)),
+        };
+        let mut callstack = CallStack::new(Arc::new(Mutex::new(BTreeMap::new())));
+
+        callstack.next(&StepInfo {
+            op: None,
+            control: Some(ControlFlowOp::Split),
+            asmop: None,
+            clk: RowIndex::from(0u32),
+            ctx: ContextId::root(),
+            inline_frames: std::slice::from_ref(&inline),
+        });
+
+        let logical = callstack.logical_frames("");
+        assert_eq!(logical.len(), 2);
+        assert_eq!(logical[0].name(), "<unknown>");
+        assert_eq!(logical[1].name(), "crate::inline");
+
+        callstack.next(&StepInfo {
+            op: None,
+            control: Some(ControlFlowOp::Respan),
+            asmop: None,
+            clk: RowIndex::from(1u32),
+            ctx: ContextId::root(),
+            inline_frames: &[],
+        });
+
+        let logical = callstack.logical_frames("");
+        assert_eq!(logical.len(), 1);
+        assert_eq!(logical[0].name(), "<unknown>");
     }
 
     #[cfg(feature = "dap")]

@@ -12,4 +12,4 @@ backtrace
 # CHECK: Backtrace (3 frames):
 # CHECK-NEXT: * #0 [inlined] fixture::inner
 # CHECK-NEXT:   #1 [inlined] fixture::outer at {{.*}}inline_control_call.masm:2:1
-# CHECK-NEXT:   #2 <unknown> at {{.*}}inline_control_call.masm:1:1
+# CHECK-NEXT:   #2 $exec::$main at {{.*}}inline_control_call.masm:1:1

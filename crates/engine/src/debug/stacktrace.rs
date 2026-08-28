@@ -9,8 +9,8 @@ use std::{
 
 use miden_core::operations::AssemblyOp;
 use miden_debug_types::{Location, SourceFile, SourceManager, SourceManagerExt, SourceSpan, Uri};
-use miden_mast_package::debug_info::{DebugSourceNodeId, PackageDebugInfo};
-use miden_processor::{ContextId, operation::Operation, trace::RowIndex};
+use miden_mast_package::debug_info::{DebugSourceInlineCall, DebugSourceNodeId, PackageDebugInfo};
+use miden_processor::{ContextId, SourceInlineCallContext, operation::Operation, trace::RowIndex};
 
 use crate::Event;
 
@@ -100,20 +100,39 @@ impl LogicalStackFrame {
     }
 }
 
-pub fn inline_frames_for_operation(
-    debug_info: &PackageDebugInfo,
-    source_node: DebugSourceNodeId,
-    op_idx: u32,
+/// Resolves the inline frames active for an operation.
+///
+/// Rows owned by the current package come first. Contexts inherited across dynamic/external
+/// package boundaries follow in the VM-provided innermost-to-outermost order.
+pub fn inline_frames_for_operation<'a>(
+    current: Option<(&PackageDebugInfo, DebugSourceNodeId, u32)>,
+    inherited: impl IntoIterator<Item = &'a SourceInlineCallContext>,
 ) -> Vec<InlineCallFrame> {
-    debug_info
-        .inline_calls_for_operation(source_node, op_idx)
-        .filter_map(|row| {
-            let function = debug_info.get_function(row.callee_idx)?;
-            let name = debug_info.get_string(function.name_idx)?;
-            let call_site = debug_info.get_location(row.loc_idx)?;
-            Some(InlineCallFrame { name, call_site })
-        })
-        .collect()
+    let mut frames = Vec::new();
+    if let Some((debug_info, source_node, op_idx)) = current {
+        append_inline_frames(
+            &mut frames,
+            debug_info,
+            debug_info.inline_calls_for_operation(source_node, op_idx),
+        );
+    }
+    for context in inherited {
+        append_inline_frames(&mut frames, context.debug_info(), context.inline_calls());
+    }
+    frames
+}
+
+fn append_inline_frames<'a>(
+    frames: &mut Vec<InlineCallFrame>,
+    debug_info: &PackageDebugInfo,
+    rows: impl IntoIterator<Item = &'a DebugSourceInlineCall>,
+) {
+    frames.extend(rows.into_iter().filter_map(|row| {
+        let function = debug_info.get_function(row.callee_idx)?;
+        let name = debug_info.get_string(function.name_idx)?;
+        let call_site = debug_info.get_location(row.loc_idx)?;
+        Some(InlineCallFrame { name, call_site })
+    }));
 }
 
 #[derive(Debug, Clone)]

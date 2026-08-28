@@ -1067,34 +1067,23 @@ fn update_top_frame<H: Host>(host: &mut DapHostWrapper<'_, H>, current_asmop: Op
 fn update_top_frame_with_debug<H: Host>(
     host: &mut DapHostWrapper<'_, H>,
     current_asmop: Option<&AssemblyOp>,
-    debug_info: Option<&PackageDebugInfo>,
-    source_node_id: Option<DebugSourceNodeId>,
-    op_idx: Option<usize>,
+    inline_frames: &[crate::debug::InlineCallFrame],
 ) {
     update_top_frame(host, current_asmop);
 
-    let inline_frames = debug_info
-        .zip(source_node_id)
-        .map(|(debug_info, source_node_id)| {
-            inline_frames_for_operation(
-                debug_info,
-                source_node_id,
-                op_idx.unwrap_or_default() as u32,
-            )
-            .into_iter()
-            .filter_map(|frame| {
-                let (source_path, line, column) =
-                    resolve_location_with_column(frame.call_site(), &*host)?;
-                Some(DapInlineFrame {
-                    name: frame.display_name().to_string(),
-                    source_path,
-                    line,
-                    column,
-                })
+    let inline_frames = inline_frames
+        .iter()
+        .filter_map(|frame| {
+            let (source_path, line, column) =
+                resolve_location_with_column(frame.call_site(), &*host)?;
+            Some(DapInlineFrame {
+                name: frame.display_name().to_string(),
+                source_path,
+                line,
+                column,
             })
-            .collect()
         })
-        .unwrap_or_default();
+        .collect();
 
     if let Some(top) = host.frames.last_mut() {
         top.inline_frames = inline_frames;
@@ -1309,8 +1298,7 @@ impl DapExecutor {
             let mut cycle: usize = 0;
             let mut current_debug_info: Option<Arc<PackageDebugInfo>> = None;
             let mut current_asmop: Option<AssemblyOp> = None;
-            let mut current_source_node_id = None;
-            let mut current_op_idx = None;
+            let mut current_inline_frames = Vec::new();
             let mut debug_state = DapDebugVarState::new();
 
             // Extract initial asmop and populate the root frame.
@@ -1321,17 +1309,21 @@ impl DapExecutor {
                     op_idx,
                     ..
                 } = extract_current_op(ctx);
-                current_source_node_id = source_node_id;
-                current_op_idx = op_idx;
                 current_asmop =
                     extract_asm_op(current_debug_info.as_deref(), source_node_id, op_idx);
+                current_inline_frames = inline_frames_for_operation(
+                    current_debug_info.as_deref().zip(source_node_id).map(
+                        |(debug_info, source_node_id)| {
+                            (debug_info, source_node_id, op_idx.unwrap_or_default() as u32)
+                        },
+                    ),
+                    ctx.inherited_inline_call_contexts(),
+                );
             }
             update_top_frame_with_debug(
                 &mut wrapper,
                 current_asmop.as_ref(),
-                current_debug_info.as_deref(),
-                current_source_node_id,
-                current_op_idx,
+                &current_inline_frames,
             );
 
             // On restart, emit initial state immediately (no handshake needed).
@@ -2223,6 +2215,12 @@ fn advance_one<H: Host>(
         ..
     } = extract_current_op(&ctx);
     let debug_info = ctx.debug_info();
+    let inline_frames = inline_frames_for_operation(
+        debug_info.as_deref().zip(source_node_id).map(|(debug_info, source_node_id)| {
+            (debug_info, source_node_id, op_idx.unwrap_or_default() as u32)
+        }),
+        ctx.inherited_inline_call_contexts(),
+    );
     let executed_source_node = source_node_id.zip(debug_info.as_deref()).map(|(id, di)| &di[id]);
     let (executed_asmop, mut debug_var_infos) = match executed_source_node.zip(op_idx) {
         Some((source_node, op_idx)) => {
@@ -2249,13 +2247,7 @@ fn advance_one<H: Host>(
             *cycle += 1;
             record_debug_vars(debug_state, *cycle, debug_var_infos);
             *current_asmop = executed_asmop;
-            update_top_frame_with_debug(
-                host,
-                current_asmop.as_ref(),
-                debug_info.as_deref(),
-                source_node_id,
-                op_idx,
-            );
+            update_top_frame_with_debug(host, current_asmop.as_ref(), &inline_frames);
             Ok(Some(new_ctx))
         }
         Ok(None) => {

@@ -29,11 +29,23 @@ struct InlineCallSpec {
     column: ColumnNumber,
 }
 
+struct CompileOptions {
+    input_path: PathBuf,
+    output_path: PathBuf,
+    inject_frame_base_test_vars: bool,
+    inline_calls: Vec<InlineCallSpec>,
+}
+
 const USAGE: &str = "Usage: compile-masm <file.masm> [-o <file.masp>] \
                      [--inject-frame-base-test-vars] [--inline-call <name,line,column>]...";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (input_path, output_path, inject_frame_base_test_vars, inline_calls) = parse_args()?;
+    let CompileOptions {
+        input_path,
+        output_path,
+        inject_frame_base_test_vars,
+        inline_calls,
+    } = parse_args()?;
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
 
     // Read and assemble the MASM source as a program
@@ -95,12 +107,9 @@ fn inject_frame_base_test_vars_into(
     Ok(())
 }
 
-fn parse_args() -> Result<(PathBuf, PathBuf, bool, Vec<InlineCallSpec>), Box<dyn std::error::Error>> {
+fn parse_args() -> Result<CompileOptions, Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
-    let input_path = args
-        .next()
-        .map(PathBuf::from)
-        .ok_or_else(|| invalid_argument(USAGE))?;
+    let input_path = args.next().map(PathBuf::from).ok_or_else(|| invalid_argument(USAGE))?;
     let mut output_path = None;
     let mut inject_frame_base_test_vars = false;
     let mut inline_calls = Vec::new();
@@ -125,7 +134,12 @@ fn parse_args() -> Result<(PathBuf, PathBuf, bool, Vec<InlineCallSpec>), Box<dyn
     }
 
     let output_path = output_path.unwrap_or_else(|| input_path.with_extension(Package::EXTENSION));
-    Ok((input_path, output_path, inject_frame_base_test_vars, inline_calls))
+    Ok(CompileOptions {
+        input_path,
+        output_path,
+        inject_frame_base_test_vars,
+        inline_calls,
+    })
 }
 
 fn parse_inline_call(spec: &str) -> Result<InlineCallSpec, Box<dyn std::error::Error>> {

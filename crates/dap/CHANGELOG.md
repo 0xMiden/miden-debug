@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-dap-v0.9.2...miden-debug-dap-v0.10.0) - 2026-08-29
+
+### Fixed
+
+- *(dap)* reject an oversized Content-Length instead of aborting ([#131](https://github.com/0xMiden/miden-debug/pull/131))
+
+### Other
+
+- verify Cargo feature combinations
+
 ## [0.9.2](https://github.com/0xMiden/miden-debug/compare/miden-debug-dap-v0.9.1...miden-debug-dap-v0.9.2) - 2026-08-07
 
 ### Other

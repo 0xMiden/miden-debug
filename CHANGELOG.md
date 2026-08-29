@@ -6,6 +6,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-v0.10.3...miden-debug-v0.11.0) - 2026-08-29
+
+### Added
+
+- *(debug)* use canonical ABI entrypoint codecs
+- *(debug)* pretty-print ABI typed variables
+
+### Fixed
+
+- show TUI program errors in a popup ([#110](https://github.com/0xMiden/miden-debug/pull/110)) ([#119](https://github.com/0xMiden/miden-debug/pull/119))
+- *(debug)* resolve typed byte-addressed values
+- *(debug)* use canonical ABI type metadata
+
+### Other
+
+- update pyo3 to v0.29
+- verify Cargo feature combinations
+- merge next into feat/contract-benchmark
+- reset stack selection after remote reload
+- clear source for unresolved frame selection
+- render physical frame procedure directly
+- track exec procedure changes in physical frames
+- print selected postmortem frame
+- restore typed results after continue
+- synchronize inline frames on control cycles
+- merge next into feat/inline-calls
+- fix ABI value reporting regressions
+- *(debug)* cover ABI type pretty-printing in lit
+- migrate to miden-vm 0.30.0
+
 ### Added
 
 - Generate flamegraphs from replay snapshots with `miden-debug flamegraph --replay <FILE>`, or

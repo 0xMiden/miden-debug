@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.12.0...miden-debug-engine-v0.13.0) - 2026-08-29
+
+### Added
+
+- *(debug)* use canonical ABI entrypoint codecs
+- *(debug)* pretty-print ABI typed variables
+
+### Fixed
+
+- *(dap)* reject an oversized Content-Length instead of aborting ([#131](https://github.com/0xMiden/miden-debug/pull/131))
+- *(debug)* resolve typed byte-addressed values
+- *(debug)* use canonical ABI type metadata
+
+### Other
+
+- verify Cargo feature combinations
+- propagate DAP assembly columns
+- retain DAP inline frames without source
+- track exec procedure changes in physical frames
+- synchronize inline frames on control cycles
+- preserve resolved locations in logical frames
+- merge next into feat/inline-calls
+- fix ABI value reporting regressions
+- migrate to miden-vm 0.30.0
+
 ## [0.12.0](https://github.com/0xMiden/miden-debug/compare/miden-debug-engine-v0.11.0...miden-debug-engine-v0.12.0) - 2026-08-27
 
 ### Added

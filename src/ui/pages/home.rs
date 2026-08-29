@@ -237,7 +237,7 @@ impl Page for Home {
                 // Report program termination to the user
                 if state.stopped && state.executor().stopped {
                     if let Some(err) = state.execution_failed() {
-                        actions.push(Some(Action::StatusLine(err.to_string())));
+                        actions.push(Some(Action::Error(err.to_string())));
                     } else {
                         let status = match state.typed_result() {
                             Ok(Some(result)) => {

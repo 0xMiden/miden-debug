@@ -54,7 +54,7 @@ pub trait DebugQuery {
 /// Reads `size` bytes from memory, starting at `ptr`. Handles `ptr`'s offset.
 ///
 /// The `read_elem` callback is used to fetch an element from an element address.
-pub(crate) fn read_memory_bytes<E>(
+pub fn read_memory_bytes<E>(
     ptr: NativePtr,
     size: usize,
     mut read_elem: impl FnMut(u32) -> Result<Felt, E>,

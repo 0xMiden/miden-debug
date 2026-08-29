@@ -4,18 +4,23 @@ use std::sync::Arc;
 
 use log::Level;
 use miden_assembly::DefaultSourceManager;
-use miden_debug::{DebugQuery, event::PRINTLN_EVENT};
+use miden_debug::{DebugQuery, event::PRINT_PANIC_MESSAGE_EVENT};
 
 #[test]
-fn trace_println_uninitialized_memory_logs_warning_and_continues_execution() {
+// This verifies the panic message handler behaves as expected when `read_message_from_memory`
+// returns an error: the failure is logged as a warning and execution continues.
+fn trace_panic_message_read_mem_error_logs_warning_and_continues_execution() {
     common::init_test_debug_logger();
+
+    let source_manager = Arc::new(DefaultSourceManager::default());
+
     let source = format!(
         r#"
 begin
-    # Try to print a byte from uninitialized memory.
+    # Trigger error by reading from uninitialized memory.
     push.1
     push.1114112
-    emit.event("{PRINTLN_EVENT}")
+    emit.event("{PRINT_PANIC_MESSAGE_EVENT}")
     drop
     drop
 
@@ -26,7 +31,6 @@ begin
 end
 "#,
     );
-    let source_manager = Arc::new(DefaultSourceManager::default());
     let trace = common::execute_trace(&source, source_manager);
 
     assert_eq!(

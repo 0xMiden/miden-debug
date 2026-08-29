@@ -21,6 +21,15 @@ static FRAME_END_EVENT_ID: LazyLock<EventId> = LazyLock::new(|| FRAME_END_EVENT.
 pub const PRINTLN_EVENT: EventName = EventName::new("readonly::miden_debug::println");
 static PRINTLN_EVENT_ID: LazyLock<EventId> = LazyLock::new(|| PRINTLN_EVENT.to_event_id());
 
+/// This event indicates that a panic message should be printed.
+///
+/// The bytes representing the string are expected in memory. The executor reads the start address
+/// and length from the operand stack.
+pub const PRINT_PANIC_MESSAGE_EVENT: EventName =
+    EventName::new("readonly::miden_debug::print_panic_message");
+pub static PRINT_PANIC_MESSAGE_EVENT_ID: LazyLock<EventId> =
+    LazyLock::new(|| PRINT_PANIC_MESSAGE_EVENT.to_event_id());
+
 /// A typed wrapper around the raw trace events known to the compiler
 #[derive(Debug, Clone)]
 #[repr(u32)]
@@ -28,6 +37,7 @@ pub enum Event {
     FrameStart,
     FrameEnd,
     PrintLn,
+    PrintPanicMessage,
     UserDefined(EventName),
     Unknown(EventId),
 }
@@ -83,6 +93,7 @@ impl Event {
             Self::FrameStart => *FRAME_START_EVENT_ID,
             Self::FrameEnd => *FRAME_END_EVENT_ID,
             Self::PrintLn => *PRINTLN_EVENT_ID,
+            Self::PrintPanicMessage => *PRINT_PANIC_MESSAGE_EVENT_ID,
             Self::UserDefined(event) => event.to_event_id(),
             Self::Unknown(event) => *event,
         }
@@ -96,6 +107,7 @@ impl Event {
             Self::FrameStart => FRAME_START_EVENT,
             Self::FrameEnd => FRAME_END_EVENT,
             Self::PrintLn => PRINTLN_EVENT,
+            Self::PrintPanicMessage => PRINT_PANIC_MESSAGE_EVENT,
             Self::UserDefined(name) => name.clone(),
             Self::Unknown(_) => return None,
         })
@@ -104,7 +116,7 @@ impl Event {
     /// Returns `true` if `DebuggerHost` has a builtin handler for the event.
     pub fn has_builtin_handler(&self) -> bool {
         match self {
-            Self::FrameStart | Self::FrameEnd | Self::PrintLn => true,
+            Self::FrameStart | Self::FrameEnd | Self::PrintLn | Self::PrintPanicMessage => true,
             Self::UserDefined(_) | Self::Unknown(_) => false,
         }
     }
@@ -116,6 +128,7 @@ impl core::fmt::Display for Event {
             Self::FrameStart => f.write_str(FRAME_START_EVENT.as_str()),
             Self::FrameEnd => f.write_str(FRAME_END_EVENT.as_str()),
             Self::PrintLn => f.write_str(PRINTLN_EVENT.as_str()),
+            Self::PrintPanicMessage => f.write_str(PRINT_PANIC_MESSAGE_EVENT.as_str()),
             Self::UserDefined(name) => f.write_str(name.as_str()),
             Self::Unknown(id) => write!(f, "{id}"),
         }
@@ -130,6 +143,8 @@ impl From<EventId> for Event {
             Self::FrameEnd
         } else if raw == *PRINTLN_EVENT_ID {
             Self::PrintLn
+        } else if raw == *PRINT_PANIC_MESSAGE_EVENT_ID {
+            Self::PrintPanicMessage
         } else {
             Self::Unknown(raw)
         }
@@ -150,6 +165,8 @@ impl From<EventName> for Event {
             Self::FrameEnd
         } else if value == PRINTLN_EVENT {
             Self::PrintLn
+        } else if value == PRINT_PANIC_MESSAGE_EVENT {
+            Self::PrintPanicMessage
         } else {
             Self::UserDefined(value)
         }
@@ -165,5 +182,12 @@ mod tests {
         assert_eq!(Event::from(PRINTLN_EVENT.to_event_id()), Event::PrintLn);
         assert_eq!(Event::PrintLn.as_event_id(), *PRINTLN_EVENT_ID);
         assert_eq!(Event::from(PRINTLN_EVENT), Event::PrintLn);
+    }
+
+    #[test]
+    fn print_panic_message_event_roundtrips() {
+        assert_eq!(Event::from(PRINT_PANIC_MESSAGE_EVENT.to_event_id()), Event::PrintPanicMessage);
+        assert_eq!(Event::PrintPanicMessage.as_event_id(), *PRINT_PANIC_MESSAGE_EVENT_ID);
+        assert_eq!(Event::from(PRINT_PANIC_MESSAGE_EVENT), Event::PrintPanicMessage);
     }
 }

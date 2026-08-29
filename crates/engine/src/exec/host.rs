@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, num::NonZeroU32, sync::Arc};
+use std::{
+    collections::VecDeque,
+    num::NonZeroU32,
+    sync::{Arc, Mutex},
+};
 
 use miden_assembly::SourceManager;
 use miden_core::{
@@ -28,6 +32,10 @@ pub struct DebuggerHost<S: SourceManager + ?Sized> {
     source_manager: Arc<S>,
     event_replay: VecDeque<Vec<AdviceMutation>>,
     event_recording: Option<Vec<Vec<AdviceMutation>>>,
+    /// Stores the most recent panic message.
+    ///
+    /// Shared with event handlers so they can set it.
+    panic_message: Arc<Mutex<Option<String>>>,
 }
 impl<S> DebuggerHost<S>
 where
@@ -42,6 +50,7 @@ where
             source_manager,
             event_replay: VecDeque::new(),
             event_recording: None,
+            panic_message: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -109,6 +118,16 @@ where
     /// Load `forest` into the MAST store for this host
     pub fn load_mast_forest(&mut self, forest: LoadedMastForest) {
         self.store.insert_loaded(forest);
+    }
+
+    /// Returns the most recent panic message, if any.
+    pub fn panic_message(&self) -> Option<String> {
+        self.panic_message.lock().unwrap().clone()
+    }
+
+    /// Get a handle to the panic message storage.
+    pub(crate) fn panic_message_handle(&self) -> Arc<Mutex<Option<String>>> {
+        Arc::clone(&self.panic_message)
     }
 
     /// Registers an event handler for use during program execution.

@@ -114,15 +114,15 @@ name = "println_empty_string"
 required-features = ["tui"]
 
 [[test]]
-name = "println_invalid_utf8"
+name = "panic_message_empty_string"
 required-features = ["tui"]
 
 [[test]]
-name = "println_oversized_length"
+name = "panic_message_read_mem_error"
 required-features = ["tui"]
 
 [[test]]
-name = "println_uninitialized_memory"
+name = "println_read_mem_error"
 required-features = ["tui"]
 
 [[test]]

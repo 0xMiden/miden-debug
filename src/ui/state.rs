@@ -6,7 +6,7 @@ use std::{
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::Report;
-use miden_debug_engine::DebugQuery;
+use miden_debug_engine::{DebugQuery, normalize_source_path};
 use miden_debug_types::{Location, SourceManagerExt, SourceSpan};
 use miden_mast_package::Package;
 use miden_processor::{
@@ -1277,45 +1277,6 @@ fn source_var_location_is_visible(
     source_path_prefixes: &[String],
 ) -> bool {
     source_paths_match(var_path, current_path, source_path_prefixes) && var_line < current_line
-}
-
-fn normalize_source_path(path: &str) -> String {
-    let path = path.trim();
-    let path = miden_debug_types::Uri::new(path)
-        .to_path()
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_owned());
-    let mut path = path.replace('\\', "/");
-    if path
-        .as_bytes()
-        .get(0..2)
-        .is_some_and(|bytes| bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
-    {
-        path.replace_range(..1, &path[..1].to_ascii_lowercase());
-    }
-
-    let is_absolute = path.starts_with('/');
-    let mut parts = Vec::new();
-    for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                if parts.last().is_some_and(|last| *last != "..") {
-                    parts.pop();
-                } else {
-                    parts.push(part);
-                }
-            }
-            _ => parts.push(part),
-        }
-    }
-
-    let normalized = parts.join("/");
-    if is_absolute && !normalized.is_empty() {
-        format!("/{normalized}")
-    } else {
-        normalized
-    }
 }
 
 fn strip_source_prefix(path: &str, prefix: &str) -> Option<String> {

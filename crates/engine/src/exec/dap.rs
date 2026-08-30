@@ -652,8 +652,18 @@ fn is_internal_procedure(context_name: &str) -> bool {
 
 fn normalize_source_path(path: &str) -> String {
     let path = path.trim();
-    let path = path.strip_prefix("file://").unwrap_or(path);
-    let path = path.replace('\\', "/");
+    let path = miden_debug_types::Uri::new(path)
+        .to_path()
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned());
+    let mut path = path.replace('\\', "/");
+    if path
+        .as_bytes()
+        .get(0..2)
+        .is_some_and(|bytes| bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+    {
+        path.replace_range(..1, &path[..1].to_ascii_lowercase());
+    }
 
     let is_absolute = path.starts_with('/');
     let mut parts = Vec::new();
@@ -2830,6 +2840,26 @@ mod tests {
             "file:///workspace/compiler/examples/fibonacci/src/lib.rs",
             "/workspace/compiler/examples/fibonacci/src/lib.rs",
             &[],
+        ));
+        assert!(source_paths_match(
+            "file:///C:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            "C:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            &[],
+        ));
+        assert!(source_paths_match(
+            "file:///C:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            "c:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            &[],
+        ));
+        assert!(source_paths_match(
+            "file://localhost/C:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            "c:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            &[],
+        ));
+        assert!(source_paths_match(
+            "file:///C:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            "src/lib.rs",
+            &["c:/workspace/compiler/examples/fibonacci".into()],
         ));
         assert!(!source_paths_match(
             "/workspace/compiler/examples/fibonacci/src/lib.rs",

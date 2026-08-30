@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{borrow::Cow, path::Path, sync::Arc};
 
 use miden_assembly::{Assembler, DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
@@ -77,12 +77,72 @@ impl StandaloneDapHost {
             return Some(file);
         }
 
-        let path = location
-            .uri()
-            .as_str()
-            .strip_prefix("file://")
-            .unwrap_or_else(|| location.uri().as_str());
-        self.source_manager.load_file(Path::new(path)).ok()
+        let path = normalize_file_uri_path(
+            location
+                .uri()
+                .as_str()
+                .strip_prefix("file://")
+                .unwrap_or_else(|| location.uri().as_str()),
+        );
+        self.source_manager.load_file(Path::new(path.as_ref())).ok()
+    }
+}
+
+fn normalize_file_uri_path(path: &str) -> Cow<'_, str> {
+    let path = path
+        .strip_prefix('/')
+        .filter(|path| has_windows_drive_prefix(path))
+        .unwrap_or(path);
+
+    normalize_windows_drive_letter(path)
+}
+
+fn normalize_windows_drive_letter(path: &str) -> Cow<'_, str> {
+    if !has_windows_drive_prefix(path) {
+        return Cow::Borrowed(path);
+    }
+
+    let drive = path.as_bytes()[0];
+    if drive.is_ascii_uppercase() {
+        return Cow::Borrowed(path);
+    }
+
+    let mut normalized = path.as_bytes().to_vec();
+    normalized[0] = drive.to_ascii_uppercase();
+    Cow::Owned(String::from_utf8(normalized).expect("path was valid UTF-8 before normalization"))
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    path.as_bytes()
+        .get(0..2)
+        .is_some_and(|bytes| bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_file_uri_path;
+
+    #[test]
+    fn normalizes_windows_file_uri_paths() {
+        assert_eq!(
+            normalize_file_uri_path("/C:/Users/me/program.masm"),
+            "C:/Users/me/program.masm"
+        );
+        assert_eq!(
+            normalize_file_uri_path("/c:/Users/me/program.masm"),
+            "C:/Users/me/program.masm"
+        );
+        assert_eq!(normalize_file_uri_path("c:/Users/me/program.masm"), "C:/Users/me/program.masm");
+    }
+
+    #[test]
+    fn leaves_non_windows_paths_unchanged() {
+        assert_eq!(normalize_file_uri_path("/home/me/program.masm"), "/home/me/program.masm");
+        assert_eq!(
+            normalize_file_uri_path("//server/share/program.masm"),
+            "//server/share/program.masm"
+        );
+        assert_eq!(normalize_file_uri_path("relative/program.masm"), "relative/program.masm");
     }
 }
 

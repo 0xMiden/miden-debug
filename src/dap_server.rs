@@ -3,7 +3,7 @@ use std::{path::Path, sync::Arc};
 use miden_assembly::{Assembler, DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 use miden_core::{Word, events::EventId};
-use miden_debug_engine::HybridPackageRegistry;
+use miden_debug_engine::{HybridPackageRegistry, normalize_source_path};
 use miden_debug_types::{Location, SourceFile, SourceManagerExt, SourceSpan};
 use miden_mast_package::{Package, PackageId};
 use miden_package_registry::{PackageProvider, PackageRegistry};
@@ -77,12 +77,8 @@ impl StandaloneDapHost {
             return Some(file);
         }
 
-        let path = location
-            .uri()
-            .as_str()
-            .strip_prefix("file://")
-            .unwrap_or_else(|| location.uri().as_str());
-        self.source_manager.load_file(Path::new(path)).ok()
+        let path = normalize_source_path(location.uri().as_str());
+        self.source_manager.load_file(Path::new(&path)).ok()
     }
 }
 

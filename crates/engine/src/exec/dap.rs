@@ -37,6 +37,7 @@ use crate::{
         inline_frames_for_operation, resolve_typed_variable_values, resolve_variable_values,
     },
     exec::state::CurrentCycleInfo,
+    normalize_source_path,
 };
 
 // DAP CONFIG
@@ -648,35 +649,6 @@ fn should_defer_function_breakpoint(resolved: Option<&(String, i64)>, context_na
 
 fn is_internal_procedure(context_name: &str) -> bool {
     context_name.contains("::intrinsics::")
-}
-
-fn normalize_source_path(path: &str) -> String {
-    let path = path.trim();
-    let path = path.strip_prefix("file://").unwrap_or(path);
-    let path = path.replace('\\', "/");
-
-    let is_absolute = path.starts_with('/');
-    let mut parts = Vec::new();
-    for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                if parts.last().is_some_and(|last| *last != "..") {
-                    parts.pop();
-                } else {
-                    parts.push(part);
-                }
-            }
-            _ => parts.push(part),
-        }
-    }
-
-    let normalized = parts.join("/");
-    if is_absolute && !normalized.is_empty() {
-        format!("/{normalized}")
-    } else {
-        normalized
-    }
 }
 
 fn strip_source_prefix(path: &str, prefix: &str) -> Option<String> {
@@ -2830,6 +2802,26 @@ mod tests {
             "file:///workspace/compiler/examples/fibonacci/src/lib.rs",
             "/workspace/compiler/examples/fibonacci/src/lib.rs",
             &[],
+        ));
+        assert!(source_paths_match(
+            "file:///C:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            "C:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            &[],
+        ));
+        assert!(source_paths_match(
+            "file:///C:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            "c:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            &[],
+        ));
+        assert!(source_paths_match(
+            "file://localhost/C:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            "c:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            &[],
+        ));
+        assert!(source_paths_match(
+            "file:///C:/workspace/compiler/examples/fibonacci/src/lib.rs",
+            "src/lib.rs",
+            &["c:/workspace/compiler/examples/fibonacci".into()],
         ));
         assert!(!source_paths_match(
             "/workspace/compiler/examples/fibonacci/src/lib.rs",

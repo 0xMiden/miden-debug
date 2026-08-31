@@ -4,6 +4,7 @@ pub mod felt;
 mod linker;
 pub mod profiling;
 mod registry;
+mod source_path;
 #[cfg(test)]
 mod test_utils;
 
@@ -17,4 +18,5 @@ pub use self::{
     felt::{Felt, FromMidenRepr, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack},
     linker::LinkLibrary,
     registry::HybridPackageRegistry,
+    source_path::normalize_source_path,
 };

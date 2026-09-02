@@ -3,19 +3,18 @@ use std::{
     sync::Arc,
 };
 
-use miden_assembly::{DefaultSourceManager, Linkage, ProjectTargetSelector};
+use miden_assembly::Linkage;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 use miden_mast_package::{Package, PackageId};
-use miden_package_registry::PackageCache;
 
-/// A library requested by the user to be linked against during compilation
+/// A compiled library package requested by the user for execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkLibrary {
     /// The name of the library.
     ///
     /// If requested by name, e.g. `-l std`, the name is used as given.
     ///
-    /// If requested by path, e.g. `-l ./target/libs/miden-base.masl`, then the name of the library
+    /// If requested by path, e.g. `-l ./target/libs/miden-base.masp`, then the name of the library
     /// will be the basename of the file specified in the path.
     pub name: PackageId,
     /// If specified, the path from which this library should be loaded
@@ -38,51 +37,31 @@ impl LinkLibrary {
         matches!(self.name.as_ref(), "miden-protocol" | "protocol" | "base")
     }
 
-    pub fn load<S>(
-        &self,
-        search_paths: &[PathBuf],
-        registry: &mut S,
-    ) -> Result<Arc<Package>, Report>
-    where
-        S: PackageCache<Error = Report>,
-    {
+    pub fn load(&self, search_paths: &[PathBuf]) -> Result<Arc<Package>, Report> {
         if let Some(path) = self.path.as_deref() {
-            return self.load_from_path(path, registry);
+            return self.load_from_path(path);
         }
 
         // Search for library among specified search paths
         let path = self.find(search_paths)?;
 
-        self.load_from_path(&path, registry)
+        self.load_from_path(&path)
     }
 
-    fn load_from_path<S>(&self, path: &Path, registry: &mut S) -> Result<Arc<Package>, Report>
-    where
-        S: PackageCache<Error = Report>,
-    {
-        if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("masm")) {
-            let source_manager = Arc::new(DefaultSourceManager::default());
-            return miden_assembly::Assembler::new(source_manager)
-                .assemble_library_from_root(path, None)
-                .map(Arc::from);
+    fn load_from_path(&self, path: &Path) -> Result<Arc<Package>, Report> {
+        if path.extension().is_none_or(|ext| !ext.eq_ignore_ascii_case("masp")) {
+            return Err(Report::msg(format!(
+                "link library '{}' is not a compiled .masp package",
+                path.display()
+            )));
         }
 
-        if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("masp")) {
-            let bytes = std::fs::read(path).into_diagnostic()?;
-            return miden_mast_package::Package::read_from_bytes_trusted(&bytes)
-                .map_err(|e| {
-                    Report::msg(format!(
-                        "failed to load Miden package from {}: {e}",
-                        path.display()
-                    ))
-                })
-                .map(Arc::new);
-        }
-
-        let source_manager = Arc::new(DefaultSourceManager::default());
-        let assembler = miden_assembly::Assembler::new(source_manager);
-        let mut project_assembler = assembler.for_project_at_path(path, registry)?;
-        project_assembler.assemble(ProjectTargetSelector::Library, "release")
+        let bytes = std::fs::read(path).into_diagnostic()?;
+        miden_mast_package::Package::read_from_bytes_trusted(&bytes)
+            .map_err(|e| {
+                Report::msg(format!("failed to load Miden package from {}: {e}", path.display()))
+            })
+            .map(Arc::new)
     }
 
     fn find(&self, search_paths: &[PathBuf]) -> Result<PathBuf, Report> {
@@ -160,11 +139,7 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
         use clap::builder::PossibleValue;
 
         Some(Box::new(
-            [
-                PossibleValue::new("masm").help("A Miden Assembly project directory"),
-                PossibleValue::new("masp").help("A compiled Miden package file"),
-            ]
-            .into_iter(),
+            [PossibleValue::new("masp").help("A compiled Miden package file")].into_iter(),
         ))
     }
 
@@ -172,7 +147,7 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
     ///
     /// `-l[KIND[:<LINKAGE>]=]NAME`
     ///
-    /// * `KIND` is one of: `masp`, `masm`; defaults to `masp`
+    /// * `KIND` is `masp`
     /// * `LINKAGE` is one of: `static`, `dynamic`; defaults to `dynamic`
     /// * `NAME` is either a path, or a name (without extension)
     fn parse_ref(
@@ -191,15 +166,15 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
 
         let linkage = match kind {
             Some(kind) => match kind.split_once(':') {
-                Some(("masp" | "masm", "static")) => Linkage::Static,
-                Some(("masp" | "masm", "dynamic")) => Linkage::Dynamic,
-                Some(("masp" | "masm", other)) => {
+                Some(("masp", "static")) => Linkage::Static,
+                Some(("masp", "dynamic")) => Linkage::Dynamic,
+                Some(("masp", other)) => {
                     return Err(Error::raw(
                         ErrorKind::ValueValidation,
                         format!("unrecognized linkage modifier '{other}'"),
                     ));
                 }
-                None if matches!(kind, "masp" | "masm") => Linkage::Dynamic,
+                None if kind == "masp" => Linkage::Dynamic,
                 Some(_) | None => {
                     return Err(Error::raw(
                         ErrorKind::ValueValidation,
@@ -218,32 +193,9 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
         }
 
         let maybe_path = Path::new(name);
-        let extension = maybe_path.extension().map(|ext| ext.to_str().unwrap());
-        let is_package = match kind {
-            Some("masp") => true,
-            Some("masm") => false,
-            Some(kind) => {
-                return Err(Error::raw(
-                    ErrorKind::InvalidValue,
-                    format!("'{kind}' is not a valid library kind"),
-                ));
-            }
-            None => match extension {
-                Some("masp") => true,
-                Some("masm") | Some("toml") | None => false,
-                Some(kind) => {
-                    return Err(Error::raw(
-                        ErrorKind::InvalidValue,
-                        format!("'{kind}' is not a valid library kind"),
-                    ));
-                }
-            },
-        };
-
         let path = match maybe_path.components().count() {
-            _ if extension.is_some() || maybe_path.is_dir() => {
-                // If the path had an extension or exists as a directory, then we always treat it
-                // like a path
+            _ if maybe_path.extension().is_some() || maybe_path.is_dir() => {
+                // Existing directories and values with an extension are always paths.
                 maybe_path.canonicalize().map_err(|err| {
                     Error::raw(
                         ErrorKind::ValueValidation,
@@ -252,8 +204,7 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
                 })?
             }
             1 => {
-                // A single component path with no extension/not present as a direcotry is treated
-                // as a library name, not a file path
+                // A single component with no extension that is not a directory is a package name.
                 let name = maybe_path.file_name().unwrap().to_str().unwrap();
                 return Ok(LinkLibrary {
                     name: name.into(),
@@ -272,75 +223,71 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
             }
         };
 
-        // Normalize path and validate link library info
-        let extension = path.extension();
-        if is_package {
-            // We require a .masp path for packages
-            if extension.is_none_or(|ext| !ext.eq_ignore_ascii_case("masp")) {
-                return Err(Error::raw(
-                    ErrorKind::ValueValidation,
-                    format!(
-                        "invalid link library: expected '{}' to refer to a .masp file",
-                        path.display()
-                    ),
-                ));
-            }
-
-            let name = path.file_stem().unwrap().to_str().unwrap();
-            return Ok(LinkLibrary {
-                name: name.into(),
-                path: Some(path),
-                linkage,
-            });
-        }
-
-        let normalized_path = if extension.is_none() {
-            path.join("miden-project.toml")
-        } else {
-            path.clone()
-        };
-        match extension {
-            _ if normalized_path.ends_with("miden-project.toml") => {
-                // We got a path to a project
-                let source_manager = DefaultSourceManager::default();
-                let name = match miden_project::Project::load(&normalized_path, &source_manager) {
-                    Ok(
-                        miden_project::Project::Package(package)
-                        | miden_project::Project::WorkspacePackage { package, .. },
-                    ) => package.name().into_inner(),
-                    Err(err) => return Err(Error::raw(ErrorKind::ValueValidation, err)),
-                };
-                Ok(LinkLibrary {
-                    name,
-                    path: Some(normalized_path),
-                    linkage,
-                })
-            }
-            Some(ext) if ext.eq_ignore_ascii_case("masm") => {
-                // We got a single MASM file
-                let name = normalized_path.file_stem().unwrap().to_str().unwrap();
-                Ok(LinkLibrary {
-                    name: name.into(),
-                    path: Some(normalized_path),
-                    linkage,
-                })
-            }
-            Some(_) => Err(Error::raw(
+        if path.extension().is_none_or(|ext| !ext.eq_ignore_ascii_case("masp")) {
+            return Err(Error::raw(
                 ErrorKind::ValueValidation,
                 format!(
-                    "invalid link library: unrecognized file extension for '{}'",
-                    normalized_path.display()
+                    "invalid link library: expected '{}' to refer to a compiled .masp package",
+                    path.display()
                 ),
-            )),
-            // A missing extension must be a directory
-            None => Err(Error::raw(
-                ErrorKind::ValueValidation,
-                format!(
-                    "invalid link library: expected '{}' to be a directory, or have an explicit \
-                     extension",
-                    normalized_path.display()
-                ),
-            )),
+            ));
         }
+
+        let name = path.file_stem().unwrap().to_str().unwrap();
+        Ok(LinkLibrary {
+            name: name.into(),
+            path: Some(path),
+            linkage,
+        })
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use std::ffi::OsStr;
+
+    use clap::builder::TypedValueParser;
+
+    use super::*;
+
+    #[test]
+    fn parser_rejects_masm_sources() {
+        let source = tempfile::Builder::new().suffix(".masm").tempfile().unwrap();
+        let error = LinkLibraryParser
+            .parse_ref(&clap::Command::new("test"), None, source.path().as_os_str())
+            .unwrap_err();
+
+        assert!(error.to_string().contains("compiled .masp package"));
+    }
+
+    #[test]
+    fn parser_rejects_project_directories() {
+        let project = tempfile::tempdir().unwrap();
+        let error = LinkLibraryParser
+            .parse_ref(&clap::Command::new("test"), None, project.path().as_os_str())
+            .unwrap_err();
+
+        assert!(error.to_string().contains("compiled .masp package"));
+    }
+
+    #[test]
+    fn parser_rejects_source_kind() {
+        let error = LinkLibraryParser
+            .parse_ref(&clap::Command::new("test"), None, OsStr::new("masm=library"))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("supported values are 'masp'"));
+    }
+
+    #[test]
+    fn parser_accepts_explicit_static_package() {
+        let package = tempfile::Builder::new().suffix(".masp").tempfile().unwrap();
+        let value = format!("masp:static={}", package.path().display());
+        let library = LinkLibraryParser
+            .parse_ref(&clap::Command::new("test"), None, OsStr::new(&value))
+            .unwrap();
+
+        assert_eq!(library.linkage, Linkage::Static);
+        assert_eq!(library.path.unwrap(), package.path().canonicalize().unwrap());
     }
 }

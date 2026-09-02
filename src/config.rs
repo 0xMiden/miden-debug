@@ -105,20 +105,18 @@ pub struct DebuggerConfig {
         help_heading = "Linker"
     )]
     pub search_path: Vec<PathBuf>,
-    /// Link compiled projects to the specified library NAME.
-    ///
-    /// The optional KIND can be provided to indicate what type of library it is.
+    /// Load the compiled library package NAME.
     ///
     /// NAME must either be an absolute path (with extension when applicable), or
-    /// a library namespace (no extension). The former will be used as the path
-    /// to load the library, without looking for it in the library search paths,
-    /// while the latter will be located in the search path based on its KIND.
+    /// a package namespace (no extension). The former will be used as the path
+    /// to load the package, without looking for it in the library search paths,
+    /// while the latter will be located in the search path.
     ///
-    /// See below for valid KINDs:
+    /// The optional LINKAGE is either `static` or `dynamic` and defaults to `dynamic`.
     #[arg(
         long = "link-library",
         short = 'l',
-        value_name = "[KIND=]NAME",
+        value_name = "[masp[:LINKAGE]=]NAME",
         value_delimiter = ',',
         next_line_help(true),
         help_heading = "Linker"

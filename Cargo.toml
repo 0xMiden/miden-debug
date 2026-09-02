@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/dap", "crates/engine"]
+members = [".", "crates/dap", "crates/engine", "tests/lit/support"]
 resolver = "2"
 
 [workspace.package]
@@ -96,14 +96,6 @@ path = "src/main.rs"
 test = false
 bench = false
 required-features = ["python", "repl"]
-
-[[example]]
-name = "compile-masm"
-required-features = ["std"]
-
-[[example]]
-name = "compile-abi-fixture"
-required-features = ["std"]
 
 [[test]]
 name = "println_smoke_test"

@@ -1,6 +1,6 @@
 # Tests for invalid profiling CLI argument combinations.
 #
-# First, compile a trivial program so we have a .masp to pass.
+# First, compile a trivial program so we have a package to pass.
 # RUN: compile-masm %S/add.masm -o %t.masp
 #
 # Case 1: --profiling-reports-dir points to a file, not a directory.

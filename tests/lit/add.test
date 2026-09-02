@@ -1,4 +1,4 @@
-# Assemble and run a small MASM program to completion, then inspect the stack.
+# Run a small compiled MASM package to completion, then inspect the stack.
 #
 # RUN: compile-masm %S/add.masm -o %t.masp
 # RUN: miden-debug --commands %s %t.masp 2>&1 | filecheck %s

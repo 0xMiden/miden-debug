@@ -282,31 +282,6 @@ impl State {
         Ok(Self::new_local(source_manager, config, DebugMode::Program, local))
     }
 
-    /// Create a debugger state directly from inline Miden Assembly source.
-    ///
-    /// This is used by the scripting API for tests and small programmatic
-    /// debugging harnesses, where there is no compiled package to load.
-    pub fn from_masm_source(source: &str, args: Vec<Felt>) -> Result<Self, Report> {
-        let source_manager = Arc::new(DefaultSourceManager::default());
-        let program = miden_assembly::Assembler::new(source_manager.clone())
-            .assemble_program("program", source)?;
-        // CLI/test args model sequential pushes, but the executor expects the
-        // top-of-stack element first.
-        let args = args.into_iter().rev().collect::<Vec<_>>();
-        let executor = Executor::new(args).into_debug(program.into(), source_manager.clone());
-
-        Ok(Self::new_local(
-            source_manager,
-            Box::<DebuggerConfig>::default(),
-            DebugMode::Program,
-            LocalState {
-                executor,
-                execution_failed: None,
-                typed_procedure: None,
-            },
-        ))
-    }
-
     /// Create a new debugger state for transaction debugging.
     ///
     /// This uses pre-recorded event mutations to replay host events during
@@ -1459,8 +1434,11 @@ mod tests {
 
     #[test]
     fn successful_reload_epilogue_resets_stack_selection() {
-        let mut state =
-            State::from_masm_source("begin push.1 end", Vec::new()).expect("state should build");
+        let config = DebuggerConfig {
+            input: Some(crate::program_loader::test_package_input()),
+            ..Default::default()
+        };
+        let mut state = State::new(Box::new(config)).expect("state should build");
         state.selected_stack_frame = 3;
         state.breakpoints_hit.push(Breakpoint::default());
         state.stopped = false;

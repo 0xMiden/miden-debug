@@ -20,7 +20,7 @@ below describe every option that's stable today.
 
 | Flag | Value | Description |
 | ---- | ----- | ----------- |
-| `FILE` | path or `-` | Path to a `.masp` (compiled Miden Assembly Package) or `.masm` (source) program. Use `-` to read from stdin. Omit when using `--dap-connect`. |
+| `FILE` | path or `-` | Path to a compiled `.masp` Miden Assembly Package. Use `-` to read package bytes from stdin. Omit when using `--dap-connect`. |
 | `-- ARGV...` | field elements | Arguments pushed on the operand stack in order — the first element ends up at the top of the stack. Decimal or `0x`-prefixed hex. **These override** any `inputs.stack` set in the inputs file. |
 | `--inputs FILE` | path | TOML file describing program inputs (operand stack, advice stack, advice map) and execution options. See [Program inputs](#program-inputs). |
 | `--entrypoint <module>::<function>` | symbol | Override the program's entrypoint. Defaults to the package's declared entry. |
@@ -36,15 +36,13 @@ below describe every option that's stable today.
 
 ## Linker
 
-The linker resolves `use` directives in MASM source against shipped or
-custom-built libraries. Most users don't need to touch these flags — the
-debugger picks up `stdlib`, the kernel, and any libraries declared by a
-`.masp`'s manifest automatically.
+The package loader makes compiled dependency packages available during
+execution. It never compiles MASM files or Miden projects.
 
 | Flag | Value | Description |
 | ---- | ----- | ----------- |
 | `-L`, `--search-path PATH` | path | Add a directory to the library search path. Repeat to add several. |
-| `-l`, `--link-library [KIND=]NAME` | name | Link against `NAME`. `KIND` selects the library type (e.g. `mast=foo`); when omitted the kind is inferred from the extension or namespace. Repeat for multiple libraries. |
+| `-l`, `--link-library [masp[:LINKAGE]=]NAME` | name | Load a compiled package by path or namespace. `LINKAGE` is `static` or `dynamic` and defaults to `dynamic`. Repeat for multiple libraries. |
 | `--sysroot DIR` | path | Root of the Miden toolchain. Defaults to `$(midenup show home)/toolchains/$(midenup show active-toolchain)`. Read from the `MIDEN_SYSROOT` env var when neither flag nor `midenup` is available. |
 
 ## Output
@@ -124,8 +122,8 @@ miden-debug fib.masp --inputs ./fib.toml
 # Custom entrypoint
 miden-debug lib.masp --entrypoint mylib::main
 
-# Override search path and link a library
-miden-debug prog.masm -L ./target/masm -l my_lib
+# Override search path and load a compiled library
+miden-debug prog.masp -L ./target/masp -l my_lib
 
 # Attach to a remote DAP server
 miden-debug --dap-connect 127.0.0.1:4711

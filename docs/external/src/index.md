@@ -6,10 +6,10 @@ sidebar_position: 1
 # The Miden Debugger
 
 `miden-debug` is the interactive debugger for Miden VM programs. It loads a
-compiled `.masp` (Miden Assembly Package) or a `.masm` source, sets up the
-Miden VM, and lets you step through execution at the cycle, instruction, or
-source-line level — with breakpoints, memory inspection, stack views, and
-source-level variable resolution from DWARF info.
+compiled `.masp` (Miden Assembly Package), sets up the Miden VM, and lets you
+step through execution at the cycle, instruction, or source-line level — with
+breakpoints, memory inspection, stack views, and source-level variable
+resolution from package debug information.
 
 The same crate ships three execution modes:
 
@@ -48,20 +48,14 @@ files only need the smaller `script` feature.
 ## Quick start
 
 ```bash
-# Compile a program (or use any existing .masp / .masm)
-cat > sum.masm <<'EOF'
-begin
-    push.1
-    push.2
-    add
-end
-EOF
+# Compile your Miden project first
+miden build --profile debug
 
 # Drop into the TUI
-miden-debug sum.masm
+miden-debug target/miden/debug/my-package.masp
 
 # Or the plain REPL
-miden-debug --repl sum.masm
+miden-debug --repl target/miden/debug/my-package.masp
 
 # Or attach to a running miden-client DAP server
 miden-debug --dap-connect 127.0.0.1:4711

@@ -10,7 +10,7 @@ disassembly, operand stack, call stack, and breakpoint panes. Launch it by
 running `miden-debug` with a program path:
 
 ```bash
-miden-debug sum.masm
+miden-debug sum.masp
 ```
 
 When the debugger starts, it stops at cycle 0 so you can set up breakpoints

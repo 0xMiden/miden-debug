@@ -13,3 +13,7 @@ A trivial version bump to unify the versions of the various debugger crates. You
 - The `miden-debug-engine` and `miden-debug-dap` crates now release at the same version as `miden-debug` itself.
 - Require compiled `.masp` package artifacts for debugger inputs and linked libraries; source and
   project compilation must be performed by `midenc` or `miden build` before debugging.
+
+### Fixed
+
+- Report incompatible package and debug-info formats with guidance to use the matching midenup toolchain.

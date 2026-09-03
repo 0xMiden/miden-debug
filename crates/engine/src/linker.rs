@@ -7,6 +7,8 @@ use miden_assembly::Linkage;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 use miden_mast_package::{Package, PackageId};
 
+use crate::read_package_from_bytes;
+
 /// A compiled library package requested by the user for execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkLibrary {
@@ -108,11 +110,7 @@ impl LinkLibrary {
 
 pub(crate) fn load_package_from_path(path: &Path) -> Result<Arc<Package>, Report> {
     let bytes = std::fs::read(path).into_diagnostic()?;
-    miden_mast_package::Package::read_from_bytes_trusted(&bytes)
-        .map_err(|e| {
-            Report::msg(format!("failed to load Miden package from {}: {e}", path.display()))
-        })
-        .map(Arc::new)
+    read_package_from_bytes(&bytes, path.display())
 }
 
 #[cfg(feature = "std")]

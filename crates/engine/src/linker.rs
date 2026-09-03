@@ -8,6 +8,8 @@ use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 use miden_mast_package::{Package, PackageId};
 use miden_package_registry::PackageCache;
 
+use crate::read_package_from_bytes;
+
 /// A library requested by the user to be linked against during compilation
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkLibrary {
@@ -69,14 +71,7 @@ impl LinkLibrary {
 
         if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("masp")) {
             let bytes = std::fs::read(path).into_diagnostic()?;
-            return miden_mast_package::Package::read_from_bytes_trusted(&bytes)
-                .map_err(|e| {
-                    Report::msg(format!(
-                        "failed to load Miden package from {}: {e}",
-                        path.display()
-                    ))
-                })
-                .map(Arc::new);
+            return read_package_from_bytes(&bytes, path.display());
         }
 
         let source_manager = Arc::new(DefaultSourceManager::default());
@@ -129,11 +124,7 @@ impl LinkLibrary {
 
 pub(crate) fn load_package_from_path(path: &Path) -> Result<Arc<Package>, Report> {
     let bytes = std::fs::read(path).into_diagnostic()?;
-    miden_mast_package::Package::read_from_bytes_trusted(&bytes)
-        .map_err(|e| {
-            Report::msg(format!("failed to load Miden package from {}: {e}", path.display()))
-        })
-        .map(Arc::new)
+    read_package_from_bytes(&bytes, path.display())
 }
 
 #[cfg(feature = "std")]

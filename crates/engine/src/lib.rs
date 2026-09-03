@@ -1,7 +1,10 @@
+extern crate alloc;
+
 pub mod debug;
 pub mod exec;
 pub mod felt;
 mod linker;
+mod package;
 pub mod profiling;
 mod registry;
 mod source_path;
@@ -17,6 +20,7 @@ pub use self::{
     exec::*,
     felt::{Felt, FromMidenRepr, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack},
     linker::LinkLibrary,
+    package::read_package_from_bytes,
     registry::HybridPackageRegistry,
     source_path::normalize_source_path,
 };

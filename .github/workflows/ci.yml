@@ -35,8 +35,7 @@ jobs:
         run: |
           rustup update --no-self-update
           rustc --version
-      - &cache-rust
-        name: Cache Cargo
+      - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
           # Use a common cache for the basic compilation/formatter/clippy checks

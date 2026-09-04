@@ -334,9 +334,9 @@ command = "cargo"
 args = [
     "-Z",
     "unstable-options",
-    "build", 
-    "--bin", 
-    "miden-debug", 
+    "build",
+    "--bin",
+    "miden-debug",
     "--features",
     "std",
     "--artifact-dir",
@@ -352,9 +352,9 @@ command = "cargo"
 args = [
     "-Z",
     "unstable-options",
-    "build", 
-    "--bin", 
-    "miden-debug-python", 
+    "build",
+    "--bin",
+    "miden-debug-python",
     "--features",
     "python",
     "--artifact-dir",
@@ -370,8 +370,8 @@ command = "cargo"
 args = [
     "-Z",
     "unstable-options",
-    "build", 
-    "--example", 
+    "build",
+    "--example",
     "compile-masm",
     "--features",
     "std",
@@ -412,3 +412,23 @@ args = [
     "-D",
     "warnings",
 ]
+
+
+# Release tooling
+# ============================================================
+# Local, read-only or repository-local commands only. `publish` and `finalize`
+# are deliberately absent: they cross irreversible boundaries and belong to the
+# release workflow, where an approval gate and a short-lived token stand between
+# them and production. A convenient local shortcut for them would be a way to
+# skip that by accident.
+
+[tasks.release]
+category = "Release"
+description = "Invoke a `release-tool` command"
+command = "release-tool"
+install_crate = { crate_name = "miden-release-tool", binary = "release-tool", test_arg = "--help" }
+install_crate_args = ["--locked"]
+args = [
+    "${@}"
+]
+env = { "GITHUB_REPOSITORY" = "0xMiden/miden-debug" }

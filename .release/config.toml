@@ -27,7 +27,7 @@ latest = true
 assets = ["miden-debug-*.tar.gz"]
 required-assets = ["miden-debug-*.tar.gz"]
 
-# --- main unit ------------------------------------------------------------
+# --- debugger unit ------------------------------------------------------------
 
 [[packages]]
 name = "miden-debug"

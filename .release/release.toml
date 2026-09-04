@@ -11,8 +11,3 @@ units = ["debugger"]
 version = "0.14.0"
 tag = "v0.14.0"
 prerelease = false
-
-[main]
-version = "0.14.0"
-tag = "v0.14.0"
-prerelease = false

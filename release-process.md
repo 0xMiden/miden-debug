@@ -1,6 +1,6 @@
 # Release Process
 
-The operational guide for releasing `midenup` from *this* repository.
+The operational guide for releasing `miden-debug` from *this* repository.
 
 > For the tool itself, its commands, and the full `.release/config.toml` schema,
 > see [release-tool](https://github.com/0xMiden/release-tool). This document
@@ -50,7 +50,7 @@ the infrastructure crates that are never published.
 
 | Unit | Kind | Version lives in | Tag | Changelog |
 | --- | --- | --- | --- | --- |
-| `main` | crates | its own manifests | `v{version}` | `CHANGELOG.md` |
+| `debugger` | crates | its own manifests | `v{version}` | `CHANGELOG.md` |
 
 Publication order is `main`. Any unit may be released alone, and any combination together. Only a stable `main` release claims the repository's "Latest release" slot.
 
@@ -65,7 +65,7 @@ can be performed by the tooling.
 
 | What | Detail |
 | --- | --- |
-| Trusted Publisher, per crate | Repository `0xMiden/midenup`, workflow `release.yml`, environment `release` |
+| Trusted Publisher, per crate | Repository `0xMiden/miden-debug`, workflow `release.yml`, environment `release` |
 | Trusted-Publishing-only mode | Enable per crate **after** its publisher is verified working |
 | New crates | crates.io cannot configure a publisher for a crate that does not exist. Bootstrap a brand-new crate once with a short-lived, narrowly scoped token, then switch it |
 | Long-lived tokens | Remove `CARGO_REGISTRY_TOKEN` from repository secrets once Trusted Publishing works |
@@ -293,7 +293,7 @@ here; the SDK, the template bundle, and every prerelease publish with
 drafts** step: each tag, whether it was newly published or already published, and
 which claimed the "latest" slot. Then confirm outside the tooling that the
 releases are no longer drafts, the crates appear on crates.io at the expected
-versions, and `cargo install midenup` (or the equivalent) resolves the new
+versions, and `cargo install miden-debug` (or the equivalent) resolves the new
 version.
 
 **E3. Unfreeze `main`** and handle announcements and downstream coordination.

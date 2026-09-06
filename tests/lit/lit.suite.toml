@@ -7,6 +7,6 @@ patterns = ["*.test"]
 working_dir = "."
 
 [substitutions]
-# `miden-debug` resolves via the directory passed to `litcheck lit run --path`
-# (see the `test-lit` task in Makefile.toml). `compile-masm` is built by that
-# task and found on PATH; `filecheck` is provided by litcheck itself.
+# The debugger and private fixture builders resolve via the directory passed to
+# `litcheck lit run --path` (see the `test-lit` task in Makefile.toml).
+# `filecheck` is provided by litcheck itself.

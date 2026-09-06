@@ -71,19 +71,6 @@ impl ScriptDebugger {
         })
     }
 
-    /// Create a script debugger from inline MASM source.
-    ///
-    /// This is useful for tests and small programmatic debugging harnesses.
-    pub fn from_masm_source(
-        source: &str,
-        args: Vec<crate::processor::Felt>,
-    ) -> Result<Self, Report> {
-        let state = crate::ui::state::State::from_masm_source(source, args)?;
-        Ok(Self {
-            engine: Rc::new(RefCell::new(ReplEngine::from_state(state))),
-        })
-    }
-
     /// Render the normal debugger prompt.
     #[cfg(feature = "repl")]
     pub(crate) fn make_prompt(&self, color: bool) -> String {
@@ -313,24 +300,21 @@ fn script_breakpoint_from(bp: &Breakpoint) -> ScriptBreakpoint {
 }
 
 #[cfg(test)]
-mod tests {
-    use miden_core::Felt;
+pub(crate) fn test_debugger() -> ScriptDebugger {
+    let config = DebuggerConfig {
+        input: Some(crate::program_loader::test_package_input()),
+        ..Default::default()
+    };
+    ScriptDebugger::from_config(Box::new(config)).expect("test package should load")
+}
 
+#[cfg(test)]
+mod tests {
     use super::*;
 
     #[test]
     fn script_debugger_executes_commands_and_exposes_state() {
-        let debugger = ScriptDebugger::from_masm_source(
-            r#"
-begin
-    push.3
-    push.4
-    add
-end
-"#,
-            Vec::<Felt>::new(),
-        )
-        .unwrap();
+        let debugger = test_debugger();
 
         assert_eq!(debugger.cycle(), 0);
 
@@ -344,15 +328,7 @@ end
 
     #[test]
     fn script_debugger_can_manage_breakpoints() {
-        let debugger = ScriptDebugger::from_masm_source(
-            r#"
-begin
-    push.3
-end
-"#,
-            Vec::<Felt>::new(),
-        )
-        .unwrap();
+        let debugger = test_debugger();
 
         let bp = debugger.set_breakpoint("after 1").unwrap();
         assert_eq!(bp.id, 0);

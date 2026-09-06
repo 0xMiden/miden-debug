@@ -285,20 +285,10 @@ fn is_resume_command(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use miden_core::Felt;
-
     use super::*;
 
     fn test_debugger() -> ScriptDebugger {
-        ScriptDebugger::from_masm_source(
-            r#"
-begin
-    push.3
-end
-"#,
-            Vec::<Felt>::new(),
-        )
-        .unwrap()
+        crate::script::test_debugger()
     }
 
     #[test]
@@ -418,20 +408,7 @@ def cycle(debugger, command, exe_ctx, result, internal_dict):
     #[test]
     fn breakpoint_callback_false_continues_execution() {
         let _guard = crate::script::python::python_test_lock();
-        let debugger = ScriptDebugger::from_masm_source(
-            r#"
-begin
-    push.1
-    drop
-    push.2
-    drop
-    push.3
-    drop
-end
-"#,
-            Vec::<Felt>::new(),
-        )
-        .unwrap();
+        let debugger = test_debugger();
         let mut python = PythonScriptSession::new(debugger.clone()).unwrap();
         let temp_path =
             std::env::temp_dir().join(format!("miden_debug_bp_callback_{}.py", std::process::id()));

@@ -1,5 +1,5 @@
 # Stop inside a live procedure frame and verify both typed frame-base encodings.
-# The helper injects two debug-variable rows immediately before a final local load.
+# The fixture contains two debug-variable rows immediately before a final local load.
 #
 # RUN: compile-masm %S/frame_base_values.masm --inject-frame-base-test-vars -o %t.masp
 # RUN: miden-debug --commands %s %t.masp 2>&1 | filecheck %s

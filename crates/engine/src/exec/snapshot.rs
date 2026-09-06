@@ -6,12 +6,16 @@
 //! returned by event handlers, and the MAST forests resolved for `call`/`dyncall` targets (account
 //! code, note scripts, etc.). A [ReplaySnapshot] captures both, alongside the program and its
 //! inputs, so the same execution can be re-run later by feeding the recorded event log into an
-//! event-replay debugger host (see [`Executor::into_debug_with_replay`](crate::exec::Executor) and
+//! event-replay debugger host (see `Executor::into_debug_with_replay` and
 //! `State::new_for_transaction`).
 
+#[cfg(feature = "std")]
+use alloc::string::String;
+use alloc::{string::ToString, sync::Arc, vec::Vec};
+#[cfg(feature = "std")]
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Mutex,
 };
 
 use miden_core::{
@@ -34,10 +38,12 @@ use super::advice::{read_event_log, write_event_log};
 /// host returned — deduplicated, since the same forest is resolved for many nodes — lets the
 /// replay host load exactly that set and reach the same targets.
 #[derive(Clone, Default)]
+#[cfg(feature = "std")]
 pub struct MastForestRecorder {
     forests: Arc<Mutex<Vec<LoadedMastForest>>>,
 }
 
+#[cfg(feature = "std")]
 impl MastForestRecorder {
     /// Create a new, empty recorder.
     pub fn new() -> Self {
@@ -68,6 +74,7 @@ impl MastForestRecorder {
 
 /// Successful replay snapshot write metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(feature = "std")]
 pub struct ReplaySnapshotWrite {
     pub path: PathBuf,
     pub event_count: usize,
@@ -76,6 +83,7 @@ pub struct ReplaySnapshotWrite {
 
 /// Error metadata for a failed replay snapshot write.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[cfg(feature = "std")]
 #[error("failed to write replay snapshot to {}: {}", path.display(), message)]
 pub struct ReplaySnapshotWriteError {
     pub path: PathBuf,
@@ -84,10 +92,12 @@ pub struct ReplaySnapshotWriteError {
 
 /// Shared status handle for a configured replay snapshot write.
 #[derive(Clone, Debug, Default)]
+#[cfg(feature = "std")]
 pub struct ReplaySnapshotRecorder {
     status: Arc<Mutex<Option<Result<ReplaySnapshotWrite, ReplaySnapshotWriteError>>>>,
 }
 
+#[cfg(feature = "std")]
 impl ReplaySnapshotRecorder {
     pub fn new() -> Self {
         Self::default()
@@ -136,11 +146,13 @@ pub struct ReplaySnapshot {
 
 impl ReplaySnapshot {
     /// Serialize the snapshot to `path`.
+    #[cfg(feature = "std")]
     pub fn write_to_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
         std::fs::write(path, self.to_bytes())
     }
 
     /// Read and deserialize a snapshot from `path`.
+    #[cfg(feature = "std")]
     pub fn read_from_file(path: impl AsRef<Path>) -> Result<Self, ReplaySnapshotError> {
         let bytes = std::fs::read(path).map_err(ReplaySnapshotError::Io)?;
         Self::read_from_bytes(&bytes).map_err(ReplaySnapshotError::Deserialization)
@@ -271,6 +283,7 @@ fn read_execution_options<R: ByteReader>(
 
 /// Error reading a [ReplaySnapshot] from a file.
 #[derive(Debug, thiserror::Error)]
+#[cfg(feature = "std")]
 pub enum ReplaySnapshotError {
     #[error("failed to read replay snapshot file: {0}")]
     Io(std::io::Error),

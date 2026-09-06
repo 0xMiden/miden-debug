@@ -71,6 +71,10 @@ jobs:
       - name: Check feature combinations
         run: |
           cargo make check-feature-combinations
+      - name: Check engine without std
+        run: |
+          cargo check -p miden-debug-engine --no-default-features --lib --locked
+          cargo test -p miden-debug-engine --no-default-features --lib --locked
 
   check_format:
     name: check formatting

@@ -1,3 +1,7 @@
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+};
 use std::{
     ffi::{OsStr, OsString},
     fmt,
@@ -325,6 +329,8 @@ impl clap::builder::TypedValueParser for FormatTypeParser {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::{String, ToString};
+
     use super::FormatType;
     use crate::test_utils::write_scalar_bytes;
 

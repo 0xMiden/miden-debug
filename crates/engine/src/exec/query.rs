@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use miden_core::{Felt, Word};
 use miden_processor::{ContextId, MemoryError, ProcessorState, trace::RowIndex};
 use smallvec::SmallVec;

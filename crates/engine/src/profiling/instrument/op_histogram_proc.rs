@@ -1,3 +1,4 @@
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
 use std::collections::HashMap;
 
 use miden_core::operations::Operation;
@@ -68,6 +69,8 @@ impl Instrument for OpHistogramProc {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{string::String, vec::Vec};
+
     use miden_core::operations::Operation;
 
     use super::OpHistogramProc;

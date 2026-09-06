@@ -1,11 +1,29 @@
+#![no_std]
+
+//! Portable package decoding, typed variable resolution, and replay serialization.
+//!
+//! The default `std` feature additionally enables interactive execution, profiling, filesystem
+//! access, and command-line parsers. DAP support requires `std`.
+
+#[macro_use]
+extern crate alloc;
+
+#[cfg(feature = "std")]
+extern crate std;
+
 pub mod debug;
 pub mod exec;
 pub mod felt;
+#[cfg(feature = "std")]
 mod linker;
+mod package;
+#[cfg(feature = "std")]
 pub mod profiling;
+#[cfg(feature = "std")]
 mod registry;
+#[cfg(feature = "std")]
 mod source_path;
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod test_utils;
 
 pub use miden_core::events;
@@ -16,7 +34,9 @@ pub use self::{
     debug::*,
     exec::*,
     felt::{Felt, FromMidenRepr, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack},
-    linker::LinkLibrary,
-    registry::HybridPackageRegistry,
-    source_path::normalize_source_path,
+    package::read_package_from_bytes,
+};
+#[cfg(feature = "std")]
+pub use self::{
+    linker::LinkLibrary, registry::HybridPackageRegistry, source_path::normalize_source_path,
 };

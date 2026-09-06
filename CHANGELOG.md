@@ -11,3 +11,10 @@ A trivial version bump to unify the versions of the various debugger crates. You
 ### Changed
 
 - The `miden-debug-engine` and `miden-debug-dap` crates now release at the same version as `miden-debug` itself.
+
+### Fixed
+
+- Report incompatible package and debug-info formats with guidance to use the matching midenup
+  toolchain.
+- Make the engine's `no_std` boundary explicit, keeping portable package and value handling
+  available without `std` and gating interactive execution and filesystem access behind `std`.

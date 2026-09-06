@@ -1,3 +1,4 @@
+use alloc::{boxed::Box, vec::Vec};
 use std::path::PathBuf;
 
 use miden_core::operations::Operation;
@@ -72,6 +73,7 @@ impl Profiler {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::String;
     use std::collections::HashMap;
 
     use miden_core::operations::Operation;

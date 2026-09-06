@@ -1,4 +1,4 @@
-use std::{sync::Arc, vec::Vec};
+use std::{eprintln, sync::Arc, vec::Vec};
 
 use miden_core::{Word, events::EventId, program::Program};
 use miden_processor::{

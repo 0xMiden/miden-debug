@@ -1,4 +1,8 @@
-use std::{boxed::Box, format, string::String, vec::Vec};
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use miden_assembly_syntax::ast::types::{
     CallConv, FunctionType, MIDEN_CORE_TYPES, Type, TypedError, TypedProcInfo, WitScalarCodec,
@@ -168,7 +172,7 @@ impl AccountIdCodec {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use miden_assembly_syntax::ast::types::{ArrayType, StructType};
 

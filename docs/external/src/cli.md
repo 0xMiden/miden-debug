@@ -6,14 +6,14 @@ sidebar_position: 2
 # CLI reference
 
 ```text
-miden-debug [OPTIONS] [FILE] [-- ARGV...]
+miden debug [OPTIONS] [FILE] [-- ARGV...]
 ```
 
-`miden-debug` accepts a single positional `FILE` (the program to debug) and an
+`miden debug` accepts a single positional `FILE` (the program to debug) and an
 optional trailing `-- ARGV...` block whose elements are pushed onto the operand
 stack before the program runs.
 
-Run `miden-debug --help` for the canonical, version-pinned list. The tables
+Run `miden debug --help` for the canonical, version-pinned list. The tables
 below describe every option that's stable today.
 
 ## Program input
@@ -42,7 +42,7 @@ execution. It never compiles MASM files or Miden projects.
 | Flag | Value | Description |
 | ---- | ----- | ----------- |
 | `-L`, `--search-path PATH` | path | Add a directory to the library search path. Repeat to add several. |
-| `-l`, `--link-library [masp[:LINKAGE]=]NAME` | name | Load a compiled package by path or namespace. `LINKAGE` is `static` or `dynamic` and defaults to `dynamic`. Repeat for multiple libraries. |
+| `-l`, `--link-library [KIND[:LINKAGE]=]NAME` | name | Load a compiled package by path or namespace. `KIND` currently supports only `masp` (the default). `LINKAGE` is `static` or `dynamic` and defaults to `dynamic`. Repeat for multiple libraries. |
 | `--sysroot DIR` | path | Root of the Miden toolchain. Defaults to `$(midenup show home)/toolchains/$(midenup show active-toolchain)`. Read from the `MIDEN_SYSROOT` env var when neither flag nor `midenup` is available. |
 
 ## Output
@@ -68,7 +68,7 @@ options that can be combined.
 ### Stack arguments on the command line
 
 ```bash
-miden-debug fib.masp -- 1 2 0xdeadbeef
+miden debug fib.masp -- 1 2 0xdeadbeef
 ```
 
 The first argument lands on top of the stack, the next below it, and so on.
@@ -111,20 +111,20 @@ from the file in either case.
 
 ```bash
 # TUI on a compiled package
-miden-debug ./target/release/fib.masp
+miden debug target/miden/dev/fib.masp
 
 # REPL with operand stack arguments
-miden-debug --repl fib.masp -- 10
+miden debug --repl fib.masp -- 10
 
 # Use an inputs file
-miden-debug fib.masp --inputs ./fib.toml
+miden debug fib.masp --inputs ./fib.toml
 
 # Custom entrypoint
-miden-debug lib.masp --entrypoint mylib::main
+miden debug lib.masp --entrypoint mylib::main
 
 # Override search path and load a compiled library
-miden-debug prog.masp -L ./target/masp -l my_lib
+miden debug prog.masp -L ./target/masp -l my_lib
 
 # Attach to a remote DAP server
-miden-debug --dap-connect 127.0.0.1:4711
+miden debug --dap-connect 127.0.0.1:4711
 ```

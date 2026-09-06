@@ -24,11 +24,14 @@ difference is purely how the UI is rendered and how you type commands.
 
 ## Installation
 
-You can install either from crates.io:
+Use `midenup` to install and manage your Miden toolchain. When using `midenup`,
+invoke the debugger as `miden debug`; the examples throughout this guide use
+that form.
+
+You can also install the standalone debugger from crates.io:
 
 ```bash
 cargo install --locked miden-debug
-miden-debug help
 ```
 
 Or from source:
@@ -36,8 +39,10 @@ Or from source:
 ```bash
 git clone https://github.com/0xMiden/miden-debug && cd miden-debug
 cargo make miden-debug
-bin/miden-debug help
 ```
+
+For standalone installations, replace `miden debug` in the examples with
+`miden-debug`, or `bin/miden-debug` when building from source.
 
 The default build enables the `tui`, `dap`, `repl`, and `flamegraph` features.
 
@@ -49,24 +54,27 @@ files only need the smaller `script` feature.
 
 ```bash
 # Compile your Miden project first
-miden build --profile debug
+miden build
 
 # Drop into the TUI
-miden-debug target/miden/debug/my-package.masp
+miden debug target/miden/dev/my-package.masp
 
 # Or the plain REPL
-miden-debug --repl target/miden/debug/my-package.masp
+miden debug --repl target/miden/dev/my-package.masp
 
 # Or attach to a running miden-client DAP server
-miden-debug --dap-connect 127.0.0.1:4711
+miden debug --dap-connect 127.0.0.1:4711
 ```
+
+`miden build` uses the `dev` profile by default. Replace `my-package.masp` with
+the package filename reported by the build.
 
 When the debugger starts on a freshly-loaded program, it stops at cycle 0 so
 you can set breakpoints before execution begins.
 
 ## Where to go next
 
-- **[CLI reference](./cli.md)** — every flag accepted by `miden-debug`, including
+- **[CLI reference](./cli.md)** — every flag accepted by `miden debug`, including
   inputs, linker, working directory, and entrypoint selection.
 - **[TUI mode](./tui.md)** — keyboard shortcuts, panes, the `:` command prompt,
   breakpoints, reading memory, and `:vars` for source variables.

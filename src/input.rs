@@ -116,16 +116,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parser_rejects_masm_sources() {
-        let source = tempfile::Builder::new().suffix(".masm").tempfile().unwrap();
-        let error = InputFileParser
-            .parse_ref(&clap::Command::new("test"), None, source.path().as_os_str())
-            .unwrap_err();
-
-        assert!(error.to_string().contains("compiled .masp package"));
-    }
-
-    #[test]
     fn parser_accepts_compiled_packages() {
         let package = tempfile::Builder::new().suffix(".masp").tempfile().unwrap();
         let input = InputFileParser

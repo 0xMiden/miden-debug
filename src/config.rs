@@ -112,11 +112,12 @@ pub struct DebuggerConfig {
     /// to load the package, without looking for it in the library search paths,
     /// while the latter will be located in the search path.
     ///
-    /// The optional LINKAGE is either `static` or `dynamic` and defaults to `dynamic`.
+    /// KIND currently supports only `masp` (the default). The optional LINKAGE is either `static`
+    /// or `dynamic` and defaults to `dynamic`.
     #[arg(
         long = "link-library",
         short = 'l',
-        value_name = "[masp[:LINKAGE]=]NAME",
+        value_name = "[KIND[:LINKAGE]=]NAME",
         value_delimiter = ',',
         next_line_help(true),
         help_heading = "Linker"

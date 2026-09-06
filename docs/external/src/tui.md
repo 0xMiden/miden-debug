@@ -7,10 +7,10 @@ sidebar_position: 3
 
 The default mode renders a full-screen terminal UI with live source,
 disassembly, operand stack, call stack, and breakpoint panes. Launch it by
-running `miden-debug` with a program path:
+running `miden debug` with a program path:
 
 ```bash
-miden-debug sum.masp
+miden debug sum.masp
 ```
 
 When the debugger starts, it stops at cycle 0 so you can set up breakpoints
@@ -154,7 +154,7 @@ shown verbatim instead of a value.
 
 - The TUI honours `--color always` / `--color never` if your terminal lies
   about its colour support.
-- `MIDENC_TRACE=miden_debug=debug miden-debug ...` writes the debugger's own
+- `MIDENC_TRACE=miden_debug=debug miden debug ...` writes the debugger's own
   log to stderr; combined with `:debug` from the prompt this is the fastest
   way to diagnose unexpected behaviour.
 - Breakpoints survive `:reload`; only the program state and cycle counter

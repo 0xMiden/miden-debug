@@ -196,10 +196,13 @@ pub struct FlamegraphArgs {
     )]
     pub search_path: Vec<PathBuf>,
     /// Load the compiled library package NAME.
+    ///
+    /// KIND currently supports only `masp` (the default). The optional LINKAGE is either `static`
+    /// or `dynamic` and defaults to `dynamic`.
     #[arg(
         long = "link-library",
         short = 'l',
-        value_name = "[masp[:LINKAGE]=]NAME",
+        value_name = "[KIND[:LINKAGE]=]NAME",
         value_delimiter = ',',
         next_line_help(true),
         help_heading = "Linker"

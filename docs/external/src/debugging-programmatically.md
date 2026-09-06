@@ -155,7 +155,7 @@ We will continue to expand on the set of useful APIs for examining program state
 ## Generating flamegraphs programmatically
 
 The flamegraph support is also exposed as a Rust API, so tests can profile a
-program without shelling out to the `miden-debug flamegraph` command. Enable the
+program without shelling out to the `miden debug flamegraph` command. Enable the
 `flamegraph` feature on `miden-debug`, execute a program with a `DebugExecutor`,
 and collect a `FlamegraphProfile` from it:
 

@@ -1,7 +1,6 @@
 //! This module contains the set of compiler-emitted event codes, and their explanations
-use std::sync::LazyLock;
-
 use miden_core::events::{EventId, EventName};
+use miden_utils_sync::LazyLock;
 
 /// This event indicates that a procedure call frame is entered
 pub const FRAME_START_EVENT: EventName = EventName::new("readonly::miden_debug::frame_start");
@@ -32,6 +31,7 @@ pub enum Event {
     Unknown(EventId),
 }
 
+#[cfg(feature = "std")]
 impl std::hash::Hash for Event {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.as_event_id().hash(state);
@@ -47,14 +47,14 @@ impl PartialEq for Event {
 }
 
 impl PartialOrd for Event {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Event {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        use std::cmp::Ordering;
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        use core::cmp::Ordering;
         if self.as_event_id() == other.as_event_id() {
             return Ordering::Equal;
         }

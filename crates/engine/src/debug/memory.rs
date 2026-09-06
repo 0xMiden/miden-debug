@@ -1,11 +1,17 @@
+use alloc::string::String;
+use core::{fmt, str::FromStr};
+#[cfg(feature = "std")]
 use std::{
+    boxed::Box,
     ffi::{OsStr, OsString},
-    fmt,
-    str::FromStr,
+    string::ToString,
 };
 
+#[cfg(feature = "std")]
 use clap::{Parser, ValueEnum};
-use miden_assembly_syntax::ast::types::{ArrayType, PointerType, Type};
+use miden_assembly_syntax::ast::types::Type;
+#[cfg(feature = "std")]
+use miden_assembly_syntax::ast::types::{ArrayType, PointerType};
 
 use super::NativePtr;
 
@@ -17,6 +23,8 @@ pub struct ReadMemoryExpr {
     pub mode: MemoryMode,
     pub format: FormatType,
 }
+
+#[cfg(feature = "std")]
 impl FromStr for ReadMemoryExpr {
     type Err = String;
 
@@ -89,6 +97,7 @@ impl ReadMemoryExpr {
     }
 }
 
+#[cfg(feature = "std")]
 #[derive(Default, Debug, Parser)]
 #[command(name = "read")]
 pub struct Read {
@@ -125,6 +134,8 @@ pub struct Read {
     )]
     pub format: FormatType,
 }
+
+#[cfg(feature = "std")]
 impl Read {
     pub fn parse<I, S>(argv: I) -> Result<Self, String>
     where
@@ -146,15 +157,19 @@ impl Read {
 
 /// Render a clap error as a plain message, without clap's own `error: ` prefix
 /// (callers add their own) or trailing usage/help boilerplate.
+#[cfg(feature = "std")]
 fn render_clap_error(err: &clap::Error) -> String {
     let rendered = err.to_string();
     let message = rendered.lines().next().unwrap_or_default();
     message.strip_prefix("error: ").unwrap_or(message).to_string()
 }
 
+#[cfg(feature = "std")]
 #[doc(hidden)]
 #[derive(Clone)]
 struct TypeParser;
+
+#[cfg(feature = "std")]
 impl clap::builder::TypedValueParser for TypeParser {
     type Value = Type;
 
@@ -203,12 +218,14 @@ fn parse_address(s: &str) -> Result<u32, String> {
     }
 }
 
-#[derive(Default, Debug, Copy, Clone, PartialEq, Eq, ValueEnum)]
+#[derive(Default, Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "std", derive(ValueEnum))]
 pub enum MemoryMode {
     #[default]
     Word,
     Byte,
 }
+
 impl fmt::Display for MemoryMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -217,6 +234,7 @@ impl fmt::Display for MemoryMode {
         }
     }
 }
+
 impl FromStr for MemoryMode {
     type Err = String;
 
@@ -229,9 +247,12 @@ impl FromStr for MemoryMode {
     }
 }
 
+#[cfg(feature = "std")]
 #[doc(hidden)]
 #[derive(Clone)]
 struct MemoryModeParser;
+
+#[cfg(feature = "std")]
 impl clap::builder::TypedValueParser for MemoryModeParser {
     type Value = MemoryMode;
 
@@ -268,6 +289,7 @@ pub enum FormatType {
     Hex,
     Binary,
 }
+
 impl fmt::Display for FormatType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -277,6 +299,7 @@ impl fmt::Display for FormatType {
         }
     }
 }
+
 impl FromStr for FormatType {
     type Err = String;
 
@@ -290,9 +313,12 @@ impl FromStr for FormatType {
     }
 }
 
+#[cfg(feature = "std")]
 #[doc(hidden)]
 #[derive(Clone)]
 struct FormatTypeParser;
+
+#[cfg(feature = "std")]
 impl clap::builder::TypedValueParser for FormatTypeParser {
     type Value = FormatType;
 
@@ -325,6 +351,8 @@ impl clap::builder::TypedValueParser for FormatTypeParser {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::{String, ToString};
+
     use super::FormatType;
     use crate::test_utils::write_scalar_bytes;
 

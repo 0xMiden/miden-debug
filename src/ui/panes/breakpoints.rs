@@ -1,3 +1,5 @@
+use std::vec::Vec;
+
 use miden_assembly_syntax::diagnostics::Report;
 use ratatui::{prelude::*, widgets::*};
 
@@ -185,18 +187,18 @@ impl Pane for BreakpointsPane {
                     BreakpointType::File(pattern) => Line::from(vec![
                         gutter,
                         Span::styled("file:", yellow),
-                        Span::styled(pattern.as_str(), gray),
+                        Span::styled(pattern.glob().glob(), gray),
                     ]),
                     BreakpointType::Line { pattern, line } => Line::from(vec![
                         gutter,
                         Span::styled("file:", yellow),
-                        Span::styled(pattern.as_str(), gray),
+                        Span::styled(pattern.glob().glob(), gray),
                         Span::styled(format!(":{line}"), yellow),
                     ]),
                     BreakpointType::Called(pattern) => Line::from(vec![
                         gutter,
                         Span::styled("proc:", yellow),
-                        Span::styled(pattern.as_str(), gray),
+                        Span::styled(pattern.glob().glob(), gray),
                     ]),
                     BreakpointType::Opcode(matcher) => Line::from(vec![
                         gutter,

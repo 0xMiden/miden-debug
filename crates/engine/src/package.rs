@@ -1,10 +1,12 @@
-use std::{fmt, sync::Arc};
+use alloc::{string::String, sync::Arc};
+use core::fmt;
 
 use miden_assembly_syntax::{
     Report,
     diagnostics::{Diagnostic, miette},
 };
 use miden_core::serde::DeserializationError;
+use miden_debug_types::Uri;
 use miden_mast_package::{Package, PackageDebugInfoError};
 
 const PACKAGE_MAGIC: &[u8; 5] = b"MASP\0";
@@ -16,14 +18,14 @@ const TOOLCHAIN_HELP: &str = "package, MAST, and debug-info formats are tied to 
 enum PackageLoadError {
     #[error("failed to load Miden package from {input}")]
     DecodePackage {
-        input: String,
+        input: Uri,
         #[source]
         cause: DeserializationError,
     },
     #[error("Miden package from {input} uses unsupported package format {version}")]
     #[diagnostic(code(miden_debug::incompatible_package_format))]
     IncompatiblePackageFormat {
-        input: String,
+        input: Uri,
         version: PackageFormatVersion,
         #[source]
         cause: DeserializationError,
@@ -32,14 +34,14 @@ enum PackageLoadError {
     },
     #[error("failed to load debug information from Miden package {input}")]
     DecodeDebugInfo {
-        input: String,
+        input: Uri,
         #[source]
         cause: PackageDebugInfoError,
     },
     #[error("Miden package from {input} uses an unsupported debug-info format")]
     #[diagnostic(code(miden_debug::incompatible_debug_info_format))]
     IncompatibleDebugInfoFormat {
-        input: String,
+        input: Uri,
         #[source]
         cause: PackageDebugInfoError,
         #[help]
@@ -56,6 +58,18 @@ impl fmt::Display for PackageFormatVersion {
     }
 }
 
+/// Decode a package from the given path.
+///
+/// Internally calls `read_package_from_bytes`.
+#[doc(hidden)]
+#[cfg(feature = "std")]
+pub fn load_package_from_path(path: &std::path::Path) -> Result<Arc<Package>, Report> {
+    use miden_assembly_syntax::diagnostics::IntoDiagnostic;
+    let bytes = std::fs::read(path).into_diagnostic()?;
+    let uri = Uri::from(path);
+    read_package_from_bytes(&bytes, &uri)
+}
+
 /// Decode a package and eagerly validate its debug-info section.
 ///
 /// The processor and debugger must use matching package, MAST, and debug-info formats. When the
@@ -63,11 +77,7 @@ impl fmt::Display for PackageFormatVersion {
 /// user to midenup's versioned toolchain invocation instead of implying that the artifact is
 /// corrupt.
 #[doc(hidden)]
-pub fn read_package_from_bytes(
-    bytes: &[u8],
-    input: impl fmt::Display,
-) -> Result<Arc<Package>, Report> {
-    let input = input.to_string();
+pub fn read_package_from_bytes(bytes: &[u8], input: &Uri) -> Result<Arc<Package>, Report> {
     let package = Package::read_from_bytes_trusted(bytes).map_err(|cause| {
         if let Some(version) = incompatible_package_format(bytes, &cause) {
             Report::new(PackageLoadError::IncompatiblePackageFormat {
@@ -87,12 +97,15 @@ pub fn read_package_from_bytes(
     if let Err(cause) = package.debug_info() {
         let error = if is_incompatible_debug_info(&cause) {
             PackageLoadError::IncompatibleDebugInfoFormat {
-                input,
+                input: input.clone(),
                 cause,
                 help: TOOLCHAIN_HELP.into(),
             }
         } else {
-            PackageLoadError::DecodeDebugInfo { input, cause }
+            PackageLoadError::DecodeDebugInfo {
+                input: input.clone(),
+                cause,
+            }
         };
         return Err(Report::new(error));
     }
@@ -135,10 +148,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn current_package_with_debug_info_loads() {
+        let package = Assembler::new(Arc::new(DefaultSourceManager::default()))
+            .assemble_program("test", "begin push.1 drop end")
+            .unwrap();
+
+        let uri = Uri::new("current.masp");
+        let restored = read_package_from_bytes(&package.to_bytes(), &uri).unwrap();
+
+        assert_eq!(restored.to_bytes(), package.to_bytes());
+        assert!(restored.debug_info().unwrap().is_some());
+    }
+
+    #[test]
     fn incompatible_package_format_recommends_matching_toolchain() {
         let bytes = b"MASP\0\x06\x00\x00";
 
-        let report = read_package_from_bytes(bytes, "old.masp").unwrap_err();
+        let uri = Uri::new("old.masp");
+        let report = read_package_from_bytes(bytes, &uri).unwrap_err();
         let error = report
             .downcast_ref::<PackageLoadError>()
             .expect("expected a classified package load error");
@@ -162,7 +189,8 @@ mod tests {
             .expect("assembled package should contain debug info");
         debug_info.data.to_mut()[0] = u8::MAX;
 
-        let report = read_package_from_bytes(&package.to_bytes(), "old-debug.masp").unwrap_err();
+        let uri = Uri::new("old-debug.masp");
+        let report = read_package_from_bytes(&package.to_bytes(), &uri).unwrap_err();
         let error = report
             .downcast_ref::<PackageLoadError>()
             .expect("expected a classified package load error");
@@ -175,7 +203,8 @@ mod tests {
 
     #[test]
     fn malformed_package_does_not_get_a_version_hint() {
-        let report = read_package_from_bytes(b"not a package", "broken.masp").unwrap_err();
+        let uri = Uri::new("broken.masp");
+        let report = read_package_from_bytes(b"not a package", &uri).unwrap_err();
         let error = report
             .downcast_ref::<PackageLoadError>()
             .expect("expected a classified package load error");

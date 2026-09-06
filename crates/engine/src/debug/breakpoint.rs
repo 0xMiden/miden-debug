@@ -1,10 +1,10 @@
-use std::{ops::Deref, path::Path, str::FromStr};
+use alloc::string::{String, ToString};
+use core::{ops::Deref, str::FromStr};
 
-use glob::Pattern;
 use miden_processor::ProcessorState;
 
 use super::ResolvedLocation;
-use crate::Event;
+use crate::{Event, glob::GlobMatcher};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Breakpoint {
@@ -69,17 +69,18 @@ pub enum BreakpointType {
     /// Break when we exit the current call frame
     Finish,
     /// Break when any cycle corresponds to a source location whose file matches PATTERN
-    File(Pattern),
+    File(GlobMatcher),
     /// Break when any cycle corresponds to a source location whose file matches PATTERN and occurs
     /// on LINE
-    Line { pattern: Pattern, line: u32 },
+    Line { pattern: GlobMatcher, line: u32 },
     /// Break anytime the given operation occurs
     Opcode(OperationMatcher),
     /// Break when any cycle causes us to push a frame for PROCEDURE on the call stack
-    Called(Pattern),
+    Called(GlobMatcher),
     /// Break when the given event is emitted
     Event(Event),
 }
+
 impl BreakpointType {
     /// Return true if this breakpoint indicates we should break for `current_op`
     pub fn should_break_for(
@@ -100,21 +101,19 @@ impl BreakpointType {
 
     /// Return true if this breakpoint indicates we should break on entry to `procedure`
     pub fn should_break_in(&self, procedure: &str) -> bool {
+        let procedure = miden_debug_types::Uri::from(format!("file://{procedure}"));
         match self {
-            Self::Called(pattern) => pattern.matches(procedure),
+            Self::Called(pattern) => pattern.is_match(&procedure),
             _ => false,
         }
     }
 
     /// Return true if this breakpoint indicates we should break at `loc`
     pub fn should_break_at(&self, loc: &ResolvedLocation) -> bool {
+        let uri = loc.source_file.uri();
         match self {
-            Self::File(pattern) => {
-                pattern.matches_path(Path::new(loc.source_file.deref().content().uri().as_str()))
-            }
-            Self::Line { pattern, line } if line == &loc.line => {
-                pattern.matches_path(Path::new(loc.source_file.deref().content().uri().as_str()))
-            }
+            Self::File(pattern) => pattern.is_match(uri),
+            Self::Line { pattern, line } if line == &loc.line => pattern.is_match(uri),
             _ => false,
         }
     }
@@ -202,7 +201,7 @@ impl FromStr for BreakpointType {
 /// `*::` so they match by trailing path components: `entrypoint` and
 /// `fibonacci::entrypoint` both match the example above, while a partial
 /// component like `point` does not.
-fn procedure_pattern(spec: &str) -> Result<Pattern, String> {
+fn procedure_pattern(spec: &str) -> Result<GlobMatcher, String> {
     let spec = spec.trim();
     let anchored;
     let spec = if spec.starts_with("::") || spec.starts_with('*') {
@@ -211,7 +210,10 @@ fn procedure_pattern(spec: &str) -> Result<Pattern, String> {
         anchored = format!("*::{spec}");
         &anchored
     };
-    Pattern::new(spec).map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))
+    crate::glob::GlobBuilder::new(spec)
+        .build()
+        .map(|glob| glob.compile_matcher())
+        .map_err(|err| format!("invalid breakpoint pattern: {err}"))
 }
 
 /// Compile a user-provided file spec into a glob pattern.
@@ -219,7 +221,7 @@ fn procedure_pattern(spec: &str) -> Result<Pattern, String> {
 /// Source locations in debug info are stored as absolute paths, so a relative
 /// spec like `src/lib.rs` would never match as-is. Anchor relative specs with
 /// a leading `**/` so they match by path suffix, like gdb's `break FILE:LINE`.
-fn file_pattern(spec: &str) -> Result<Pattern, String> {
+fn file_pattern(spec: &str) -> Result<GlobMatcher, String> {
     let spec = spec.trim();
     let anchored;
     let spec = if spec.starts_with('/') || spec.starts_with('*') {
@@ -228,7 +230,10 @@ fn file_pattern(spec: &str) -> Result<Pattern, String> {
         anchored = format!("**/{spec}");
         &anchored
     };
-    Pattern::new(spec).map_err(|err| format!("invalid breakpoint expression: bad pattern: {err}"))
+    crate::glob::GlobBuilder::new(spec)
+        .build()
+        .map(|glob| glob.compile_matcher())
+        .map_err(|err| format!("invalid breakpoint pattern: {err}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,7 +298,7 @@ impl OperationMatcher {
 }
 
 impl core::fmt::Display for OperationMatcher {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Asm(op) => f.write_str(op),
             Self::Exact(op) => core::fmt::Display::fmt(op, f),
@@ -398,6 +403,8 @@ impl FromStr for OperationMatcher {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::OperationMatcher;
 
     #[test]

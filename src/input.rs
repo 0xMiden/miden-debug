@@ -1,54 +1,132 @@
-use std::{
-    borrow::Cow,
-    path::{Path, PathBuf},
-};
+use alloc::{borrow::Cow, boxed::Box};
 
-#[derive(Debug, Clone)]
-pub enum InputFile {
-    Real(PathBuf),
-    Stdin(Box<[u8]>),
+use miden_debug_types::Uri;
+
+#[derive(Clone)]
+pub struct InputFile {
+    path: Uri,
+    content: Option<Box<[u8]>>,
+}
+
+impl core::fmt::Debug for InputFile {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        use alloc::string::ToString;
+
+        let content = match self.content.as_deref() {
+            None => "None".to_string(),
+            Some(content) => {
+                format!("Some({{ length: {}, data: .. }})", content.len())
+            }
+        };
+        f.debug_struct("InputFile")
+            .field("path", &self.path)
+            .field("content", &content)
+            .finish()
+    }
 }
 
 impl Default for InputFile {
     fn default() -> Self {
-        Self::Stdin(Box::from([]))
+        Self {
+            path: Uri::new("stdin://"),
+            content: Some(Box::from([])),
+        }
     }
 }
 
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum InvalidInputError {
+    #[error("invalid input: unsupported uri scheme in '{0}'")]
+    UnsupportedScheme(Uri),
+    #[error("expected valid file path, got '{0}'")]
+    InvalidPath(Uri),
+    #[cfg(feature = "std")]
+    #[error("failed to read input file: {0}")]
+    Io(#[from] std::io::Error),
+}
+
 impl InputFile {
+    pub fn uri(&self) -> &Uri {
+        &self.path
+    }
+
     pub fn file_name(&self) -> &str {
-        match self {
-            Self::Real(path) => {
-                path.file_name().and_then(|name| name.to_str()).unwrap_or("<noname>")
-            }
-            Self::Stdin(_) => "<noname>",
+        match self.path.scheme().unwrap_or("file") {
+            "stdin" => match self.path.path().rsplit_once('/') {
+                None => self.path.path(),
+                Some((_, "")) => "<noname>",
+                Some((_, file_name)) => file_name,
+            },
+            _ => match self.path.path().rsplit_once('/') {
+                None => self.path.path(),
+                Some((_, file_name)) => file_name,
+            },
         }
     }
 
-    pub fn bytes(&self) -> Option<Cow<'_, [u8]>> {
-        match self {
-            Self::Real(path) => std::fs::read(path).ok().map(Cow::Owned),
-            Self::Stdin(bytes) => Some(Cow::Borrowed(bytes)),
+    #[cfg(feature = "std")]
+    pub fn bytes(&self) -> Result<Cow<'_, [u8]>, InvalidInputError> {
+        match self.path.scheme() {
+            Some("stdin") => Ok(Cow::Borrowed(self.content.as_deref().unwrap_or(&[]))),
+            Some("file") | None => {
+                let path = self
+                    .path
+                    .to_path()
+                    .ok_or_else(|| InvalidInputError::InvalidPath(self.path.clone()))?;
+                std::fs::read(path).map(Cow::Owned).map_err(InvalidInputError::Io)
+            }
+            Some(_) => Err(InvalidInputError::UnsupportedScheme(self.path.clone())),
+        }
+    }
+
+    #[cfg(not(feature = "std"))]
+    pub fn bytes(&self) -> Result<Cow<'_, [u8]>, InvalidInputError> {
+        Ok(Cow::Borrowed(self.content.as_deref().unwrap_or(&[])))
+    }
+
+    /// Create a new [InputFile] from a raw [Uri] and the content associated with it, if any
+    ///
+    /// If no content is provided, then the URI must be loadable from disk, which requires the `std`
+    /// feature. If you are not building with the `std` feature enabled, then you should provide
+    /// the content here, or the input file will be useless.
+    pub fn new(path: impl Into<Uri>, content: Option<Box<[u8]>>) -> Self {
+        Self {
+            path: path.into(),
+            content,
         }
     }
 
     /// Get an [InputFile] representing the contents of `path`.
     ///
     /// This function returns an error if the contents are not a valid supported file type.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> Self {
+    #[cfg(feature = "std")]
+    pub fn from_path<P: AsRef<std::path::Path>>(path: P) -> Self {
         let path = path.as_ref();
-        Self::Real(path.to_path_buf())
+        Self {
+            path: Uri::from(path),
+            content: None,
+        }
     }
 
     /// Get an [InputFile] representing the contents received from standard input.
     ///
     /// This function returns an error if the contents are not a valid supported file type.
+    #[cfg(feature = "std")]
     pub fn from_stdin() -> Result<Self, std::io::Error> {
         use std::io::Read;
 
-        let mut input = Vec::with_capacity(1024);
+        let mut input = std::vec::Vec::with_capacity(1024);
         std::io::stdin().read_to_end(&mut input)?;
-        Ok(Self::Stdin(input.into_boxed_slice()))
+        Ok(Self {
+            content: Some(input.into_boxed_slice()),
+            ..Default::default()
+        })
+    }
+
+    #[cfg(feature = "std")]
+    pub fn to_path(&self) -> Option<std::path::PathBuf> {
+        self.path.to_path()
     }
 }
 
@@ -78,13 +156,10 @@ impl clap::builder::TypedValueParser for InputFileParser {
     ) -> Result<Self::Value, clap::error::Error> {
         use clap::error::{Error, ErrorKind};
 
-        let input_file = match value.to_str() {
-            Some("-") => InputFile::from_stdin().map_err(|err| Error::raw(ErrorKind::Io, err))?,
-            Some(_) | None => InputFile::from_path(PathBuf::from(value)),
-        };
-
-        match &input_file {
-            InputFile::Real(path) => {
+        match value.to_str() {
+            Some("-") => InputFile::from_stdin().map_err(|err| Error::raw(ErrorKind::Io, err)),
+            Some(_) | None => {
+                let path = std::path::PathBuf::from(value);
                 if !path.exists() {
                     return Err(Error::raw(
                         ErrorKind::ValueValidation,
@@ -101,11 +176,9 @@ impl clap::builder::TypedValueParser for InputFileParser {
                         ),
                     ));
                 }
+                Ok(InputFile::from_path(path))
             }
-            InputFile::Stdin(_) => (),
         }
-
-        Ok(input_file)
     }
 }
 
@@ -122,6 +195,6 @@ mod tests {
             .parse_ref(&clap::Command::new("test"), None, package.path().as_os_str())
             .unwrap();
 
-        assert!(matches!(input, InputFile::Real(path) if path == package.path()));
+        assert_matches!(input.path.to_path(), Some(path) if path == package.path());
     }
 }

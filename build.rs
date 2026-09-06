@@ -26,25 +26,26 @@ fn configure_python() {
 fn validate_python() {
     let config = pyo3_build_config::get();
 
-    if config.implementation != pyo3_build_config::PythonImplementation::CPython {
+    if config.implementation() != pyo3_build_config::PythonImplementation::CPython {
         panic!(
             "miden-debug Python scripting embeds CPython, but PyO3 selected {} {}. Set \
              PYO3_PYTHON to a CPython executable, or disable the `python` feature.",
-            config.implementation, config.version
+            config.implementation(),
+            config.version()
         );
     }
 
-    if !config.shared {
+    if !config.shared() {
         panic!(
             "miden-debug Python scripting requires a shared libpython, but PyO3 selected a static \
              Python {} configuration. Set PYO3_PYTHON to an interpreter with a shared libpython, \
              or provide PYO3_CONFIG_FILE with shared=true.",
-            config.version
+            config.version()
         );
     }
 
-    if let Some(executable) = config.executable.as_deref() {
-        validate_python_executable(executable, &config.version.to_string());
+    if let Some(executable) = config.executable() {
+        validate_python_executable(executable, &config.version().to_string());
     } else {
         println!(
             "cargo:warning=Python scripting is using PYO3_CONFIG_FILE/cross-compile metadata; no \
@@ -52,9 +53,8 @@ fn validate_python() {
         );
     }
 
-    let framework_prefix =
-        config.python_framework_prefix.as_deref().filter(|path| !path.trim().is_empty());
-    let lib_dir = config.lib_dir.as_deref().filter(|path| !path.trim().is_empty());
+    let framework_prefix = config.python_framework_prefix().filter(|path| !path.trim().is_empty());
+    let lib_dir = config.lib_dir().filter(|path| !path.trim().is_empty());
 
     match (framework_prefix, lib_dir) {
         (Some(prefix), _) => validate_framework_prefix(prefix),

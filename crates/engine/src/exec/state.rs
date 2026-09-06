@@ -1,9 +1,10 @@
-use std::{
+use alloc::{
     collections::{BTreeSet, VecDeque},
     sync::Arc,
+    vec::Vec,
 };
 
-use miden_assembly::SourceManager;
+use miden_assembly_syntax::debuginfo::SourceManager;
 use miden_core::{
     mast::{MastNode, MastNodeId},
     operations::AssemblyOp,
@@ -33,7 +34,7 @@ pub struct DebugExecutor {
     /// The underlying [FastProcessor] being driven
     pub processor: FastProcessor,
     /// The host providing debugging callbacks
-    pub host: DebuggerHost<dyn miden_assembly::SourceManager>,
+    pub host: DebuggerHost<dyn miden_assembly_syntax::debuginfo::SourceManager>,
     /// The resume context for the next step (None if program has finished)
     pub resume_ctx: Option<ResumeContext>,
 
@@ -380,7 +381,10 @@ impl DebugExecutor {
                     StackOutputs::new(&self.current_stack[..len]).expect("invalid stack outputs");
 
                 // Write profiling reports in case its enabled
-                self.profiler.write_reports();
+                #[cfg(feature = "std")]
+                {
+                    self.profiler.write_reports();
+                }
                 Ok(None)
             }
             Err(err) => {
@@ -492,6 +496,7 @@ impl DebugExecutor {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
     use std::sync::Arc;
 
     use miden_assembly::DefaultSourceManager;

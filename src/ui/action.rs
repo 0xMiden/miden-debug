@@ -1,3 +1,5 @@
+use std::string::String;
+
 type Command = String;
 type Args = Option<String>;
 

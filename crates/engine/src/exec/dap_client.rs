@@ -4,6 +4,10 @@
 //! but no client-side equivalent. This module implements a simple DAP client using the
 //! same types for requests, responses, and events.
 
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use std::{
     collections::VecDeque,
     io::{BufRead, BufReader, BufWriter, Read, Write},

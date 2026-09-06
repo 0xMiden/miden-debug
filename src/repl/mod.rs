@@ -1,3 +1,6 @@
+#[cfg(feature = "repl")]
+use std::boxed::Box;
+
 mod commands;
 pub(crate) mod engine;
 #[cfg(feature = "python")]

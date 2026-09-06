@@ -1768,7 +1768,7 @@ name = "miden-debug-engine"
 version = "0.14.0"
 dependencies = [
  "clap",
- "glob",
+ "hashbrown 0.17.1",
  "inventory",
  "log",
  "miden-assembly",
@@ -1779,9 +1779,11 @@ dependencies = [
  "miden-mast-package",
  "miden-package-registry",
  "miden-processor",
- "miden-project",
+ "miden-utils-sync",
  "num-traits",
  "proptest",
+ "regex",
+ "regex-syntax",
  "rustc-demangle",
  "rustc-hash",
  "serde",

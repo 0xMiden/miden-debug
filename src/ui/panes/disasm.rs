@@ -1,3 +1,5 @@
+use std::{string::ToString, vec::Vec};
+
 use miden_assembly_syntax::diagnostics::Report;
 use ratatui::{prelude::*, widgets::*};
 

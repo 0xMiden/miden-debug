@@ -3,6 +3,8 @@
 //!
 //! Each instrument is uniquely identified by its [`Instrument::name`].
 
+use alloc::{boxed::Box, string::String};
+
 use miden_core::operations::Operation;
 
 mod op_histogram_global;
@@ -24,7 +26,43 @@ pub trait Instrument {
     /// assembly operation metadata.
     fn on_operation_execution_cycle(&mut self, op: Operation, proc: Option<&str>);
     /// Write this instrumentation's collected output as a report to `writer`
-    fn write_report_to(&self, writer: &mut dyn std::io::Write) -> std::io::Result<()>;
+    fn write_report_to(&self, writer: &mut dyn OutputWriter) -> OutputResult<()>;
+}
+
+pub type OutputError = Box<dyn core::error::Error + 'static>;
+pub type OutputResult<T> = Result<T, OutputError>;
+
+pub trait OutputWriter {
+    fn write_all(&mut self, buf: &[u8]) -> OutputResult<()>;
+    fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> OutputResult<()>;
+}
+
+#[cfg(feature = "std")]
+impl<T: std::io::Write> OutputWriter for T {
+    #[inline]
+    fn write_all(&mut self, buf: &[u8]) -> OutputResult<()> {
+        std::io::Write::write_all(self, buf).map_err(|err| Box::new(err) as Box<_>)
+    }
+
+    #[inline]
+    fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> OutputResult<()> {
+        std::io::Write::write_fmt(self, args).map_err(|err| Box::new(err) as Box<_>)
+    }
+}
+
+#[cfg(not(feature = "std"))]
+impl OutputWriter for alloc::vec::Vec<u8> {
+    fn write_all(&mut self, buf: &[u8]) -> OutputResult<()> {
+        self.extend_from_slice(buf);
+        Ok(())
+    }
+
+    fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> OutputResult<()> {
+        use alloc::string::ToString;
+        let formatted = args.to_string();
+        self.extend_from_slice(formatted.as_bytes());
+        Ok(())
+    }
 }
 
 /// Represents the information needed to construct an [Instrument] dynamically
@@ -50,10 +88,13 @@ pub enum InstrumentError {
 ///
 /// Returns `Err` if no such instrument is registered, or the instrument constructor returned an
 /// error
+#[cfg(feature = "std")]
 pub fn instrument_from_name(
     name: &str,
     config: &super::ProfilerConfig,
 ) -> Result<Box<dyn Instrument>, InstrumentError> {
+    use alloc::string::ToString;
+
     for instrument in inventory::iter::<InstrumentRegistrationInfo>() {
         if instrument.name == name {
             return (instrument.builder)(config);
@@ -62,12 +103,14 @@ pub fn instrument_from_name(
     Err(InstrumentError::Undefined(name.to_string()))
 }
 
+#[cfg(feature = "std")]
 #[doc(hidden)]
 pub struct InstrumentRegistrationInfo {
     name: &'static str,
     builder: fn(&super::ProfilerConfig) -> Result<Box<dyn Instrument>, InstrumentError>,
 }
 
+#[cfg(feature = "std")]
 impl InstrumentRegistrationInfo {
     pub const fn new<T: InstrumentRegistration>() -> Self {
         let name = <T as InstrumentRegistration>::NAME;
@@ -78,6 +121,7 @@ impl InstrumentRegistrationInfo {
     }
 }
 
+#[cfg(feature = "std")]
 #[macro_export]
 macro_rules! register_instrument {
     ($t:ty) => {
@@ -85,8 +129,10 @@ macro_rules! register_instrument {
     };
 }
 
+#[cfg(feature = "std")]
 inventory::collect!(InstrumentRegistrationInfo);
 
+#[cfg(feature = "std")]
 #[inline]
 fn build_instrument<T: InstrumentRegistration>(
     config: &super::ProfilerConfig,

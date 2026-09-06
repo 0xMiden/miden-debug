@@ -3,8 +3,13 @@ pub(crate) mod helpers;
 pub mod instrument;
 mod profiler;
 
-pub use config::{ProfilerCliArgs, ProfilerConfig};
-pub use instrument::{
-    Instrument, InstrumentRegistration, OpHistogramGlobal, OpHistogramProc, instrument_from_name,
+#[cfg(feature = "std")]
+pub use self::{config::ProfilerCliArgs, instrument::instrument_from_name};
+pub use self::{
+    config::ProfilerConfig,
+    instrument::{
+        Instrument, InstrumentRegistration, OpHistogramGlobal, OpHistogramProc, OutputResult,
+        OutputWriter,
+    },
+    profiler::Profiler,
 };
-pub use profiler::Profiler;

@@ -6,12 +6,13 @@
 //! returned by event handlers, and the MAST forests resolved for `call`/`dyncall` targets (account
 //! code, note scripts, etc.). A [ReplaySnapshot] captures both, alongside the program and its
 //! inputs, so the same execution can be re-run later by feeding the recorded event log into an
-//! event-replay debugger host (see [`Executor::into_debug_with_replay`](crate::exec::Executor) and
+//! event-replay debugger host (see `Executor::into_debug_with_replay` and
 //! `State::new_for_transaction`).
 
-use std::{
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+use alloc::{
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
 };
 
 use miden_core::{
@@ -19,11 +20,13 @@ use miden_core::{
     program::StackInputs,
     serde::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
 };
+use miden_debug_types::Uri;
 use miden_mast_package::{Package, debug_info::PackageDebugInfo};
 use miden_processor::{
     ExecutionOptions, LoadedMastForest,
     advice::{AdviceInputs, AdviceMutation},
 };
+use miden_utils_sync::RwLock;
 
 use super::advice::{read_event_log, write_event_log};
 
@@ -35,7 +38,7 @@ use super::advice::{read_event_log, write_event_log};
 /// replay host load exactly that set and reach the same targets.
 #[derive(Clone, Default)]
 pub struct MastForestRecorder {
-    forests: Arc<Mutex<Vec<LoadedMastForest>>>,
+    forests: Arc<RwLock<Vec<LoadedMastForest>>>,
 }
 
 impl MastForestRecorder {
@@ -46,12 +49,13 @@ impl MastForestRecorder {
 
     /// Returns a copy of the recorded forests.
     pub fn snapshot(&self) -> Vec<LoadedMastForest> {
-        self.forests.lock().expect("mast forest log poisoned").clone()
+        self.forests.read().clone()
     }
 
     /// Record a forest resolved by the host, ignoring forests already recorded this run.
+    #[cfg(feature = "dap")]
     pub(crate) fn record(&self, forest: LoadedMastForest) {
-        let mut guard = self.forests.lock().expect("mast forest log poisoned");
+        let mut guard = self.forests.write();
         if !guard
             .iter()
             .any(|existing| Arc::ptr_eq(existing.mast_forest(), forest.mast_forest()))
@@ -61,31 +65,32 @@ impl MastForestRecorder {
     }
 
     /// Discard everything recorded so far, e.g. when execution restarts from the beginning.
+    #[cfg(feature = "dap")]
     pub(crate) fn clear(&self) {
-        self.forests.lock().expect("mast forest log poisoned").clear();
+        self.forests.write().clear();
     }
 }
 
 /// Successful replay snapshot write metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplaySnapshotWrite {
-    pub path: PathBuf,
+    pub path: Uri,
     pub event_count: usize,
     pub forest_count: usize,
 }
 
 /// Error metadata for a failed replay snapshot write.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("failed to write replay snapshot to {}: {}", path.display(), message)]
+#[error("failed to write replay snapshot to {}: {}", path, message)]
 pub struct ReplaySnapshotWriteError {
-    pub path: PathBuf,
+    pub path: Uri,
     pub message: String,
 }
 
 /// Shared status handle for a configured replay snapshot write.
 #[derive(Clone, Debug, Default)]
 pub struct ReplaySnapshotRecorder {
-    status: Arc<Mutex<Option<Result<ReplaySnapshotWrite, ReplaySnapshotWriteError>>>>,
+    status: Arc<RwLock<Option<Result<ReplaySnapshotWrite, ReplaySnapshotWriteError>>>>,
 }
 
 impl ReplaySnapshotRecorder {
@@ -95,19 +100,20 @@ impl ReplaySnapshotRecorder {
 
     /// Returns the last snapshot write status, leaving the handle empty.
     pub fn take(&self) -> Option<Result<ReplaySnapshotWrite, ReplaySnapshotWriteError>> {
-        self.status.lock().expect("replay snapshot status poisoned").take()
+        self.status.write().take()
     }
 
+    #[cfg(feature = "dap")]
     pub(crate) fn record_success(&self, write: ReplaySnapshotWrite) {
-        *self.status.lock().expect("replay snapshot status poisoned") = Some(Ok(write));
+        *self.status.write() = Some(Ok(write));
     }
 
-    pub(crate) fn record_error(&self, path: PathBuf, err: impl ToString) {
-        *self.status.lock().expect("replay snapshot status poisoned") =
-            Some(Err(ReplaySnapshotWriteError {
-                path,
-                message: err.to_string(),
-            }));
+    #[cfg(feature = "dap")]
+    pub(crate) fn record_error(&self, path: Uri, err: impl ToString) {
+        *self.status.write() = Some(Err(ReplaySnapshotWriteError {
+            path,
+            message: err.to_string(),
+        }));
     }
 }
 
@@ -136,12 +142,14 @@ pub struct ReplaySnapshot {
 
 impl ReplaySnapshot {
     /// Serialize the snapshot to `path`.
-    pub fn write_to_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
+    #[cfg(feature = "std")]
+    pub fn write_to_file(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
         std::fs::write(path, self.to_bytes())
     }
 
     /// Read and deserialize a snapshot from `path`.
-    pub fn read_from_file(path: impl AsRef<Path>) -> Result<Self, ReplaySnapshotError> {
+    #[cfg(feature = "std")]
+    pub fn read_from_file(path: impl AsRef<std::path::Path>) -> Result<Self, ReplaySnapshotError> {
         let bytes = std::fs::read(path).map_err(ReplaySnapshotError::Io)?;
         Self::read_from_bytes(&bytes).map_err(ReplaySnapshotError::Deserialization)
     }
@@ -271,6 +279,7 @@ fn read_execution_options<R: ByteReader>(
 
 /// Error reading a [ReplaySnapshot] from a file.
 #[derive(Debug, thiserror::Error)]
+#[cfg(feature = "std")]
 pub enum ReplaySnapshotError {
     #[error("failed to read replay snapshot file: {0}")]
     Io(std::io::Error),

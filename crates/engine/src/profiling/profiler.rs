@@ -1,8 +1,8 @@
-use std::path::PathBuf;
+use alloc::{boxed::Box, vec::Vec};
 
 use miden_core::operations::Operation;
 
-use crate::profiling::{ProfilerConfig, instrument::Instrument};
+use crate::profiling::{OutputResult, OutputWriter, ProfilerConfig, instrument::Instrument};
 
 /// Holds the loaded [`Instrument`]s and dispatches event handlers to them.
 ///
@@ -10,13 +10,15 @@ use crate::profiling::{ProfilerConfig, instrument::Instrument};
 #[derive(Default)]
 pub struct Profiler {
     instruments: Vec<Box<dyn Instrument>>,
-    reports_dir: Option<PathBuf>,
+    #[cfg(feature = "std")]
+    reports_dir: Option<std::path::PathBuf>,
 }
 
 impl Profiler {
     pub fn from_config(config: ProfilerConfig) -> Self {
         Self {
             instruments: config.instruments,
+            #[cfg(feature = "std")]
             reports_dir: config.reports_dir,
         }
     }
@@ -32,6 +34,7 @@ impl Profiler {
     ///
     /// Failure to write a report should not abort execution, therefore this function always
     /// succeeds. If any errors occur they are logged.
+    #[cfg(feature = "std")]
     pub fn write_reports(&self) {
         if self.instruments.is_empty() {
             return;
@@ -68,16 +71,29 @@ impl Profiler {
             }
         }
     }
+
+    /// Writes every instrument's report to the given output writer.
+    pub fn write_reports_to(&self, writer: &mut dyn OutputWriter) -> OutputResult<()> {
+        if self.instruments.is_empty() {
+            return Ok(());
+        }
+
+        for instrument in &self.instruments {
+            instrument.write_report_to(writer)?;
+        }
+        Ok(())
+    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
+    use alloc::string::String;
     use std::collections::HashMap;
 
     use miden_core::operations::Operation;
 
     use super::*;
-    use crate::profiling::ProfilerConfig;
+    use crate::profiling::{OutputResult, OutputWriter, ProfilerConfig};
 
     /// A minimal `Instrument` to test event dispatch.
     struct CountingInstrument {
@@ -94,7 +110,7 @@ mod tests {
             self.ops += 1;
         }
 
-        fn write_report_to(&self, writer: &mut dyn std::io::Write) -> std::io::Result<()> {
+        fn write_report_to(&self, writer: &mut dyn OutputWriter) -> OutputResult<()> {
             writer.write_fmt(format_args!("{}:{}", self.name, self.ops))
         }
     }

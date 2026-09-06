@@ -1,4 +1,12 @@
-use std::{cell::RefCell, io::Write, rc::Rc, str::FromStr};
+use std::{
+    boxed::Box,
+    cell::RefCell,
+    io::Write,
+    rc::Rc,
+    str::FromStr,
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use miden_assembly_syntax::diagnostics::Report;
 

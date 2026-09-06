@@ -1,4 +1,4 @@
-use std::{sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec::Vec};
 
 use miden_core::{Word, events::EventId, program::Program};
 use miden_processor::{
@@ -38,6 +38,7 @@ impl<'a, H: Host> DiagnosticHostWrapper<'a, H> {
     }
 
     /// Report diagnostic information when an execution error occurs.
+    #[cfg(feature = "std")]
     fn report_diagnostics(&self, err: &ExecutionError) {
         eprintln!("\n=== Transaction Execution Failed ===");
         eprintln!("Error: {err}");
@@ -52,6 +53,9 @@ impl<'a, H: Host> DiagnosticHostWrapper<'a, H> {
 
         eprintln!("====================================\n");
     }
+
+    #[cfg(not(feature = "std"))]
+    fn report_diagnostics(&self, _err: &ExecutionError) {}
 
     fn capture_state(&mut self, process: &ProcessorState<'_>) {
         self.last_stack_state = process.get_stack_state();

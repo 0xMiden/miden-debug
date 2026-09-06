@@ -1,3 +1,7 @@
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 #[cfg(feature = "std")]
 use std::{ffi::OsStr, path::Path};
 
@@ -27,6 +31,7 @@ impl TryFrom<ExecutionConfigFile> for ExecutionConfig {
 }
 
 impl ExecutionConfig {
+    #[cfg(feature = "std")]
     pub fn parse_file<P>(path: P) -> std::io::Result<Self>
     where
         P: AsRef<std::path::Path>,

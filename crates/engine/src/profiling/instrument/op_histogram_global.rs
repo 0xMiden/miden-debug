@@ -1,7 +1,7 @@
 use miden_core::operations::Operation;
 
 use super::{Instrument, InstrumentRegistration};
-use crate::{profiling::helpers::op_histogram::OpHistogram, register_instrument};
+use crate::profiling::{OutputResult, OutputWriter, helpers::op_histogram::OpHistogram};
 
 /// An [`Instrument`] to create global operation histograms.
 ///
@@ -23,7 +23,8 @@ impl InstrumentRegistration for OpHistogramGlobal {
     }
 }
 
-register_instrument!(OpHistogramGlobal);
+#[cfg(feature = "std")]
+crate::register_instrument!(OpHistogramGlobal);
 
 impl Instrument for OpHistogramGlobal {
     fn name(&self) -> &'static str {
@@ -35,13 +36,18 @@ impl Instrument for OpHistogramGlobal {
         self.hist.record(op);
     }
 
-    fn write_report_to(&self, writer: &mut dyn std::io::Write) -> std::io::Result<()> {
+    fn write_report_to(&self, writer: &mut dyn OutputWriter) -> OutputResult<()> {
         writer.write_all(self.hist.report().as_bytes())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloc::{
+        string::{String, ToString},
+        vec::Vec,
+    };
+
     use miden_core::operations::Operation;
 
     use super::OpHistogramGlobal;

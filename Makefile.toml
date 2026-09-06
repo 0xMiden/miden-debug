@@ -230,8 +230,8 @@ args = [
     "--workspace",
     "--feature-powerset",
     "--locked",
-    "--keep-going",
     "--all-targets",
+    "${@}"
 ]
 
 [tasks.clean]

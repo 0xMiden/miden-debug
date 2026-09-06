@@ -1,3 +1,4 @@
+use alloc::{boxed::Box, string::String, vec::Vec};
 use std::path::PathBuf;
 
 use miden_assembly_syntax::diagnostics::Report;

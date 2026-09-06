@@ -42,6 +42,11 @@ impl Instrument for OpHistogramGlobal {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{
+        string::{String, ToString},
+        vec::Vec,
+    };
+
     use miden_core::operations::Operation;
 
     use super::OpHistogramGlobal;

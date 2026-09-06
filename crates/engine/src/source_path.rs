@@ -1,3 +1,5 @@
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
+
 use miden_debug_types::Uri;
 
 /// Converts a source URI or path into a stable form for loading and comparison.

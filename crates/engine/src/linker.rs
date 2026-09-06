@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,

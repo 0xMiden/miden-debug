@@ -1,5 +1,7 @@
 //! Test-only utilities shared across unit tests.
 
+use alloc::string::String;
+
 use miden_assembly_syntax::ast::types::Type;
 
 use crate::debug::FormatType;

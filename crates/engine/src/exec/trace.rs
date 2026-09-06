@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 use miden_core::Word;
 use miden_processor::{
     ContextId, FastProcessor, Felt, ProcessorState, StackInputs, StackOutputs, trace::RowIndex,
@@ -150,7 +152,7 @@ impl ExecutionTrace {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use std::sync::Arc;
 

@@ -1,6 +1,8 @@
 //! Support utilities for working with [AdviceMutation]s, in particular cloning, recording, and
 //! (de)serializing the mutations produced by event handlers so they can be replayed later.
 
+use alloc::vec::Vec;
+#[cfg(feature = "std")]
 use std::sync::{Arc, Mutex};
 
 use miden_core::{
@@ -140,16 +142,19 @@ pub fn read_event_log<R: ByteReader>(
 /// the original host's event handlers. Hosts owned by the caller record internally instead; see
 /// `DebuggerHost::with_event_advice_mutations_recording`.
 #[derive(Clone, Default)]
+#[cfg(feature = "std")]
 pub struct EventMutationRecorder {
     log: Arc<Mutex<Vec<Vec<AdviceMutation>>>>,
 }
 
+#[cfg(feature = "std")]
 impl core::fmt::Debug for EventMutationRecorder {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("EventMutationRecorder").field("events", &self.len()).finish()
     }
 }
 
+#[cfg(feature = "std")]
 impl EventMutationRecorder {
     /// Create a new, empty recorder.
     pub fn new() -> Self {

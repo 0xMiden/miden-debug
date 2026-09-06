@@ -1,4 +1,8 @@
-use std::{fmt, sync::Arc};
+use alloc::{
+    string::{String, ToString},
+    sync::Arc,
+};
+use core::fmt;
 
 use miden_assembly_syntax::{
     Report,
@@ -133,6 +137,18 @@ mod tests {
     use miden_mast_package::SectionId;
 
     use super::*;
+
+    #[test]
+    fn current_package_with_debug_info_loads() {
+        let package = Assembler::new(Arc::new(DefaultSourceManager::default()))
+            .assemble_program("test", "begin push.1 drop end")
+            .unwrap();
+
+        let restored = read_package_from_bytes(&package.to_bytes(), "current.masp").unwrap();
+
+        assert_eq!(restored.to_bytes(), package.to_bytes());
+        assert!(restored.debug_info().unwrap().is_some());
+    }
 
     #[test]
     fn incompatible_package_format_recommends_matching_toolchain() {

@@ -16,3 +16,5 @@ A trivial version bump to unify the versions of the various debugger crates. You
 
 - Report incompatible package and debug-info formats with guidance to use the matching midenup
   toolchain.
+- Make the engine's `no_std` boundary explicit, keeping portable package and value handling
+  available without `std` and gating interactive execution and filesystem access behind `std`.

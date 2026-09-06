@@ -1,3 +1,4 @@
+use alloc::{boxed::Box, vec::Vec};
 use std::{collections::VecDeque, num::NonZeroU32, sync::Arc};
 
 use miden_assembly::SourceManager;

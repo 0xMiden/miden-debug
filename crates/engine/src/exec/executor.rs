@@ -1,7 +1,8 @@
+use alloc::{string::String, vec::Vec};
 use std::{
     cell::{Cell, RefCell},
     collections::{BTreeMap, VecDeque},
-    fmt,
+    eprintln, fmt,
     ops::Deref,
     rc::Rc,
     sync::{Arc, Mutex},
@@ -522,6 +523,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     /// One entry per `on_event` invocation, in execution order, and the recorded log replays to

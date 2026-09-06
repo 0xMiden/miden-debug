@@ -1,3 +1,4 @@
+use alloc::string::{String, ToString};
 use std::{ops::Deref, path::Path, str::FromStr};
 
 use glob::Pattern;
@@ -398,6 +399,8 @@ impl FromStr for OperationMatcher {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::OperationMatcher;
 
     #[test]

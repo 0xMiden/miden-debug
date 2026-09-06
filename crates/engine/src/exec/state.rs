@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use std::{
     collections::{BTreeSet, VecDeque},
     sync::Arc,
@@ -492,6 +493,7 @@ impl DebugExecutor {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
     use std::sync::Arc;
 
     use miden_assembly::DefaultSourceManager;

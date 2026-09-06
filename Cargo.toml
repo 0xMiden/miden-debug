@@ -22,7 +22,7 @@ inventory = "0.3"
 miden-debug-dap = { version = "0.14.0", path = "crates/dap", features = ["client"] }
 miden-debug-engine = { version = "0.14.0", path = "crates/engine", default-features = false }
 miden-assembly = { version = "0.30.0" }
-miden-assembly-syntax = { version = "0.30.0" }
+miden-assembly-syntax = { version = "0.30.0", default-features = false }
 miden-core = { version = "0.30.0", default-features = false }
 miden-debug-types = { version = "0.30.0", default-features = false }
 miden-mast-package = { version = "0.30.0", default-features = false }
@@ -36,7 +36,7 @@ serde = { version = "1.0", default-features = false, features = [
     "rc",
 ] }
 serde_json = "1"
-thiserror = "2.0"
+thiserror = { version = "2.0", default-features = false }
 
 [profile.dev]
 # Needed for 'inventory' to work

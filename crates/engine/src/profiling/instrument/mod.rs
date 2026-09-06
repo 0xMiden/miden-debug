@@ -3,6 +3,11 @@
 //!
 //! Each instrument is uniquely identified by its [`Instrument::name`].
 
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+};
+
 use miden_core::operations::Operation;
 
 mod op_histogram_global;

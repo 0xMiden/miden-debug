@@ -22,5 +22,5 @@ begin
     nop nop nop nop nop nop nop
 
     # Keep the declaration marker away from the final VM operation.
-    push.1 drop
+    push.0 assertz
 end

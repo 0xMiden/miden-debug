@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- Stop displaying stale variables after successful program termination in the REPL, TUI, and
+  scripting API, while preserving variable inspection after execution errors ([#90](https://github.com/0xMiden/miden-debug/issues/90)).
+
 ## [0.14.0]
 
 A trivial version bump to unify the versions of the various debugger crates. You can find the legacy changelog entries in [CHANGELOG-legacy.md].

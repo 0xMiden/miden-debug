@@ -139,6 +139,10 @@ vars all     # everything, including compiler temporaries
 Each entry is `name=value` when the storage is materialised, otherwise
 `name=<location-spec>`.
 
+After successful termination, `vars`, `vars all`, and `locals` report
+`Program has terminated; no live variables`. Final stack outputs and the typed
+result remain available; variables from a failed execution remain inspectable.
+
 ## Example session
 
 ```text

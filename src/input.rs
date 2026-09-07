@@ -53,13 +53,13 @@ impl InputFile {
 
     pub fn file_name(&self) -> &str {
         match self.path.scheme().unwrap_or("file") {
-            "stdin" => match self.path.path().rsplit_once('/') {
-                None => self.path.path(),
+            "stdin" => match self.path.as_str().rsplit_once('/') {
+                None => self.path.as_str().strip_prefix("stdin://").unwrap(),
                 Some((_, "")) => "<noname>",
                 Some((_, file_name)) => file_name,
             },
-            _ => match self.path.path().rsplit_once('/') {
-                None => self.path.path(),
+            _ => match self.path.as_str().rsplit_once('/') {
+                None => self.path.as_str().split_once("://").unwrap().1,
                 Some((_, file_name)) => file_name,
             },
         }

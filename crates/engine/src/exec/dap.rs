@@ -35,7 +35,8 @@ use miden_processor::{
 
 use super::{
     EventMutationRecorder, MastForestRecorder, ReplaySnapshot, ReplaySnapshotRecorder,
-    ReplaySnapshotWrite, state::extract_current_op,
+    ReplaySnapshotWrite,
+    state::{extract_current_op, should_wait_for_entry_variables},
 };
 use crate::{
     debug::{
@@ -2557,11 +2558,10 @@ fn step_until_breakpoint<H: Host>(
                     // paths like `::prologue::foo`), so we also try matching without it.
                     if !breakpoints.function.is_empty() {
                         let raw_context_name = asmop.context_name();
-                        let context_name = Uri::from(format!("stdin://{}", raw_context_name));
-                        let stripped_name = Uri::from(format!(
-                            "stdin://{}",
-                            raw_context_name.strip_prefix("::").unwrap_or(raw_context_name)
-                        ));
+                        let context_name = Uri::from(Arc::clone(raw_context_name));
+                        let stripped_name = Uri::from(
+                            raw_context_name.strip_prefix("::").unwrap_or(raw_context_name),
+                        );
                         for fbp in breakpoints.function {
                             // Match via glob pattern or suffix (e.g. "prologue::foo"
                             // matches "::$kernel::prologue::foo").
@@ -2572,8 +2572,15 @@ fn step_until_breakpoint<H: Host>(
                             {
                                 if should_defer_function_breakpoint(
                                     resolved.as_ref(),
-                                    context_name.path(),
-                                ) {
+                                    context_name.as_str(),
+                                ) || resume_ctx.as_ref().is_some_and(|resume_ctx| {
+                                    should_wait_for_entry_variables(
+                                        resume_ctx,
+                                        context_name.as_str(),
+                                        &debug_state.debug_vars,
+                                        *cycle,
+                                    )
+                                }) {
                                     continue;
                                 }
                                 update_top_frame(host, current_asmop.as_ref());
@@ -2697,9 +2704,78 @@ mod tests {
     use miden_processor::event::EventHandler;
 
     use super::*;
-    use crate::exec::{DebuggerHost, EventMutationRecorder};
+    use crate::{
+        exec::{DebuggerHost, EventMutationRecorder},
+        glob::GlobBuilder,
+    };
 
     struct PushSeven;
+
+    #[test]
+    fn function_breakpoint_waits_for_entry_variables() {
+        use miden_assembly_syntax::{
+            Parse,
+            ast::{Instruction, Op},
+            debuginfo::{SourceSpan, Span},
+        };
+
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let mut module = Parse::parse(
+            "proc entrypoint push.2 push.3 add nop drop push.1 if.true push.1 drop end end begin \
+             exec.entrypoint end",
+            false,
+            source_manager.clone(),
+        )
+        .unwrap();
+        for procedure in module.procedures_mut() {
+            for operation in procedure.body_mut().iter_mut() {
+                if let Op::Inst(instruction) = operation
+                    && matches!(instruction.inner(), Instruction::Nop)
+                {
+                    *instruction = Span::new(
+                        SourceSpan::default(),
+                        Instruction::DebugVar(DebugVarInfo::new("n", DebugVarLocation::Stack(0))),
+                    );
+                }
+            }
+        }
+        let package = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program("program", module)
+            .unwrap();
+        let mut host = DebuggerHost::new(source_manager);
+        let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+        let mut processor = FastProcessor::new_with_options(
+            StackInputs::new(&[]).unwrap(),
+            AdviceInputs::default(),
+            ExecutionOptions::default(),
+        )
+        .unwrap();
+        let mut resume_ctx =
+            Some(processor.get_initial_resume_context_for_package(Arc::from(package)).unwrap());
+        let mut cycle = 0;
+        let mut current_asmop = None;
+        let mut debug_state = DapDebugVarState::new();
+        let function = [StoredFunctionBreakpoint {
+            name: "entrypoint".into(),
+            pattern: GlobBuilder::new("*entrypoint").build().unwrap().compile_matcher(),
+        }];
+        let result = step_until_breakpoint(
+            &mut processor,
+            &mut wrapper,
+            &mut resume_ctx,
+            &mut cycle,
+            &mut current_asmop,
+            &ContinueBreakpoints {
+                source: &[],
+                function: &function,
+                source_path_prefixes: &[],
+            },
+            &mut debug_state,
+        );
+        assert!(matches!(result, StepResult::Breakpoint(_)));
+        let variable = debug_state.debug_vars.get_variable("n").expect("entry variable");
+        assert_eq!(variable.info.value_location(), &DebugVarLocation::Const(Felt::from(5u32)));
+    }
 
     impl EventHandler for PushSeven {
         fn on_event(

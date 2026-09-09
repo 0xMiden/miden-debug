@@ -1,4 +1,4 @@
-use std::{path::Path, sync::Arc};
+use std::{boxed::Box, path::Path, sync::Arc, vec::Vec};
 
 use miden_assembly::DefaultSourceManager;
 use miden_assembly_syntax::diagnostics::Report;

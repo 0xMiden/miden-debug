@@ -1,6 +1,12 @@
+use alloc::{
+    borrow::ToOwned,
+    string::{String, ToString},
+    vec::Vec,
+};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
+    eprintln,
     io::{BufReader, BufWriter},
     net::TcpListener,
     path::{Path, PathBuf},
@@ -14,7 +20,7 @@ use std::{
 use dap::prelude::*;
 use miden_assembly_syntax::ast::{DebugVarInfo, DebugVarLocation};
 use miden_core::{Word, operations::AssemblyOp};
-use miden_debug_types::Location;
+use miden_debug_types::{Location, Uri};
 use miden_mast_package::{
     MastForest, Package,
     debug_info::{DebugFileIdx, DebugSourceAsmOp, DebugSourceNodeId, PackageDebugInfo},
@@ -595,7 +601,7 @@ struct StoredFunctionBreakpoint {
     /// The raw name string for suffix matching.
     name: String,
     /// Compiled glob pattern for matching.
-    pattern: glob::Pattern,
+    pattern: crate::glob::GlobMatcher,
 }
 
 struct ContinueBreakpoints<'a> {
@@ -1933,11 +1939,11 @@ impl DapExecutor {
                         function_breakpoints.clear();
                         let mut confirmed = Vec::new();
                         for fbp in &args.breakpoints {
-                            let verified = match glob::Pattern::new(&fbp.name) {
-                                Ok(pattern) => {
+                            let verified = match crate::glob::GlobBuilder::new(&fbp.name).build() {
+                                Ok(glob) => {
                                     function_breakpoints.push(StoredFunctionBreakpoint {
                                         name: fbp.name.clone(),
-                                        pattern,
+                                        pattern: glob.compile_matcher(),
                                     });
                                     true
                                 }
@@ -2214,7 +2220,7 @@ fn write_replay_snapshot(context: ReplaySnapshotWriteContext<'_>) {
     match snapshot.write_to_file(context.path) {
         Ok(()) => {
             let write = ReplaySnapshotWrite {
-                path: context.path.to_path_buf(),
+                path: Uri::from(context.path.to_path_buf()),
                 event_count: snapshot.event_log.len(),
                 forest_count: snapshot.mast_forests.len(),
             };
@@ -2223,14 +2229,12 @@ fn write_replay_snapshot(context: ReplaySnapshotWriteContext<'_>) {
             }
             eprintln!(
                 "Wrote replay snapshot ({} event(s), {} forest(s)) to {}",
-                write.event_count,
-                write.forest_count,
-                write.path.display()
+                write.event_count, write.forest_count, write.path
             );
         }
         Err(err) => {
             if let Some(recorder) = context.snapshot_recorder {
-                recorder.record_error(context.path.to_path_buf(), err.to_string());
+                recorder.record_error(Uri::from(context.path.to_path_buf()), err.to_string());
             }
             eprintln!("Failed to write replay snapshot to {}: {err}", context.path.display());
         }
@@ -2552,18 +2556,24 @@ fn step_until_breakpoint<H: Host>(
                     // source file path. Context names may have a leading `::` (absolute
                     // paths like `::prologue::foo`), so we also try matching without it.
                     if !breakpoints.function.is_empty() {
-                        let context_name = asmop.context_name();
-                        let stripped_name = context_name.strip_prefix("::").unwrap_or(context_name);
+                        let raw_context_name = asmop.context_name();
+                        let context_name = Uri::from(format!("stdin://{}", raw_context_name));
+                        let stripped_name = Uri::from(format!(
+                            "stdin://{}",
+                            raw_context_name.strip_prefix("::").unwrap_or(raw_context_name)
+                        ));
                         for fbp in breakpoints.function {
                             // Match via glob pattern or suffix (e.g. "prologue::foo"
                             // matches "::$kernel::prologue::foo").
-                            if fbp.pattern.matches(context_name)
-                                || fbp.pattern.matches(stripped_name)
-                                || context_name.ends_with(&fbp.name)
-                                || stripped_name.ends_with(&fbp.name)
+                            if fbp.pattern.is_match(&context_name)
+                                || fbp.pattern.is_match(&stripped_name)
+                                || context_name.as_str().ends_with(&fbp.name)
+                                || stripped_name.as_str().ends_with(&fbp.name)
                             {
-                                if should_defer_function_breakpoint(resolved.as_ref(), context_name)
-                                {
+                                if should_defer_function_breakpoint(
+                                    resolved.as_ref(),
+                                    context_name.path(),
+                                ) {
                                     continue;
                                 }
                                 update_top_frame(host, current_asmop.as_ref());
@@ -2571,7 +2581,7 @@ fn step_until_breakpoint<H: Host>(
                                 return StepResult::Breakpoint(line);
                             }
                             if let Some((ref path, line)) = resolved
-                                && fbp.pattern.matches(path)
+                                && fbp.pattern.is_match(&Uri::new(path))
                             {
                                 update_top_frame(host, current_asmop.as_ref());
                                 return StepResult::Breakpoint(line);

@@ -1,29 +1,33 @@
-use std::{
-    borrow::Cow,
-    path::{Path, PathBuf},
-    str::FromStr,
+use alloc::{
+    borrow::{Cow, ToOwned},
+    string::{String, ToString},
+    vec::Vec,
 };
+use core::str::FromStr;
+#[cfg(feature = "std")]
+use std::path::{Path, PathBuf};
 
 use miden_debug_engine::{LinkLibrary, profiling::ProfilerCliArgs};
 
 use crate::{exec::ExecutionConfig, input::InputFile};
 
 /// Run a compiled Miden package with the Miden VM
-#[derive(Default, Debug, clap::Args)]
+#[derive(Default, Debug)]
+#[cfg_attr(feature = "std", derive(clap::Args))]
 pub struct DebuggerConfig {
     /// Specify the path to a Miden package artifact to execute.
     ///
     /// Miden Assembly packages are emitted by the compiler with a `.masp` extension.
     ///
     /// You may use `-` as a file name to read a file from stdin.
-    #[arg(value_name = "FILE")]
+    #[cfg_attr(feature = "std", arg(value_name = "FILE"))]
     pub input: Option<InputFile>,
     /// Specify the path to a file containing program inputs.
     ///
     /// Program inputs are stack and advice provider values which the program can
     /// access during execution. The inputs file is a TOML file which describes
     /// what the inputs are, or where to source them from.
-    #[arg(long, value_name = "FILE")]
+    #[cfg_attr(feature = "std", arg(long, value_name = "FILE"))]
     pub inputs: Option<ExecutionConfig>,
     /// Arguments to pass to the program entrypoint.
     ///
@@ -32,60 +36,75 @@ pub struct DebuggerConfig {
     /// felt. Otherwise each argument is parsed as a raw field element and pushed in order.
     ///
     /// NOTE: These arguments will override any stack values provided via --inputs
-    #[arg(last(true), value_name = "ARGV")]
+    #[cfg_attr(feature = "std", arg(last(true), value_name = "ARGV"))]
     pub args: Vec<String>,
     /// The working directory for the debugger
     ///
     /// By default this will be the working directory the debugger is executed from
-    #[arg(long, value_name = "DIR", help_heading = "Execution")]
+    #[cfg_attr(
+        feature = "std",
+        arg(long, value_name = "DIR", help_heading = "Execution")
+    )]
     pub working_dir: Option<PathBuf>,
     /// The path to the root directory of the current Miden toolchain
     ///
     /// By default this is assumed to be `$(midenup show home)/toolchains/$(midenup show active-toolchain)
-    #[arg(
-        long,
-        value_name = "DIR",
-        env = "MIDEN_SYSROOT",
-        help_heading = "Linker"
+    #[cfg_attr(
+        feature = "std",
+        arg(
+            long,
+            value_name = "DIR",
+            env = "MIDEN_SYSROOT",
+            help_heading = "Linker"
+        )
     )]
     pub sysroot: Option<PathBuf>,
     /// Whether, and how, to color terminal output
-    #[arg(
+    #[cfg_attr(feature = "std", arg(
         long,
         value_enum,
         default_value_t = ColorChoice::Auto,
         default_missing_value = "auto",
         num_args(0..=1),
         help_heading = "Output"
-    )]
+    ))]
     pub color: ColorChoice,
     /// Specify the function to call as the entrypoint for the program
     /// in the format `<module_name>::<function>`
-    #[arg(long, help_heading = "Execution")]
+    #[cfg_attr(feature = "std", arg(long, help_heading = "Execution"))]
     pub entrypoint: Option<String>,
     /// Connect to a remote DAP debug server instead of running a local program.
     ///
     /// Specify the address of the DAP server (e.g. "127.0.0.1:4711").
     /// When this flag is set, the debugger connects to an existing remote session.
     #[cfg(all(feature = "dap", feature = "tui"))]
-    #[arg(long, value_name = "ADDR", help_heading = "Execution")]
+    #[cfg_attr(
+        feature = "std",
+        arg(long, value_name = "ADDR", help_heading = "Execution")
+    )]
     pub dap_connect: Option<String>,
     /// Start a DAP debug server for the local program and wait for a client to connect.
     ///
     /// Specify the address to listen on (e.g. "127.0.0.1:4711").
     #[cfg(feature = "dap")]
-    #[arg(long, value_name = "ADDR", help_heading = "Execution")]
+    #[cfg_attr(
+        feature = "std",
+        arg(long, value_name = "ADDR", help_heading = "Execution")
+    )]
     pub start_debug_adapter: Option<String>,
     /// Source path prefixes used by the compiler's `-Zremap-path-prefix` option.
     ///
     /// When debug info stores trimmed source paths, DAP clients may still send
     /// absolute editor paths. These prefixes provide an explicit mapping between
     /// the two forms.
-    #[arg(
-        long = "source-path-prefix",
-        alias = "trim-path-prefix",
-        value_name = "PATH",
-        help_heading = "Debugging"
+    #[cfg_attr(
+        feature = "std",
+        arg(
+            long = "source-path-prefix",
+            alias = "trim-path-prefix",
+            value_name = "PATH",
+            help_heading = "Debugging"
+        )
     )]
     pub source_path_prefixes: Vec<PathBuf>,
     /// Replay a recorded execution snapshot in the TUI debugger.
@@ -95,14 +114,20 @@ pub struct DebuggerConfig {
     /// inputs, resolved code, and event log are replayed so the same execution can be stepped
     /// through offline, without the original host.
     #[cfg(feature = "tui")]
-    #[arg(long, value_name = "FILE", help_heading = "Execution")]
+    #[cfg_attr(
+        feature = "std",
+        arg(long, value_name = "FILE", help_heading = "Execution")
+    )]
     pub replay: Option<PathBuf>,
     /// Specify one or more search paths for link libraries requested via `-l`
-    #[arg(
-        long = "search-path",
-        short = 'L',
-        value_name = "PATH",
-        help_heading = "Linker"
+    #[cfg_attr(
+        feature = "std",
+        arg(
+            long = "search-path",
+            short = 'L',
+            value_name = "PATH",
+            help_heading = "Linker"
+        )
     )]
     pub search_path: Vec<PathBuf>,
     /// Load the compiled library package NAME.
@@ -114,17 +139,20 @@ pub struct DebuggerConfig {
     ///
     /// KIND currently supports only `masp` (the default). The optional LINKAGE is either `static`
     /// or `dynamic` and defaults to `dynamic`.
-    #[arg(
-        long = "link-library",
-        short = 'l',
-        value_name = "[KIND[:LINKAGE]=]NAME",
-        value_delimiter = ',',
-        next_line_help(true),
-        help_heading = "Linker"
+    #[cfg_attr(
+        feature = "std",
+        arg(
+            long = "link-library",
+            short = 'l',
+            value_name = "[KIND[:LINKAGE]=]NAME",
+            value_delimiter = ',',
+            next_line_help(true),
+            help_heading = "Linker"
+        )
     )]
     pub link_libraries: Vec<LinkLibrary>,
     /// Use the REPL (text-mode) debugger instead of the TUI
-    #[arg(long, help_heading = "Output")]
+    #[cfg_attr(feature = "std", arg(long, help_heading = "Output"))]
     pub repl: bool,
     /// Run a script of debugger commands non-interactively, then exit.
     ///
@@ -133,20 +161,23 @@ pub struct DebuggerConfig {
     /// are ignored, so scripts may be commented. This is analogous to
     /// `gdb -x <file> -batch` or `lldb -s <file>`, and is primarily used to
     /// drive the debugger from lit/FileCheck tests.
-    #[arg(
-        long = "commands",
-        visible_alias = "source",
-        short = 'x',
-        value_name = "FILE",
-        help_heading = "Execution"
+    #[cfg_attr(
+        feature = "std",
+        arg(
+            long = "commands",
+            visible_alias = "source",
+            short = 'x',
+            value_name = "FILE",
+            help_heading = "Execution"
+        )
     )]
     pub commands: Option<PathBuf>,
     /// Do not auto-load the project-local `.miden-debug.py` file.
     #[cfg(feature = "python")]
-    #[arg(long, help_heading = "Scripting")]
+    #[cfg_attr(feature = "std", arg(long, help_heading = "Scripting"))]
     pub no_user_python_init: bool,
     /// Profiler configuration.
-    #[command(flatten)]
+    #[cfg_attr(feature = "std", command(flatten))]
     pub profiler_cli_args: ProfilerCliArgs,
 }
 
@@ -177,7 +208,7 @@ pub enum ColorChoice {
 
 #[derive(Debug, thiserror::Error)]
 #[error("invalid color choice: {0}")]
-pub struct ColorChoiceParseError(std::borrow::Cow<'static, str>);
+pub struct ColorChoiceParseError(alloc::borrow::Cow<'static, str>);
 
 impl FromStr for ColorChoice {
     type Err = ColorChoiceParseError;
@@ -200,14 +231,11 @@ impl ColorChoice {
             ColorChoice::Always => true,
             ColorChoice::AlwaysAnsi => true,
             ColorChoice::Never => false,
-            #[cfg(feature = "std")]
             ColorChoice::Auto => self.env_allows_color(),
-            #[cfg(not(feature = "std"))]
-            ColorChoice::Auto => false,
         }
     }
 
-    #[cfg(not(windows))]
+    #[cfg(all(feature = "std", not(windows)))]
     pub fn env_allows_color(&self) -> bool {
         match std::env::var_os("TERM") {
             // If TERM isn't set, then we are in a weird environment that
@@ -227,7 +255,7 @@ impl ColorChoice {
         true
     }
 
-    #[cfg(windows)]
+    #[cfg(all(feature = "std", windows))]
     pub fn env_allows_color(&self) -> bool {
         // On Windows, if TERM isn't set, then we shouldn't automatically
         // assume that colors aren't allowed. This is unlike Unix environments
@@ -245,16 +273,21 @@ impl ColorChoice {
         true
     }
 
+    #[cfg(not(feature = "std"))]
+    pub fn env_allows_color(&self) -> bool {
+        false
+    }
+
     /// Returns true if this choice should forcefully use ANSI color codes.
     ///
     /// It's possible that ANSI is still the correct choice even if this
     /// returns false.
-    #[cfg(all(feature = "tui", windows))]
     pub fn should_ansi(&self) -> bool {
-        match *self {
+        match self {
             ColorChoice::Always => false,
             ColorChoice::AlwaysAnsi => true,
             ColorChoice::Never => false,
+            #[cfg(all(feature = "std", feature = "tui", windows))]
             ColorChoice::Auto => {
                 match std::env::var("TERM") {
                     Err(_) => false,
@@ -264,24 +297,13 @@ impl ColorChoice {
                     Ok(k) => k != "dumb" && k != "cygwin",
                 }
             }
-        }
-    }
-
-    /// Returns true if this choice should forcefully use ANSI color codes.
-    ///
-    /// It's possible that ANSI is still the correct choice even if this
-    /// returns false.
-    #[cfg(not(feature = "tui"))]
-    pub fn should_ansi(&self) -> bool {
-        match *self {
-            ColorChoice::Always => false,
-            ColorChoice::AlwaysAnsi => true,
-            ColorChoice::Never => false,
+            #[cfg(not(all(feature = "std", feature = "tui", windows)))]
             ColorChoice::Auto => false,
         }
     }
 }
 
+#[cfg(feature = "std")]
 impl DebuggerConfig {
     pub fn working_dir(&self) -> Cow<'_, Path> {
         match self.working_dir.as_deref() {
@@ -310,6 +332,7 @@ impl DebuggerConfig {
     }
 }
 
+#[cfg(feature = "std")]
 fn midenup_home() -> Option<PathBuf> {
     use std::process::Command;
 
@@ -326,6 +349,7 @@ fn midenup_home() -> Option<PathBuf> {
     PathBuf::from_str(trimmed).ok()
 }
 
+#[cfg(feature = "std")]
 fn midenup_channel() -> Option<String> {
     use std::process::Command;
 

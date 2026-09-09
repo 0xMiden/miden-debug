@@ -1,9 +1,14 @@
-use std::collections::HashMap;
+use alloc::{borrow::ToOwned, string::String, vec::Vec};
+
+#[cfg(feature = "std")]
+type Map<K, V> = std::collections::HashMap<K, V>;
+#[cfg(not(feature = "std"))]
+type Map<K, V> = alloc::collections::BTreeMap<K, V>;
 
 use miden_core::operations::Operation;
 
 use super::{Instrument, InstrumentRegistration};
-use crate::{profiling::helpers::op_histogram::OpHistogram, register_instrument};
+use crate::profiling::{OutputResult, OutputWriter, helpers::op_histogram::OpHistogram};
 
 /// Map key under which operations that cannot be attributed to a procedure are collected. The
 /// angle brackets cannot occur in a MASM identifier, so this never collides with a procedure name
@@ -19,7 +24,7 @@ const UNKNOWN_PROCEDURE: &str = "<unknown>";
 /// in that procedure (highest first).
 #[derive(Default)]
 pub struct OpHistogramProc {
-    histograms: HashMap<String, OpHistogram>,
+    histograms: Map<String, OpHistogram>,
 }
 
 impl InstrumentRegistration for OpHistogramProc {
@@ -30,7 +35,8 @@ impl InstrumentRegistration for OpHistogramProc {
     }
 }
 
-register_instrument!(OpHistogramProc);
+#[cfg(feature = "std")]
+crate::register_instrument!(OpHistogramProc);
 
 impl Instrument for OpHistogramProc {
     fn name(&self) -> &'static str {
@@ -50,7 +56,7 @@ impl Instrument for OpHistogramProc {
         }
     }
 
-    fn write_report_to(&self, writer: &mut dyn std::io::Write) -> std::io::Result<()> {
+    fn write_report_to(&self, writer: &mut dyn OutputWriter) -> OutputResult<()> {
         let mut entries: Vec<(&str, &OpHistogram)> =
             self.histograms.iter().map(|(name, hist)| (name.as_str(), hist)).collect();
         // Print the histogram with the highest total cycle count first, break ties by procedure
@@ -68,6 +74,8 @@ impl Instrument for OpHistogramProc {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{string::String, vec::Vec};
+
     use miden_core::operations::Operation;
 
     use super::OpHistogramProc;

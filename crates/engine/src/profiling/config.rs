@@ -1,10 +1,14 @@
+use alloc::{boxed::Box, vec::Vec};
+#[cfg(feature = "std")]
 use std::path::PathBuf;
 
+#[cfg(feature = "std")]
 use miden_assembly_syntax::diagnostics::Report;
 
-use crate::profiling::{instrument::Instrument, instrument_from_name};
+use crate::profiling::instrument::Instrument;
 
 /// Profiler options parsed from the command line.
+#[cfg(feature = "std")]
 #[derive(Default, Clone, Debug, clap::Args)]
 pub struct ProfilerCliArgs {
     /// Enables profiling and sets the output dir for reports. Profiling
@@ -16,7 +20,7 @@ pub struct ProfilerCliArgs {
         value_name = "VALUE",
         value_delimiter = ','
     )]
-    pub instruments: Vec<String>,
+    pub instruments: Vec<alloc::string::String>,
 }
 
 #[derive(Default)]
@@ -24,13 +28,17 @@ pub struct ProfilerConfig {
     /// The active instrumentations.
     pub instruments: Vec<Box<dyn Instrument>>,
     /// The directory where profiling reports are written.
+    #[cfg(feature = "std")]
     pub reports_dir: Option<PathBuf>,
 }
 
+#[cfg(feature = "std")]
 impl TryFrom<ProfilerCliArgs> for ProfilerConfig {
     type Error = Report;
 
     fn try_from(mut args: ProfilerCliArgs) -> Result<Self, Self::Error> {
+        use crate::profiling::instrument_from_name;
+
         let mut config = ProfilerConfig::default();
 
         if let Some(ref path) = args.reports_dir
@@ -68,13 +76,16 @@ impl TryFrom<ProfilerCliArgs> for ProfilerConfig {
     }
 }
 
-impl std::fmt::Debug for ProfilerConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for ProfilerConfig {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let instrument_names: Vec<&'static str> =
             self.instruments.iter().map(|i| i.name()).collect();
-        f.debug_struct("ProfilerConfig")
-            .field("instruments", &instrument_names)
-            .field("reports_dir", &self.reports_dir)
-            .finish()
+        let mut builder = f.debug_struct("ProfilerConfig");
+        builder.field("instruments", &instrument_names);
+        #[cfg(feature = "std")]
+        {
+            builder.field("reports_dir", &self.reports_dir);
+        }
+        builder.finish()
     }
 }

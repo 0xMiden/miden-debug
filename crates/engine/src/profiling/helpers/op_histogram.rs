@@ -1,4 +1,8 @@
-use std::fmt::Write;
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+use core::fmt::Write;
 
 use miden_core::{Felt, operations::Operation};
 
@@ -183,6 +187,7 @@ const ALL_OPERATIONS: &[Operation] = &[
 
 #[cfg(test)]
 mod tests {
+    use alloc::{string::String, vec::Vec};
     use std::collections::BTreeSet;
 
     use miden_core::{Felt, operations::Operation, serde::Deserializable};

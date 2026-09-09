@@ -1,3 +1,5 @@
+use std::{boxed::Box, string::ToString, vec::Vec};
+
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},

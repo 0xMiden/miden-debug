@@ -1,6 +1,15 @@
-pub use miden_debug_engine::{
-    HybridPackageRegistry, LinkLibrary, debug, debug_types, events, exec, felt, processor,
-};
+#![no_std]
+
+#[cfg_attr(not(feature = "std"), macro_use)]
+extern crate alloc;
+
+#[cfg(feature = "std")]
+#[macro_use]
+extern crate std;
+
+#[cfg(feature = "std")]
+pub use miden_debug_engine::{HybridPackageRegistry, LinkLibrary};
+pub use miden_debug_engine::{debug, debug_types, events, exec, felt, processor};
 
 #[cfg(feature = "std")]
 mod config;

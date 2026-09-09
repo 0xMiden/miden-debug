@@ -1,4 +1,7 @@
 #[cfg(feature = "tui")]
+use std::boxed::Box;
+
+#[cfg(feature = "tui")]
 mod action;
 #[cfg(feature = "tui")]
 mod app;

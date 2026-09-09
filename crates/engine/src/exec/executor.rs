@@ -1,16 +1,20 @@
-use std::{
-    cell::{Cell, RefCell},
+use alloc::{
     collections::{BTreeMap, VecDeque},
+    rc::Rc,
+    string::String,
+    sync::Arc,
+    vec::Vec,
+};
+use core::{
+    cell::{Cell, RefCell},
     fmt,
     ops::Deref,
-    rc::Rc,
-    sync::{Arc, Mutex},
 };
 
 use log::Level;
-use miden_assembly_syntax::{ast::DebugVarInfo, diagnostics::Report};
+use miden_assembly_syntax::{ast::DebugVarInfo, debuginfo::SourceFile, diagnostics::Report};
 use miden_core::program::StackInputs;
-use miden_debug_types::{SourceManager, SourceManagerExt};
+use miden_debug_types::{ByteIndex, SourceManager};
 use miden_mast_package::Package;
 use miden_package_registry::PackageCache;
 use miden_processor::{
@@ -20,6 +24,7 @@ use miden_processor::{
     event::{EventError, EventHandler, EventName},
     trace::RowIndex,
 };
+use miden_utils_sync::RwLock;
 
 use super::{
     DebugExecutor, DebuggerHost, Event, ExecutionConfig, ExecutionTrace,
@@ -161,7 +166,7 @@ impl Executor {
             host = host.with_event_advice_mutations_recording();
         }
 
-        let events: Arc<Mutex<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
+        let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
         register_builtin_event_handlers(&mut host, Arc::clone(&events));
 
         // Set up debug variable tracking
@@ -231,7 +236,7 @@ impl Executor {
         let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
             Rc::new(Default::default());
 
-        let events: Arc<Mutex<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
+        let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
         register_builtin_event_handlers(&mut host, Arc::clone(&events));
 
         let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
@@ -311,11 +316,9 @@ impl Executor {
                             (executor.current_op, executor.current_asmop.as_ref())
                     {
                         log::trace!(target: "executor", "stack: {:?}", executor.current_stack);
-                        let source_loc = asmop.location().map(|loc| {
-                            let path = std::path::Path::new(loc.uri().path());
-                            let file = source_manager.load_file(path).unwrap();
-                            (file, loc.start)
-                        });
+                        let source_loc = asmop
+                            .location()
+                            .and_then(|loc| location_to_source_file(loc, &source_manager));
                         if let Some((source_file, line_start)) = source_loc {
                             let line_number = source_file.content().line_index(line_start).number();
                             log::trace!(target: "executor", "in {} (located at {}:{})", asmop.context_name(), source_file.deref().uri().as_str(), line_number);
@@ -345,6 +348,26 @@ impl Executor {
     }
 }
 
+#[cfg(feature = "std")]
+fn location_to_source_file(
+    loc: &miden_debug_types::Location,
+    source_manager: &dyn SourceManager,
+) -> Option<(Arc<SourceFile>, ByteIndex)> {
+    use miden_assembly_syntax::debuginfo::SourceManagerExt;
+    let path = std::path::Path::new(loc.uri().path());
+    let file = source_manager.load_file(path).ok()?;
+    Some((file, loc.start))
+}
+
+#[cfg(not(feature = "std"))]
+fn location_to_source_file(
+    loc: &miden_debug_types::Location,
+    source_manager: &dyn SourceManager,
+) -> Option<(Arc<SourceFile>, ByteIndex)> {
+    let file = source_manager.get_by_uri(loc.uri())?;
+    Some((file, loc.start))
+}
+
 #[derive(Debug, thiserror::Error)]
 enum PrintLnError {
     #[error("address should fit in u32")]
@@ -363,7 +386,7 @@ enum PrintLnError {
 
 fn register_builtin_event_handlers(
     host: &mut DebuggerHost<dyn SourceManager>,
-    events: Arc<Mutex<BTreeMap<RowIndex, Event>>>,
+    events: Arc<RwLock<BTreeMap<RowIndex, Event>>>,
 ) {
     let println_handler = |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
         match decode_println(process) {
@@ -390,7 +413,7 @@ fn register_builtin_event_handlers(
     let frame_start_events = Arc::clone(&events);
     let frame_start_handler =
         move |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
-            frame_start_events.lock().unwrap().insert(process.clock(), Event::FrameStart);
+            frame_start_events.write().insert(process.clock(), Event::FrameStart);
             Ok(vec![])
         };
     host.register_event_handler(FRAME_START_EVENT, Arc::new(frame_start_handler))
@@ -399,7 +422,7 @@ fn register_builtin_event_handlers(
     let frame_end_events = Arc::clone(&events);
     let frame_end_handler =
         move |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
-            frame_end_events.lock().unwrap().insert(process.clock(), Event::FrameEnd);
+            frame_end_events.write().insert(process.clock(), Event::FrameEnd);
             Ok(vec![])
         };
     host.register_event_handler(FRAME_END_EVENT, Arc::from(frame_end_handler))
@@ -438,6 +461,7 @@ fn decode_println(process: &ProcessorState<'_>) -> Result<String, PrintLnError> 
     String::from_utf8(bytes).map_err(|_| PrintLnError::InvalidUtf8)
 }
 
+#[cfg(feature = "std")]
 #[track_caller]
 fn render_execution_error(
     err: ExecutionError,
@@ -493,6 +517,69 @@ fn render_execution_error(
     }
 }
 
+#[cfg(not(feature = "std"))]
+#[track_caller]
+fn render_execution_error(
+    err: ExecutionError,
+    execution_state: &DebugExecutor,
+    source_manager: &dyn SourceManager,
+) -> ! {
+    use core::fmt::Write;
+
+    use miden_assembly_syntax::diagnostics::{
+        LabeledSpan, miette::miette, reporting::PrintDiagnostic,
+    };
+
+    let stacktrace = execution_state.callstack.stacktrace(&execution_state.recent, source_manager);
+
+    let mut buf = String::with_capacity(1024);
+    writeln!(&mut buf, "{stacktrace}").unwrap();
+
+    if !execution_state.current_stack.is_empty() {
+        let stack = execution_state.current_stack.iter().map(|elem| elem.as_canonical_u64());
+        let stack = DisplayValues::new(stack);
+        writeln!(
+            &mut buf,
+            "\nLast Known State (at most recent instruction which succeeded):
+ | Operand Stack: [{stack}]
+ "
+        )
+        .unwrap();
+
+        let mut labels = vec![];
+        if let Some(span) = stacktrace
+            .current_frame()
+            .and_then(|frame| frame.location.as_ref())
+            .map(|loc| loc.span)
+        {
+            labels.push(LabeledSpan::new_with_span(
+                None,
+                span.start().to_usize()..span.end().to_usize(),
+            ));
+        }
+        let report = miette!(
+            labels = labels,
+            "program execution failed at step {step} (cycle {cycle}): {err}",
+            step = execution_state.cycle,
+            cycle = execution_state.cycle,
+        );
+        let report = match stacktrace
+            .current_frame()
+            .and_then(|frame| frame.location.as_ref())
+            .map(|loc| loc.source_file.clone())
+        {
+            Some(source) => report.with_source_code(source),
+            None => report,
+        };
+
+        panic!("{buf}\n\n{}", PrintDiagnostic::new(report));
+    } else {
+        panic!(
+            "{buf}\n\nprogram execution failed at step {step}: {err}",
+            step = execution_state.cycle
+        );
+    }
+}
 /// Render an iterator of `T`, comma-separated
 struct DisplayValues<T>(Cell<Option<T>>);
 
@@ -522,6 +609,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     /// One entry per `on_event` invocation, in execution order, and the recorded log replays to

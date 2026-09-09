@@ -5,6 +5,8 @@ use std::{
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     rc::Rc,
+    string::{String, ToString},
+    vec::Vec,
 };
 
 use pyo3::{

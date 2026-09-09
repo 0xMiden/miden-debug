@@ -1,4 +1,8 @@
-use std::io::Write;
+use std::{
+    boxed::Box,
+    io::Write,
+    string::{String, ToString},
+};
 
 use miden_assembly_syntax::diagnostics::Report;
 
@@ -402,10 +406,10 @@ pub(crate) fn format_bp_type(ty: &BreakpointType) -> String {
         BreakpointType::Next => "next instruction".into(),
         BreakpointType::NextLine => "next source line".into(),
         BreakpointType::Finish => "function return".into(),
-        BreakpointType::File(pat) => pat.as_str().to_string(),
-        BreakpointType::Line { pattern, line } => format!("{}:{}", pattern.as_str(), line),
+        BreakpointType::File(pattern) => pattern.glob().to_string(),
+        BreakpointType::Line { pattern, line } => format!("{}:{}", pattern.glob(), line),
         BreakpointType::Opcode(matcher) => format!("opcode {matcher}"),
-        BreakpointType::Called(pat) => format!("call {}", pat.as_str()),
+        BreakpointType::Called(pat) => format!("call {}", pat.glob()),
         BreakpointType::Event(event) => format!("event {event:?}"),
     }
 }

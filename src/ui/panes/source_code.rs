@@ -1,4 +1,11 @@
-use std::{collections::BTreeMap, ops::Deref, sync::Arc};
+use std::{
+    boxed::Box,
+    collections::BTreeMap,
+    ops::Deref,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 
 use miden_assembly_syntax::{
     debuginfo::{SourceFile, SourceId, SourceSpan},

@@ -1,9 +1,6 @@
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use alloc::{boxed::Box, sync::Arc};
+use std::path::{Path, PathBuf};
 
-use miden_assembly::Linkage;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 use miden_mast_package::{Package, PackageId};
 
@@ -21,6 +18,12 @@ pub struct LinkLibrary {
     pub path: Option<PathBuf>,
     /// How to link against this library
     pub linkage: Linkage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Linkage {
+    Dynamic,
+    Static,
 }
 
 impl LinkLibrary {
@@ -104,15 +107,6 @@ impl LinkLibrary {
             self.name
         )))
     }
-}
-
-pub(crate) fn load_package_from_path(path: &Path) -> Result<Arc<Package>, Report> {
-    let bytes = std::fs::read(path).into_diagnostic()?;
-    miden_mast_package::Package::read_from_bytes_trusted(&bytes)
-        .map_err(|e| {
-            Report::msg(format!("failed to load Miden package from {}: {e}", path.display()))
-        })
-        .map(Arc::new)
 }
 
 #[cfg(feature = "std")]
@@ -244,7 +238,7 @@ impl clap::builder::TypedValueParser for LinkLibraryParser {
 
 #[cfg(all(test, feature = "std"))]
 mod tests {
-    use std::ffi::OsStr;
+    use std::{ffi::OsStr, string::ToString};
 
     use clap::builder::TypedValueParser;
 

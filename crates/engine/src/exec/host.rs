@@ -1,6 +1,7 @@
-use std::{collections::VecDeque, num::NonZeroU32, sync::Arc};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
+use core::num::NonZeroU32;
 
-use miden_assembly::SourceManager;
+use miden_assembly_syntax::debuginfo::SourceManager;
 use miden_core::{
     Word,
     events::{EventId, EventName},

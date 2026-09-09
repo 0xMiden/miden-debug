@@ -1,7 +1,10 @@
 use std::{
     borrow::Cow,
+    boxed::Box,
     collections::VecDeque,
+    string::{String, ToString},
     sync::{Arc, LazyLock, Mutex},
+    vec::Vec,
 };
 
 use compact_str::CompactString;

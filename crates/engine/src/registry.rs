@@ -1,9 +1,6 @@
-use std::{
-    collections::BTreeMap,
-    format,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use alloc::{collections::BTreeMap, sync::Arc};
+#[cfg(feature = "std")]
+use std::path::{Path, PathBuf};
 
 use miden_assembly_syntax::{
     Report,
@@ -12,11 +9,12 @@ use miden_assembly_syntax::{
 use miden_mast_package::Package;
 use miden_package_registry::{
     PackageCache, PackageId, PackageIndex, PackageProvider, PackageRecord, PackageRegistry,
-    PackageStore, PackageVersions,
+    PackageStore, PackageVersions, VersionRequirement,
 };
-use miden_project::VersionRequirement;
-use rustc_hash::FxHashMap;
 
+type FxHashMap<K, V> = hashbrown::HashMap<K, V, rustc_hash::FxBuildHasher>;
+
+#[cfg(feature = "std")]
 use crate::LinkLibrary;
 
 #[derive(Debug, thiserror::Error, Diagnostic)]
@@ -24,7 +22,7 @@ enum InstallPackageError {
     #[error("package {package}@{version} is already registered under a different digest")]
     AlreadyInstalledWithDifferentDigest {
         package: PackageId,
-        version: miden_project::Version,
+        version: miden_package_registry::Version,
     },
 }
 
@@ -50,6 +48,7 @@ impl HybridPackageRegistry {
     }
 
     /// Get a new instance of the registry from compiled package inputs.
+    #[cfg(feature = "std")]
     pub fn new(
         sysroot: Option<&Path>,
         search_paths: &[PathBuf],
@@ -79,6 +78,7 @@ impl HybridPackageRegistry {
     /// based package store.
     ///
     /// This returns an error if `--sysroot` was not provided/set.
+    #[cfg(feature = "std")]
     pub fn from_local_registry(sysroot: &Path) -> Result<Self, Report> {
         let lib_dir = sysroot.join("lib");
         let entries = lib_dir.read_dir().map_err(|err| {
@@ -95,7 +95,7 @@ impl HybridPackageRegistry {
                 continue;
             }
 
-            let package = crate::linker::load_package_from_path(&path)?;
+            let package = crate::package::load_package_from_path(&path)?;
             match registry.install_if_missing(package) {
                 Ok(_) => (),
                 // Ignore duplicates when initializing the registry
@@ -113,18 +113,22 @@ impl HybridPackageRegistry {
     fn install_if_missing(
         &mut self,
         package: Arc<Package>,
-    ) -> Result<miden_project::Version, InstallPackageError> {
-        use std::collections::{btree_map::Entry as BTreeMapEntry, hash_map::Entry};
+    ) -> Result<miden_package_registry::Version, InstallPackageError> {
+        use alloc::collections::btree_map::Entry as BTreeMapEntry;
 
-        let version =
-            miden_project::Version::new(package.version.clone(), package.dependency_commitment());
+        use hashbrown::hash_map::Entry;
+
+        let version = miden_package_registry::Version::new(
+            package.version.clone(),
+            package.dependency_commitment(),
+        );
         log::trace!(target: "package-registry", "preparing to install package {}@{version}", package.name);
         let record = PackageRecord::new(
             version.clone(),
             package.manifest.dependencies().map(|dep| {
                 (
                     dep.name.clone(),
-                    VersionRequirement::Exact(miden_project::Version::new(
+                    VersionRequirement::Exact(miden_package_registry::Version::new(
                         dep.version.clone(),
                         dep.digest,
                     )),
@@ -204,7 +208,7 @@ impl PackageProvider for HybridPackageRegistry {
     fn load_package(
         &self,
         package: &PackageId,
-        version: &miden_project::Version,
+        version: &miden_package_registry::Version,
     ) -> Result<Arc<Package>, Report> {
         let found = self.artifacts.get(package).and_then(|versions| versions.get(&version.version));
         match found {
@@ -228,7 +232,7 @@ impl PackageCache for HybridPackageRegistry {
     fn cache_package(
         &mut self,
         package: Arc<Package>,
-    ) -> Result<miden_project::Version, Self::Error> {
+    ) -> Result<miden_package_registry::Version, Self::Error> {
         self.install_if_missing(package).map_err(Report::from)
     }
 }
@@ -237,7 +241,7 @@ impl PackageStore for HybridPackageRegistry {
     fn publish_package(
         &mut self,
         package: Arc<Package>,
-    ) -> Result<miden_project::Version, Self::Error> {
+    ) -> Result<miden_package_registry::Version, Self::Error> {
         self.install_if_missing(package).map_err(Report::from)
     }
 }

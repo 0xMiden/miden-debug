@@ -1,4 +1,4 @@
-use std::{borrow::Cow, ops::Range, path::Path, rc::Rc};
+use std::{borrow::Cow, boxed::Box, ops::Range, path::Path, rc::Rc, string::ToString, vec::Vec};
 
 mod syntax {
     pub(super) use syntect::{

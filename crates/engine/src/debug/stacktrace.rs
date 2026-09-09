@@ -1,16 +1,20 @@
-use std::{
+use alloc::{
     borrow::Cow,
-    cell::OnceCell,
+    boxed::Box,
     collections::{BTreeMap, BTreeSet, VecDeque},
-    fmt,
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
 };
+use core::{cell::OnceCell, fmt};
+#[cfg(feature = "std")]
+use std::path::{Path, PathBuf};
 
 use miden_core::operations::AssemblyOp;
-use miden_debug_types::{Location, SourceFile, SourceManager, SourceManagerExt, SourceSpan, Uri};
+use miden_debug_types::{Location, SourceFile, SourceManager, SourceSpan, Uri};
 use miden_mast_package::debug_info::{DebugSourceInlineCall, DebugSourceNodeId, PackageDebugInfo};
 use miden_processor::{ContextId, SourceInlineCallContext, operation::Operation, trace::RowIndex};
+use miden_utils_sync::RwLock;
 
 use crate::Event;
 
@@ -152,13 +156,13 @@ struct SpanContext {
 }
 
 pub struct CallStack {
-    events: Arc<Mutex<BTreeMap<RowIndex, Event>>>,
+    events: Arc<RwLock<BTreeMap<RowIndex, Event>>>,
     contexts: BTreeSet<Arc<str>>,
     frames: Vec<CallFrame>,
     block_stack: Vec<Option<SpanContext>>,
 }
 impl CallStack {
-    pub fn new(events: Arc<Mutex<BTreeMap<RowIndex, Event>>>) -> Self {
+    pub fn new(events: Arc<RwLock<BTreeMap<RowIndex, Event>>>) -> Self {
         Self {
             events,
             contexts: BTreeSet::default(),
@@ -241,7 +245,7 @@ impl CallStack {
         let procedure = info.asmop.map(|op| self.cache_procedure_name(op.context_name()));
 
         let event = {
-            let mut events = self.events.lock().unwrap();
+            let mut events = self.events.write();
             match events.first_key_value() {
                 Some((clk, _)) if *clk <= info.clk => events.pop_first().map(|(_, event)| event),
                 _ => None,
@@ -393,7 +397,7 @@ impl CallStack {
 pub struct CallFrame {
     procedure: Option<Arc<str>>,
     context: VecDeque<OpDetail>,
-    display_name: std::cell::OnceCell<Arc<str>>,
+    display_name: OnceCell<Arc<str>>,
     finishing: bool,
     inline_frames: Vec<InlineCallFrame>,
 }
@@ -645,24 +649,40 @@ impl OpDetail {
 /// Compiled packages may contain remapped paths such as `src/lib.rs`, while sources loaded by the
 /// VM host may be keyed by an absolute path, or may not be loaded yet at all. Prefer the source
 /// manager's existing URI table, then fall back to loading the file from disk.
+#[cfg(feature = "std")]
 pub fn resolve_source_file_for_location(
     source_manager: &dyn SourceManager,
     location: &Location,
 ) -> Option<Arc<SourceFile>> {
+    use miden_assembly_syntax::debuginfo::SourceManagerExt;
     source_manager.get_by_uri(location.uri()).or_else(|| {
         resolve_source_path(location.uri()).and_then(|path| source_manager.load_file(&path).ok())
     })
+}
+
+#[cfg(not(feature = "std"))]
+pub fn resolve_source_file_for_location(
+    source_manager: &dyn SourceManager,
+    location: &Location,
+) -> Option<Arc<SourceFile>> {
+    source_manager.get_by_uri(location.uri())
 }
 
 /// Resolve a source URI to an existing local filesystem path.
 ///
 /// Non-file URI schemes are left to the source manager. Relative paths are resolved against the
 /// debugger process' current directory, which DAP clients set to the launch `cwd`.
+#[cfg(feature = "std")]
 pub fn resolve_source_path(uri: &Uri) -> Option<PathBuf> {
     let path = match uri.scheme() {
         None | Some("file") => Path::new(uri.path()),
         Some(_) => return None,
     };
+
+    fn existing_path(path: &Path) -> Option<PathBuf> {
+        path.exists()
+            .then(|| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
+    }
 
     existing_path(path).or_else(|| {
         if path.is_relative() {
@@ -674,6 +694,7 @@ pub fn resolve_source_path(uri: &Uri) -> Option<PathBuf> {
 }
 
 /// Resolve a source location directly from the filesystem, returning the resolved path and line.
+#[cfg(feature = "std")]
 pub fn resolve_location_from_filesystem(location: &Location) -> Option<(PathBuf, u32)> {
     let path = resolve_source_path(location.uri())?;
     let bytes = std::fs::read(&path).ok()?;
@@ -686,11 +707,6 @@ pub fn resolve_location_from_filesystem(location: &Location) -> Option<(PathBuf,
 pub fn is_internal_source_uri(uri: &Uri) -> bool {
     let path = uri.path().replace('\\', "/");
     path.contains("/codegen/masm/intrinsics/") || path.contains("/rustlib/src/rust/library/")
-}
-
-fn existing_path(path: &Path) -> Option<PathBuf> {
-    path.exists()
-        .then(|| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
 }
 
 #[derive(Debug, Clone)]
@@ -748,7 +764,7 @@ impl<'a> StackTrace<'a> {
 
 impl fmt::Display for StackTrace<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use std::fmt::Write;
+        use core::fmt::Write;
 
         let frames = self.callstack.logical_frames("");
         let num_frames = frames.len();
@@ -822,6 +838,7 @@ fn resolve_assembly_location(
     })
 }
 
+#[cfg(feature = "std")]
 fn demangle(name: &str) -> String {
     let mut input = name.as_bytes();
     let mut demangled = Vec::with_capacity(input.len() * 2);
@@ -830,11 +847,16 @@ fn demangle(name: &str) -> String {
     String::from_utf8(demangled).expect("demangled identifier contains invalid utf-8")
 }
 
+#[cfg(not(feature = "std"))]
+fn demangle(name: &str) -> String {
+    rustc_demangle::demangle(name).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use std::{cell::OnceCell, fs, path::PathBuf};
 
-    use miden_assembly::DefaultSourceManager;
+    use miden_assembly_syntax::debuginfo::{DefaultSourceManager, SourceManagerExt};
     use miden_debug_types::{ByteIndex, Location, Uri};
 
     use super::*;
@@ -906,7 +928,7 @@ mod tests {
         );
         frame.push(Operation::Add, 1, Some(&asmop));
 
-        let mut callstack = CallStack::new(Arc::new(Mutex::new(BTreeMap::new())));
+        let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
         callstack.frames.push(frame);
         let source_manager = DefaultSourceManager::default();
         let logical = callstack.logical_frames("");
@@ -930,7 +952,7 @@ mod tests {
             name: Arc::from("crate::inline"),
             call_site: Location::new(Uri::new("test.masm"), ByteIndex::new(0), ByteIndex::new(1)),
         };
-        let mut callstack = CallStack::new(Arc::new(Mutex::new(BTreeMap::new())));
+        let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
 
         callstack.next(&StepInfo {
             op: None,
@@ -962,7 +984,7 @@ mod tests {
 
     #[test]
     fn logical_physical_frame_tracks_exec_procedure_changes() {
-        let mut callstack = CallStack::new(Arc::new(Mutex::new(BTreeMap::new())));
+        let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
         let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
         callstack.next(&StepInfo {
             op: Some(Operation::Add),
@@ -1001,7 +1023,7 @@ mod tests {
 
     #[test]
     fn control_cycle_tracks_exec_procedure_change_before_first_operation() {
-        let mut callstack = CallStack::new(Arc::new(Mutex::new(BTreeMap::new())));
+        let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
         let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
         callstack.next(&StepInfo {
             op: Some(Operation::Add),

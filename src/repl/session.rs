@@ -1,3 +1,5 @@
+use std::boxed::Box;
+
 use miden_assembly_syntax::diagnostics::Report;
 use rustyline::{DefaultEditor, error::ReadlineError};
 

@@ -1,4 +1,8 @@
-use std::{collections::VecDeque, time::Instant};
+use std::{
+    collections::VecDeque,
+    string::{String, ToString},
+    time::Instant,
+};
 
 use miden_assembly_syntax::diagnostics::Report;
 use ratatui::{

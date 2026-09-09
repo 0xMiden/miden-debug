@@ -15,12 +15,8 @@ mod snapshot;
 mod state;
 mod trace;
 
-#[cfg(feature = "dap")]
-pub use self::dap::{DapConfig, DapExecutor};
-#[cfg(feature = "dap")]
-pub use self::dap_client::{DapClient, DapStopReason, SCOPE_MEMORY, SCOPE_STACK};
-#[cfg(feature = "dap")]
-pub use self::dap_types::{DapUiFrame, DapUiState};
+#[cfg(feature = "std")]
+pub use self::snapshot::ReplaySnapshotError;
 pub use self::{
     advice::{
         EventMutationRecorder, clone_advice_mutation, clone_advice_mutations, read_advice_mutation,
@@ -33,9 +29,15 @@ pub use self::{
     host::DebuggerHost,
     query::DebugQuery,
     snapshot::{
-        MastForestRecorder, ReplaySnapshot, ReplaySnapshotError, ReplaySnapshotRecorder,
-        ReplaySnapshotWrite, ReplaySnapshotWriteError,
+        MastForestRecorder, ReplaySnapshot, ReplaySnapshotRecorder, ReplaySnapshotWrite,
+        ReplaySnapshotWriteError,
     },
     state::DebugExecutor,
     trace::ExecutionTrace,
+};
+#[cfg(feature = "dap")]
+pub use self::{
+    dap::{DapConfig, DapExecutor},
+    dap_client::{DapClient, DapStopReason, SCOPE_MEMORY, SCOPE_STACK},
+    dap_types::{DapUiFrame, DapUiState},
 };

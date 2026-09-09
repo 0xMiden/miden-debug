@@ -1,4 +1,4 @@
-use std::{io::Write, path::Path};
+use std::{boxed::Box, io::Write, path::Path};
 
 use miden_assembly_syntax::diagnostics::Report;
 

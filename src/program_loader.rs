@@ -1,16 +1,16 @@
-use std::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use miden_assembly::SourceManager;
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 use miden_core::program::StackInputs;
-use miden_debug_engine::HybridPackageRegistry;
+use miden_debug_engine::{HybridPackageRegistry, read_package_from_bytes};
+use miden_debug_types::Uri;
 use miden_mast_package::Package;
 
 use crate::{
     config::DebuggerConfig,
     debug::TypedProcedure,
     exec::{DebugExecutor, ExecutionConfig, Executor},
-    input::InputFile,
 };
 
 pub(crate) struct LoadedDebugExecutor {
@@ -74,25 +74,19 @@ pub(crate) fn load_debug_executor(
 
 pub(crate) fn load_package(config: &DebuggerConfig) -> Result<Arc<Package>, Report> {
     let input = config.input.as_ref().ok_or_else(|| Report::msg("no input file specified"))?;
-    let (bytes, source) = match input {
-        InputFile::Real(path) => {
-            let bytes = std::fs::read(path).into_diagnostic()?;
-            (bytes, path.display().to_string())
-        }
-        InputFile::Stdin(bytes) => (bytes.to_vec(), "stdin".to_string()),
-    };
 
-    load_package_from_bytes(&bytes, &source, config)
+    let source = input.uri();
+    let bytes = input.bytes().into_diagnostic()?;
+
+    load_package_from_bytes(&bytes, source, config)
 }
 
 fn load_package_from_bytes(
     bytes: &[u8],
-    source: &str,
+    source: &Uri,
     config: &DebuggerConfig,
 ) -> Result<Arc<Package>, Report> {
-    let package = miden_mast_package::Package::read_from_bytes_trusted(bytes)
-        .map(Arc::new)
-        .map_err(|e| Report::msg(format!("failed to load Miden package from {source}: {e}")))?;
+    let package = read_package_from_bytes(bytes, source)?;
 
     if let Some(entry) = config.entrypoint.as_ref() {
         let id = entry
@@ -114,14 +108,14 @@ fn load_package_from_bytes(
 }
 
 #[cfg(test)]
-pub(crate) fn test_package_input() -> InputFile {
+pub(crate) fn test_package_input() -> crate::InputFile {
     use miden_assembly::{Assembler, DefaultSourceManager};
     use miden_core::serde::Serializable;
 
     let package = Assembler::new(Arc::new(DefaultSourceManager::default()))
         .assemble_program("test", "begin push.3 push.4 add add end")
         .expect("test package should assemble");
-    InputFile::Stdin(package.to_bytes().into_boxed_slice())
+    crate::InputFile::new("stdin://", Some(package.to_bytes().into_boxed_slice()))
 }
 
 #[cfg(test)]

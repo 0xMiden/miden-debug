@@ -1,3 +1,8 @@
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+
 use miden_core::{Word, field::PrimeField64};
 pub use miden_processor::Felt as RawFelt;
 #[cfg(feature = "proptest")]
@@ -711,6 +716,7 @@ impl<'de> Deserialize<'de> for Felt {
     }
 }
 
+#[cfg(feature = "std")]
 impl clap::builder::ValueParserFactory for Felt {
     type Parser = FeltParser;
 
@@ -720,8 +726,10 @@ impl clap::builder::ValueParserFactory for Felt {
 }
 
 #[doc(hidden)]
+#[cfg(feature = "std")]
 #[derive(Clone)]
 pub struct FeltParser;
+#[cfg(feature = "std")]
 impl clap::builder::TypedValueParser for FeltParser {
     type Value = Felt;
 
@@ -893,7 +901,7 @@ pub fn push_wasm_ty_to_operand_stack<T>(value: T, stack: &mut Vec<RawFelt>)
 where
     T: ToMidenRepr + num_traits::PrimInt,
 {
-    let ty_size = std::mem::size_of::<T>();
+    let ty_size = core::mem::size_of::<T>();
     if ty_size > 2 {
         value.push_to_operand_stack(stack);
         return;
@@ -911,6 +919,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use miden_core::Word;
 
     use super::{FromMidenRepr, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack};

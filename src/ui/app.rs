@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{boxed::Box, collections::HashMap, vec::Vec};
 
 use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
 use ratatui::{

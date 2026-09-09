@@ -1,7 +1,11 @@
 use std::{
+    borrow::ToOwned,
+    boxed::Box,
     collections::{BTreeSet, VecDeque},
     path::{Path, PathBuf},
+    string::{String, ToString},
     sync::Arc,
+    vec::Vec,
 };
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
@@ -169,10 +173,10 @@ impl RemoteState {
         for bp in breakpoints {
             match &bp.ty {
                 BreakpointType::Line { pattern, line } => {
-                    by_file.entry(pattern.as_str().to_string()).or_default().push(*line as i64);
+                    by_file.entry(pattern.glob().to_string()).or_default().push(*line as i64);
                 }
                 BreakpointType::Called(pattern) | BreakpointType::File(pattern) => {
-                    func_names.push(pattern.as_str().to_string());
+                    func_names.push(pattern.glob().to_string());
                 }
                 _ => {}
             }

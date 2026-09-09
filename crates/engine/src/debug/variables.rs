@@ -1,7 +1,16 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc, sync::Arc};
+use alloc::{
+    collections::BTreeMap,
+    rc::Rc,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
+use core::cell::RefCell;
 
-use miden_assembly::ast::{DebugFrameBase, DebugLocationExpression, DebugLocationExpressionOp};
-use miden_assembly_syntax::ast::{DebugVarInfo, DebugVarLocation, types::Type};
+use miden_assembly_syntax::ast::{
+    DebugFrameBase, DebugLocationExpression, DebugLocationExpressionOp, DebugVarInfo,
+    DebugVarLocation, types::Type,
+};
 use miden_core::Felt;
 use miden_processor::trace::RowIndex;
 
@@ -539,7 +548,7 @@ fn align_up(size: usize, alignment: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use alloc::sync::Arc;
 
     use miden_assembly_syntax::ast::types::{StructType, TypeRepr};
 

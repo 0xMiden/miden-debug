@@ -3,7 +3,9 @@ use std::{
     fs::File,
     io::{BufWriter, Write},
     path::{Path, PathBuf},
+    string::{String, ToString},
     sync::Arc,
+    vec::Vec,
 };
 
 use miden_assembly::{DefaultSourceManager, SourceManager};

@@ -1,3 +1,5 @@
+use std::string::String;
+
 use crossterm::event::KeyCode;
 use miden_assembly_syntax::diagnostics::Report;
 use ratatui::{prelude::*, widgets::*};

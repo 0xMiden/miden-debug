@@ -1,7 +1,7 @@
 //! Support utilities for working with [AdviceMutation]s, in particular cloning, recording, and
 //! (de)serializing the mutations produced by event handlers so they can be replayed later.
 
-use std::sync::{Arc, Mutex};
+use alloc::{sync::Arc, vec::Vec};
 
 use miden_core::{
     Felt, Word,
@@ -9,6 +9,7 @@ use miden_core::{
     serde::{ByteReader, ByteWriter, Deserializable, DeserializationError, Serializable},
 };
 use miden_processor::advice::{AdviceMap, AdviceMutation, AdviceStack};
+use miden_utils_sync::RwLock;
 
 /// Clone a single [AdviceMutation].
 ///
@@ -141,7 +142,7 @@ pub fn read_event_log<R: ByteReader>(
 /// `DebuggerHost::with_event_advice_mutations_recording`.
 #[derive(Clone, Default)]
 pub struct EventMutationRecorder {
-    log: Arc<Mutex<Vec<Vec<AdviceMutation>>>>,
+    log: Arc<RwLock<Vec<Vec<AdviceMutation>>>>,
 }
 
 impl core::fmt::Debug for EventMutationRecorder {
@@ -158,22 +159,17 @@ impl EventMutationRecorder {
 
     /// Returns the recorded mutation batches, leaving the recorder empty.
     pub fn take(&self) -> Vec<Vec<AdviceMutation>> {
-        core::mem::take(&mut *self.log.lock().expect("event mutation log poisoned"))
+        core::mem::take(&mut *self.log.write())
     }
 
     /// Returns a copy of the recorded mutation batches, leaving the recorder intact.
     pub fn snapshot(&self) -> Vec<Vec<AdviceMutation>> {
-        self.log
-            .lock()
-            .expect("event mutation log poisoned")
-            .iter()
-            .map(|batch| clone_advice_mutations(batch))
-            .collect()
+        self.log.read().iter().map(|batch| clone_advice_mutations(batch)).collect()
     }
 
     /// The number of `on_event` invocations recorded so far.
     pub fn len(&self) -> usize {
-        self.log.lock().expect("event mutation log poisoned").len()
+        self.log.read().len()
     }
 
     /// Returns true if no `on_event` invocations have been recorded.
@@ -182,12 +178,14 @@ impl EventMutationRecorder {
     }
 
     /// Record the mutations produced by one `on_event` invocation.
+    #[cfg(feature = "dap")]
     pub(crate) fn record(&self, mutations: Vec<AdviceMutation>) {
-        self.log.lock().expect("event mutation log poisoned").push(mutations);
+        self.log.write().push(mutations);
     }
 
     /// Discard everything recorded so far, e.g. when execution restarts from the beginning.
+    #[cfg(feature = "dap")]
     pub(crate) fn clear(&self) {
-        self.log.lock().expect("event mutation log poisoned").clear();
+        self.log.write().clear();
     }
 }

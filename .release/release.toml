@@ -8,6 +8,6 @@ schema-version = 1
 units = ["debugger"]
 
 [debugger]
-version = "0.14.0"
-tag = "v0.14.0"
+version = "0.15.0"
+tag = "v0.15.0"
 prerelease = false

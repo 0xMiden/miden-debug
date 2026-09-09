@@ -16,6 +16,10 @@ programs retain raw-felt argument handling.
 Typed frame-base and expression locations are read from packed byte-addressed memory before being
 lifted into that canonical representation, including values that cross Miden element boundaries.
 
+Variable tests inspect values at a live breakpoint. After successful termination, `vars`,
+`vars all`, and `locals` report that there are no live variables, and Python variable queries
+return an empty dictionary. Completed program results remain available separately.
+
 Python scripting tests run `miden-debug-python`, a second local copy built with
 the `python` feature, and pass `--no-user-python-init` so user configuration
 cannot affect their output.

@@ -145,6 +145,10 @@ When the program has no DWARF info, `:vars` prints `No debug variables
 tracked`. When it has DWARF but every variable is compiler-generated, you'll
 see `No source-level variables (use ':vars all' to show compiler locals)`.
 
+After successful termination, variable commands report `Program has terminated; no live
+variables`. Final stack outputs remain available, and variables from a failed execution
+remain inspectable.
+
 Each variable is rendered as `name=value`. If the variable's storage location
 isn't currently materialised (e.g. it lives in a register that hasn't been
 spilled, or in memory that hasn't been written), the location specifier is

@@ -921,9 +921,13 @@ impl State {
         }
     }
 
+    fn execution_completed(&self) -> bool {
+        self.executor().stopped && self.execution_failed().is_none()
+    }
+
     /// Decode the completed program's result using its component-model entrypoint signature.
     pub fn typed_result(&self) -> Result<Option<String>, String> {
-        if !self.executor().stopped || self.execution_failed().is_some() {
+        if !self.execution_completed() {
             return Ok(None);
         }
         let local = match &self.session {
@@ -1094,9 +1098,16 @@ impl State {
 
     /// Collect the current debug variables as structured records.
     ///
+    /// Successful completion has no live variables. Failed execution retains the last variable
+    /// state for inspection.
+    ///
     /// When `show_all` is false, compiler-generated locals (named `local0`, `local1`, etc.)
     /// are hidden. Use `show_all` = true (`:vars all`) to include them.
     pub fn current_variables(&self, show_all: bool) -> Vec<DebugVariableValue> {
+        if self.execution_completed() {
+            return Vec::new();
+        }
+
         let executor = self.executor();
         let debug_vars = &executor.debug_vars;
 
@@ -1202,6 +1213,10 @@ impl State {
     /// are hidden. Use `show_all` = true (`:vars all`) to include them.
     pub fn format_variables(&self, show_all: bool) -> String {
         use core::fmt::Write;
+
+        if self.execution_completed() {
+            return "Program has terminated; no live variables".to_string();
+        }
 
         if !self.executor().debug_vars.has_variables() {
             return "No debug variables tracked".to_string();
@@ -1435,6 +1450,59 @@ fn create_local_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn state_with_variables(source: &str) -> State {
+        use miden_assembly_syntax::ast::{DebugVarInfo, DebugVarLocation};
+        use miden_processor::trace::RowIndex;
+
+        let mut state = State::from_masm_source(source, Vec::new()).unwrap();
+        let tracker = &mut state.executor_mut().debug_vars;
+        tracker.record_events_with_stack(
+            RowIndex::from(0),
+            vec![
+                DebugVarInfo::new("answer", DebugVarLocation::Stack(0)),
+                DebugVarInfo::new("local0", DebugVarLocation::Const(Felt::from(9u32))),
+            ],
+            &[Felt::from(7u32)],
+        );
+        tracker.update_to_cycle(RowIndex::from(0));
+        state
+    }
+
+    #[test]
+    fn completed_execution_has_no_live_variables() {
+        let mut state = state_with_variables("begin push.1 drop end");
+
+        assert_eq!(state.format_variables(false), "answer=7");
+        assert_eq!(state.format_variables(true), "answer=7, local0=9");
+
+        state.run_until_stopped();
+
+        assert!(state.executor().stopped);
+        assert!(state.execution_failed().is_none());
+        assert!(state.executor().debug_vars.has_variables());
+        for show_all in [false, true] {
+            assert!(state.current_variables(show_all).is_empty());
+            assert_eq!(
+                state.format_variables(show_all),
+                "Program has terminated; no live variables"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_execution_preserves_variables_for_inspection() {
+        let mut state = state_with_variables("begin push.0 assert end");
+
+        state.run_until_stopped();
+
+        assert!(state.executor().stopped);
+        assert!(state.execution_failed().is_some());
+        assert_eq!(state.current_variables(false).len(), 1);
+        assert_eq!(state.current_variables(true).len(), 2);
+        assert_eq!(state.format_variables(false), "answer=7");
+        assert_eq!(state.format_variables(true), "answer=7, local0=9");
+    }
 
     #[test]
     fn successful_reload_epilogue_resets_stack_selection() {

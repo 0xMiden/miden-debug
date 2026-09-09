@@ -675,7 +675,7 @@ pub fn resolve_source_file_for_location(
 #[cfg(feature = "std")]
 pub fn resolve_source_path(uri: &Uri) -> Option<PathBuf> {
     let path = match uri.scheme() {
-        None | Some("file") => Path::new(uri.path()),
+        None | Some("file") => uri.to_path()?,
         Some(_) => return None,
     };
 
@@ -684,7 +684,7 @@ pub fn resolve_source_path(uri: &Uri) -> Option<PathBuf> {
             .then(|| path.canonicalize().unwrap_or_else(|_| path.to_path_buf()))
     }
 
-    existing_path(path).or_else(|| {
+    existing_path(&path).or_else(|| {
         if path.is_relative() {
             std::env::current_dir().ok().and_then(|cwd| existing_path(&cwd.join(path)))
         } else {
@@ -705,7 +705,7 @@ pub fn resolve_location_from_filesystem(location: &Location) -> Option<(PathBuf,
 
 /// Returns true for source paths emitted by compiler/runtime internals rather than user code.
 pub fn is_internal_source_uri(uri: &Uri) -> bool {
-    let path = uri.path().replace('\\', "/");
+    let path = uri.as_str().replace('\\', "/");
     path.contains("/codegen/masm/intrinsics/") || path.contains("/rustlib/src/rust/library/")
 }
 

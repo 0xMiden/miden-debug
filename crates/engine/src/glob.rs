@@ -194,13 +194,13 @@ impl<'a> Candidate<'a> {
 pub(crate) fn normalize_path(uri: &Uri) -> Cow<'_, str> {
     // UNIX only uses /, so we're good.
     Cow::Borrowed(match uri.scheme() {
-        Some("file") => uri.path(),
-        Some("stdin") => match uri.path() {
+        Some("file") => uri.as_str().strip_prefix("file://").unwrap(),
+        Some("stdin") => match uri.as_str().strip_prefix("stdin://").unwrap() {
             "" => "stdin",
             other => other,
         },
         // Try and match this other scheme anyway, which likely looks like a UNIX-style path
-        Some(_) => uri.path(),
+        Some(_) => uri.as_str().split_once("://").unwrap().1,
         None => uri.as_str(),
     })
 }
@@ -211,13 +211,15 @@ pub(crate) fn normalize_path(uri: &Uri) -> Cow<'_, str> {
 pub(crate) fn normalize_path(uri: &Uri) -> Cow<'_, str> {
     let path = match uri.scheme() {
         Some("stdin") => {
-            return Cow::Borrowed(match uri.path() {
+            return Cow::Borrowed(match uri.as_str().strip_prefix("stdin://").unwrap() {
                 "" => "stdin",
                 other => other,
             });
         }
-        Some(scheme) if scheme == "file" || scheme.chars().count() == 1 => uri.path(),
-        Some(_) => return Cow::Borrowed(uri.path()),
+        Some(scheme) if scheme == "file" || scheme.chars().count() == 1 => {
+            uri.as_str().split_once("://").unwrap().1
+        }
+        Some(_) => return Cow::Borrowed(uri.as_str().split_once("://").unwrap().1),
         None => uri.as_str(),
     };
     let mut output = String::with_capacity(path.len());

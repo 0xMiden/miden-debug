@@ -4,7 +4,7 @@ use alloc::{
     vec::Vec,
 };
 
-use miden_assembly_syntax::debuginfo::SourceManager;
+use miden_assembly_syntax::{ast::DebugVarLocation, debuginfo::SourceManager};
 use miden_core::{
     mast::{MastNode, MastNodeId},
     operations::AssemblyOp,
@@ -211,36 +211,46 @@ pub(crate) fn extract_current_op(ctx: &ResumeContext) -> CurrentCycleInfo {
     }
 }
 
+/// Wait for entry declarations in the current straight-line source occurrence, but never run
+/// through a branch or a callee just because a later location exists somewhere in the function.
+/// Only declarations observed this cycle count; kills and stale caller variables do not.
+pub(crate) fn should_wait_for_entry_variables(
+    resume_ctx: &ResumeContext,
+    procedure: &str,
+    variables: &DebugVarTracker,
+    cycle: usize,
+) -> bool {
+    if variables
+        .current_variables()
+        .any(|variable| variable.clk == RowIndex::from(cycle as u32))
+    {
+        return false;
+    }
+    let Some(debug_info) = resume_ctx.debug_info() else {
+        return false;
+    };
+    let next = extract_current_op(resume_ctx);
+    let Some(source_node) = next.source_node_id.map(|node| &debug_info[node]) else {
+        return false;
+    };
+    let Some(op_idx) = next.op_idx else {
+        return false;
+    };
+    source_node.debug_vars.iter().any(|variable| {
+        variable.op_idx as usize >= op_idx
+            && !matches!(variable.value_location, DebugVarLocation::Unavailable)
+            && source_node.asm_op_for_operation(variable.op_idx).is_some_and(|operation| {
+                debug_info[operation.context_name_idx].as_ref() == procedure
+            })
+    })
+}
+
 impl DebugExecutor {
-    /// Returns true if the current program forest has debug-variable locations associated with
-    /// `procedure`.
-    #[allow(unused)]
-    pub fn procedure_has_debug_vars(&self, procedure: &str) -> bool {
-        let Some(resume_ctx) = self.resume_ctx.as_ref() else {
-            return false;
-        };
-        let Some(debug_info) = resume_ctx.debug_info() else {
-            return false;
-        };
-
-        for function_info in debug_info.functions() {
-            if debug_info[function_info.name_idx].as_ref() != procedure {
-                continue;
-            }
-            if let Some(source_node) = function_info.source_node.into_option() {
-                return !debug_info[source_node].debug_vars.is_empty();
-            } else if let Some(exec_node) =
-                resume_ctx.current_forest().find_procedure_root(function_info.mast_root)
-                && let Ok(Some(source_node)) =
-                    debug_info.unique_source_root_for_exec_node(exec_node)
-            {
-                return !debug_info[source_node].debug_vars.is_empty();
-            } else {
-                return false;
-            }
-        }
-
-        false
+    /// Returns whether a function breakpoint should wait for pending entry-block declarations.
+    pub fn should_wait_for_entry_variables(&self, procedure: &str) -> bool {
+        self.resume_ctx.as_ref().is_some_and(|resume_ctx| {
+            should_wait_for_entry_variables(resume_ctx, procedure, &self.debug_vars, self.cycle)
+        })
     }
 
     /// Advance the program state by one cycle.

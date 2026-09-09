@@ -354,8 +354,8 @@ fn location_to_source_file(
     source_manager: &dyn SourceManager,
 ) -> Option<(Arc<SourceFile>, ByteIndex)> {
     use miden_assembly_syntax::debuginfo::SourceManagerExt;
-    let path = std::path::Path::new(loc.uri().path());
-    let file = source_manager.load_file(path).ok()?;
+    let path = loc.uri().to_path()?;
+    let file = source_manager.load_file(&path).ok()?;
     Some((file, loc.start))
 }
 

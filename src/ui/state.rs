@@ -566,7 +566,8 @@ impl State {
                     }
 
                     if entered_matching_proc
-                        || (pending && self.deferred_called_breakpoint_is_ready(line_loc.as_ref()))
+                        || (pending
+                            && !self.should_defer_called_breakpoint(proc, line_loc.as_ref()))
                     {
                         pending_called_breakpoints.retain(|id| *id != bp.id);
                         let retained = !bp.is_one_shot();
@@ -899,18 +900,15 @@ impl State {
         current_loc: Option<&ResolvedLocation>,
     ) -> bool {
         let executor = self.executor();
+        if executor.debug_vars.current_variables().any(|variable| {
+            variable.clk == miden_processor::trace::RowIndex::from(executor.cycle as u32)
+        }) {
+            return false;
+        }
         (!is_internal_procedure(proc)
             && current_loc
                 .is_none_or(|loc| crate::debug::is_internal_source_uri(loc.source_file.uri())))
-            || (executor.procedure_has_debug_vars(proc) && executor.last_debug_var_count == 0)
-    }
-
-    pub fn deferred_called_breakpoint_is_ready(
-        &self,
-        current_loc: Option<&ResolvedLocation>,
-    ) -> bool {
-        current_loc.is_some_and(|loc| !crate::debug::is_internal_source_uri(loc.source_file.uri()))
-            || self.executor().last_debug_var_count > 0
+            || executor.should_wait_for_entry_variables(proc)
     }
 
     pub fn execution_failed(&self) -> Option<&miden_processor::ExecutionError> {
@@ -1451,11 +1449,83 @@ fn create_local_state(
 mod tests {
     use super::*;
 
+    fn state_with_entry_variables(source: &str) -> State {
+        use miden_assembly_syntax::{
+            Parse,
+            ast::{Block, DebugVarInfo, DebugVarLocation, Instruction, Op},
+            debuginfo::Span,
+        };
+
+        fn inject_variables(block: &mut Block) {
+            for operation in block.iter_mut() {
+                if let Op::If {
+                    then_blk, else_blk, ..
+                } = operation
+                {
+                    inject_variables(then_blk);
+                    inject_variables(else_blk);
+                }
+                let Op::Inst(instruction) = operation else {
+                    continue;
+                };
+                let location = match instruction.inner() {
+                    Instruction::Nop => DebugVarLocation::Stack(0),
+                    Instruction::Not => DebugVarLocation::Unavailable,
+                    _ => continue,
+                };
+                *instruction = Span::new(
+                    SourceSpan::default(),
+                    Instruction::DebugVar(DebugVarInfo::new("n", location)),
+                );
+            }
+        }
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let mut module = Parse::parse(source, false, source_manager.clone()).unwrap();
+        for procedure in module.procedures_mut() {
+            inject_variables(procedure.body_mut());
+        }
+        let package = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program("program", module)
+            .unwrap();
+        let executor = Executor::new(Vec::new()).into_debug(package.into(), source_manager.clone());
+        let mut state = State::new_local(
+            source_manager,
+            Box::<DebuggerConfig>::default(),
+            DebugMode::Program,
+            LocalState {
+                executor,
+                execution_failed: None,
+                typed_procedure: None,
+            },
+        );
+        state.create_breakpoint("in *entrypoint".parse().unwrap());
+        state
+    }
+
     fn state_with_variables(source: &str) -> State {
-        use miden_assembly_syntax::ast::{DebugVarInfo, DebugVarLocation};
+        use miden_assembly_syntax::{
+            Parse,
+            ast::{DebugVarInfo, DebugVarLocation},
+        };
         use miden_processor::trace::RowIndex;
 
-        let mut state = State::from_masm_source(source, Vec::new()).unwrap();
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let module = Parse::parse(source, false, source_manager.clone()).unwrap();
+        let package = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program("program", module)
+            .unwrap();
+        let executor = Executor::new(Vec::new()).into_debug(package.into(), source_manager.clone());
+        let mut state = State::new_local(
+            source_manager,
+            Box::<DebuggerConfig>::default(),
+            DebugMode::Program,
+            LocalState {
+                executor,
+                execution_failed: None,
+                typed_procedure: None,
+            },
+        );
+
         let tracker = &mut state.executor_mut().debug_vars;
         tracker.record_events_with_stack(
             RowIndex::from(0),
@@ -1502,6 +1572,67 @@ mod tests {
         assert_eq!(state.current_variables(true).len(), 2);
         assert_eq!(state.format_variables(false), "answer=7");
         assert_eq!(state.format_variables(true), "answer=7, local0=9");
+    }
+
+    #[test]
+    fn function_breakpoint_waits_for_entry_variables() {
+        let mut state = state_with_entry_variables(
+            "proc entrypoint push.2 push.3 add nop drop push.1 if.true push.1 drop end end begin \
+             exec.entrypoint end",
+        );
+        state.run_until_stopped();
+        assert!(!state.executor().stopped);
+        assert_eq!(state.breakpoints_hit.len(), 1);
+        assert_eq!(state.format_variables(true), "n=5");
+    }
+
+    #[test]
+    fn function_breakpoint_does_not_wait_for_missing_variables() {
+        let mut state = state_with_entry_variables(
+            "proc entrypoint push.2 push.3 add drop end begin exec.entrypoint end",
+        );
+        state.run_until_stopped();
+        assert!(!state.executor().stopped);
+        assert_eq!(state.breakpoints_hit.len(), 1);
+        assert!(state.current_variables(true).is_empty());
+    }
+
+    #[test]
+    fn function_breakpoint_accepts_variables_without_resolved_source() {
+        let mut state = state_with_entry_variables(
+            "proc entrypoint push.2 push.3 add nop drop end begin exec.entrypoint end",
+        );
+        state.source_manager = Arc::new(DefaultSourceManager::default());
+        state.run_until_stopped();
+        assert!(!state.executor().stopped);
+        assert_eq!(state.breakpoints_hit.len(), 1);
+        assert!(state.current_display_location().is_none());
+        assert_eq!(state.format_variables(true), "n=5");
+    }
+
+    #[test]
+    fn function_breakpoint_ignores_caller_variables_and_kills() {
+        let mut state = state_with_entry_variables(
+            "proc entrypoint push.2 not push.3 add nop drop end begin push.91 nop drop \
+             exec.entrypoint end",
+        );
+        state.run_until_stopped();
+        assert!(!state.executor().stopped);
+        assert_eq!(state.breakpoints_hit.len(), 1);
+        assert_eq!(state.format_variables(true), "n=5");
+    }
+
+    #[test]
+    fn function_breakpoint_does_not_enter_branches_to_find_variables() {
+        let mut state = state_with_entry_variables(
+            "proc entrypoint push.0 if.true push.5 nop drop end push.1 drop end begin \
+             exec.entrypoint end",
+        );
+        state.run_until_stopped();
+        assert!(!state.executor().stopped);
+        assert_eq!(state.breakpoints_hit.len(), 1);
+        assert!(state.current_variables(true).is_empty());
+        assert_eq!(state.executor().current_op, Some(miden_processor::operation::Operation::Pad));
     }
 
     #[test]

@@ -114,6 +114,17 @@ fn load_package_from_bytes(
 }
 
 #[cfg(test)]
+pub(crate) fn test_package_input() -> InputFile {
+    use miden_assembly::{Assembler, DefaultSourceManager};
+    use miden_core::serde::Serializable;
+
+    let package = Assembler::new(Arc::new(DefaultSourceManager::default()))
+        .assemble_program("test", "begin push.3 push.4 add add end")
+        .expect("test package should assemble");
+    InputFile::Stdin(package.to_bytes().into_boxed_slice())
+}
+
+#[cfg(test)]
 mod tests {
     use miden_assembly_syntax::ast::types::{CallConv, FunctionType, Type};
     use miden_core::Felt;

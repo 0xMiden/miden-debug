@@ -16,7 +16,7 @@ when:
 - you just prefer line-by-line output.
 
 ```bash
-miden-debug --repl sum.masp
+miden debug --repl sum.masp
 ```
 
 :::info Feature selection
@@ -142,7 +142,7 @@ Each entry is `name=value` when the storage is materialised, otherwise
 ## Example session
 
 ```text
-$ miden-debug --repl sum.masp
+$ miden debug --repl sum.masp
 [cycle 0 STOP] > b sum.masm:3
 Breakpoint 0 set: **/sum.masm:3
 [cycle 0 STOP] > c
@@ -162,6 +162,6 @@ Program terminated successfully
 - Up/down arrows recall previous commands (rustyline history).
 - `help` (or `h`, `?`) prints the same table you've just read; handy when you
   want a refresher without leaving the prompt.
-- `MIDENC_TRACE=miden_debug=debug miden-debug --repl ...` emits the
+- `MIDENC_TRACE=miden_debug=debug miden debug --repl ...` emits the
   debugger's own log to stderr — useful when an apparent bug might be
   misuse, an inputs-file error, or a missing source file.

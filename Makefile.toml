@@ -315,8 +315,7 @@ args = [
 ]
 dependencies = [
     "litcheck",
-    "compile-masm",
-    "compile-abi-fixture",
+    "lit-fixture-builders",
     "miden-debug",
     "miden-debug-python",
 ]
@@ -362,37 +361,18 @@ args = [
     "${@}"
 ]
 
-[tasks.compile-masm]
+[tasks.lit-fixture-builders]
 category = "Build"
-description = "Builds the MASM-to-package helper used by lit tests"
+description = "Builds private package builders used by lit tests"
 toolchain = "nightly"
 command = "cargo"
 args = [
     "-Z",
     "unstable-options",
     "build",
-    "--example",
-    "compile-masm",
-    "--features",
-    "std",
-    "--artifact-dir",
-    "${LOCAL_BIN_DIR}",
-    "${@}"
-]
-
-[tasks.compile-abi-fixture]
-category = "Build"
-description = "Builds the typed ABI fixture helper used by lit tests"
-toolchain = "nightly"
-command = "cargo"
-args = [
-    "-Z",
-    "unstable-options",
-    "build",
-    "--example",
-    "compile-abi-fixture",
-    "--features",
-    "std",
+    "--package",
+    "miden-debug-lit-support",
+    "--bins",
     "--artifact-dir",
     "${LOCAL_BIN_DIR}",
     "${@}"

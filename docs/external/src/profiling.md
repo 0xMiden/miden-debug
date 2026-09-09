@@ -16,7 +16,7 @@ Run the debugger with
 - and `--profiling-instruments` to enable one or more profiling instruments
 
 ```bash
-miden-debug \
+miden debug \
     --profiling-reports-dir ./reports \
     --profiling-instruments op-histogram-global \
     --commands cmds.txt \

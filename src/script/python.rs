@@ -849,22 +849,10 @@ impl PySourceLocation {
 
 #[cfg(test)]
 mod tests {
-    use miden_core::Felt;
-
     use super::*;
 
     fn test_debugger() -> ScriptDebugger {
-        ScriptDebugger::from_masm_source(
-            r#"
-begin
-    push.3
-    push.4
-    add
-end
-"#,
-            Vec::<Felt>::new(),
-        )
-        .unwrap()
+        crate::script::test_debugger()
     }
 
     #[test]

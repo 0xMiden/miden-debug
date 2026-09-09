@@ -1,10 +1,4 @@
-//! Compile a .masm file into a .masp package that miden-debug can load.
-//!
-//! Usage:
-//!   cargo run --example compile-masm -- examples/simple.masm -o examples/simple.masp
-//!
-//! If `-o` is omitted, this produces `examples/simple.masp`, which you can then debug:
-//!   cargo run -- examples/simple.masp
+//! Private package builder for lit fixtures.
 
 use std::{
     env, io,
@@ -47,8 +41,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         inline_calls,
     } = parse_args()?;
     let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
-
-    // Read and assemble the MASM source as a program
     let assembler = Assembler::new(source_manager.clone());
     let mut package = if inject_frame_base_test_vars {
         let mut module = input_path.as_path().parse(false, source_manager.clone())?;
@@ -60,14 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if !inline_calls.is_empty() {
         add_inline_calls(&mut package, &input_path, &inline_calls, source_manager.as_ref())?;
     }
-
-    // Write the .masp file
     package.write_to_file(&output_path)?;
-
-    println!("Compiled {} -> {}", input_path.display(), output_path.display());
-    println!("\nTo debug:");
-    println!("  cargo run -- {}", output_path.display());
-
     Ok(())
 }
 

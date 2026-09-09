@@ -4,11 +4,10 @@ End-to-end tests that drive `miden-debug` over small Miden Assembly programs and
 check its output with [`litcheck`](https://crates.io/crates/litcheck) (a
 pure-Rust implementation of LLVM `lit` + `FileCheck`).
 
-The debugger only loads compiled packages. The lit harness builds the local
-`compile-masm` helper and uses it to assemble each `.masm` fixture into a
-temporary `.masp` package before running `miden-debug`. Tests that need typed
-debug metadata use `compile-abi-fixture` to add deterministic ABI types and
-variable locations to the parsed AST; the assembler encodes them in the package.
+The debugger only loads compiled packages. Every test explicitly builds a temporary `.masp`
+fixture before invoking `miden-debug`, making the producer/consumer boundary visible in its `RUN`
+directives. The private fixture builders live under `tests/lit/support`; they are test
+infrastructure, not debugger inputs or installed CLI tools.
 
 When a package entrypoint carries a component-model signature, trailing CLI arguments are encoded
 with that signature's canonical ABI and the completed result is decoded with the same metadata.
@@ -26,8 +25,9 @@ cannot affect their output.
 ```
 tests/lit/
   lit.suite.toml     # suite config: only *.test files are test entry points
-  add.masm           # a MASM program ...
-  add.test           # ... and the test that debugs it
+  support/           # private fixture builders
+  add.masm           # a MASM fixture ...
+  add.test           # ... and the test that builds and debugs it
   breakpoint.masm
   breakpoint.test
   error.masm
@@ -58,11 +58,9 @@ stack
 # CHECK: [0] 7
 ```
 
-`%s` is the test file, `%S` its directory, and `%t` is a per-test temporary file.
-The first `RUN` line compiles `add.masm`; the second loads the resulting program
-in the debugger, runs the `continue` and `stack` commands, and pipes the output
-to `filecheck`, which verifies the program finished and left `7` on top of the
-operand stack.
+`%s` is the test file, `%S` its directory, and `%t` a per-test temporary path. The first
+command assembles the source fixture; the second loads only the resulting package, runs the
+`continue` and `stack` commands, and pipes the output to `filecheck`.
 
 ## Running
 
@@ -70,15 +68,14 @@ operand stack.
 cargo make test-lit
 ```
 
-This installs the lit tools, builds `miden-debug` with the `repl` feature and a
-second copy with the `python` feature, builds the local MASM-to-package helper,
-installs the binaries into `./bin`, and runs the suite via `litcheck lit run`.
+This installs the lit tools; builds `miden-debug`, its Python-enabled variant, and the private
+fixture builders into `./bin`; then runs the suite via `litcheck lit run`.
 
 ## Adding a test
 
-Drop a new `<name>.masm` program under `tests/lit/` and a `<name>.test` beside it
-with the `RUN`/`CHECK` directives and debugger commands. Two MASM facts to keep
-in mind:
+Add a `<name>.masm` fixture and `<name>.test` beside it. The test must explicitly build `%t.masp`
+before passing it to the debugger. Do not check generated `.masp` files into the repository.
+Two MASM facts to keep in mind:
 
 - The operand stack starts as 16 padding zeros and is always shown padded.
 - The VM requires at most 16 elements at program end — fold results into a
@@ -88,13 +85,6 @@ in mind:
 Prefer asserting on stable facts (a known computed result) over incidental
 formatting.
 
-For stack-trace tests, `compile-masm` accepts repeated
-`--inline-call <name,line,column>` options. They attach an innermost-first
-inline call chain to the fixture's operations without requiring `midenc` in the
-debugger CI job:
-
-```text
-compile-masm inline_call.masm -o inline_call.masp \
-  --inline-call fixture::inner,3,1 \
-  --inline-call fixture::outer,2,1
-```
+Specialized tests may use `compile-abi-fixture` or `compile-masm` options to inject metadata that
+has no textual MASM representation. Those helpers remain private to the lit suite; production
+debugger code never parses or assembles source files.

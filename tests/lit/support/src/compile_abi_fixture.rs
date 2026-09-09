@@ -1,4 +1,4 @@
-//! Compile a MASM fixture with ABI type/debug-variable metadata for lit tests.
+//! Private typed ABI package builder for lit fixtures.
 
 use std::{env, io, path::PathBuf, sync::Arc};
 
@@ -23,7 +23,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let package = Assembler::new(source_manager).assemble_program("abi-types", module)?;
     let package = with_typed_entrypoint(*package)?;
     package.write_to_file(&output_path)?;
-
     Ok(())
 }
 
@@ -62,7 +61,6 @@ fn add_abi_debug_vars(module: &mut Module) -> Result<(), Box<dyn std::error::Err
     if variables.next().is_some() {
         return Err(io::Error::other("ABI fixture is missing debug variable markers").into());
     }
-
     Ok(())
 }
 
@@ -102,7 +100,7 @@ fn abi_debug_vars() -> Result<Vec<DebugVarInfo>, Box<dyn std::error::Error>> {
         (Arc::from("half"), Type::U16),
     ]));
 
-    let variables = vec![
+    Ok(vec![
         typed_memory_var("account", 130, account_ty),
         typed_memory_var("array", 110, array_ty),
         typed_memory_var("enabled", 150, Type::I1),
@@ -118,9 +116,7 @@ fn abi_debug_vars() -> Result<Vec<DebugVarInfo>, Box<dyn std::error::Error>> {
             vec![DebugLocationExpressionOp::ConstU64(643), DebugLocationExpressionOp::DerefBytes],
             Type::U64,
         )?,
-    ];
-
-    Ok(variables)
+    ])
 }
 
 fn typed_memory_var(name: &str, address: u32, ty: Type) -> DebugVarInfo {

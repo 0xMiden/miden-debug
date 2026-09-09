@@ -1,23 +1,23 @@
 use std::{path::Path, sync::Arc};
 
-use miden_assembly::{Assembler, DefaultSourceManager, SourceManager};
-use miden_assembly_syntax::diagnostics::{IntoDiagnostic, Report};
+use miden_assembly::DefaultSourceManager;
+use miden_assembly_syntax::diagnostics::Report;
 use miden_core::{Word, events::EventId};
 use miden_debug_engine::{HybridPackageRegistry, normalize_source_path};
-use miden_debug_types::{Location, SourceFile, SourceManagerExt, SourceSpan};
-use miden_mast_package::{Package, PackageId};
-use miden_package_registry::{PackageProvider, PackageRegistry};
+use miden_debug_types::{Location, SourceFile, SourceManager, SourceManagerExt, SourceSpan};
+use miden_mast_package::Package;
+use miden_package_registry::PackageRegistry;
 use miden_processor::{
     BaseHost, DefaultHost, FutureMaybeSend, Host, HostLibrary, LoadedMastForest, ProcessorState,
     advice::AdviceMutation, event::EventError,
 };
 
-use crate::{DapConfig, DapExecutor, DebuggerConfig, InputFile};
+use crate::{DapConfig, DapExecutor, DebuggerConfig};
 
 /// Start a DAP server for a local Miden program.
 ///
 /// This is the non-transaction counterpart to `miden-client exec --start-debug-adapter`.
-/// It accepts standalone MASM source files as well as compiled package artifacts.
+/// It accepts compiled package artifacts only.
 pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     let addr = config
         .start_debug_adapter
@@ -28,12 +28,13 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     );
 
     let source_manager = Arc::new(DefaultSourceManager::default());
-    let mut registry = HybridPackageRegistry::new(
+    let registry = HybridPackageRegistry::new(
         config.sysroot.as_deref(),
         &config.search_path,
         &config.link_libraries,
     )?;
-    let program = load_program(&config, source_manager.clone(), &mut registry)?;
+    let program = crate::program_loader::load_package(&config)?;
+    verify_package_dependencies(&program, &registry)?;
     let typed_procedure = crate::debug::TypedProcedure::for_package_entrypoint(&program);
     let inputs = crate::program_loader::execution_inputs(&config, typed_procedure.as_ref())?;
     let mut host = StandaloneDapHost::new(source_manager);
@@ -110,77 +111,6 @@ impl Host for StandaloneDapHost {
         process: &ProcessorState<'_>,
     ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
         self.inner.on_event(process)
-    }
-}
-
-fn load_program(
-    config: &DebuggerConfig,
-    source_manager: Arc<dyn SourceManager>,
-    registry: &mut HybridPackageRegistry,
-) -> Result<Arc<Package>, Report> {
-    let input = config.input.as_ref().ok_or_else(|| Report::msg("no input file specified"))?;
-    if let InputFile::Real(path) = input
-        && path.extension().and_then(|ext| ext.to_str()) == Some("masm")
-    {
-        return assemble_masm_program(path, source_manager, registry);
-    }
-
-    let package = load_package(config)?;
-    verify_package_dependencies(&package, registry)?;
-    assert!(package.is_program());
-    Ok(package)
-}
-
-fn assemble_masm_program(
-    path: &Path,
-    source_manager: Arc<dyn SourceManager>,
-    registry: &HybridPackageRegistry,
-) -> Result<Arc<Package>, Report> {
-    let mut assembler = Assembler::new(source_manager.clone());
-
-    let mut parser =
-        miden_assembly_syntax::ModuleParser::new(Some(miden_assembly::ast::ModuleKind::Executable));
-    let module = parser.parse_file(None, path, source_manager)?;
-
-    for extern_package in module.required_packages() {
-        let package_id = PackageId::from(extern_package.clone().into_inner());
-        let package = registry
-            .find_latest(&package_id, &miden_project::VersionReq::STAR.into())
-            .ok_or_else(|| Report::msg(format!("extern package '{package_id}' is not available")))
-            .and_then(|record| registry.load_package(&package_id, record.version()))?;
-        assembler.link_package(package, miden_project::Linkage::Dynamic)?;
-    }
-
-    assembler.assemble_program("program", module).map(Arc::from)
-}
-
-fn load_package(config: &DebuggerConfig) -> Result<Arc<Package>, Report> {
-    let input = config.input.as_ref().ok_or_else(|| Report::msg("no input file specified"))?;
-    let package = match input {
-        InputFile::Real(path) => {
-            let bytes = std::fs::read(path).into_diagnostic()?;
-            Package::read_from_bytes_trusted(&bytes).map(Arc::new).map_err(|err| {
-                Report::msg(format!("failed to load Miden package from {}: {err}", path.display()))
-            })?
-        }
-        InputFile::Stdin(bytes) => {
-            Package::read_from_bytes_trusted(bytes).map(Arc::new).map_err(|err| {
-                Report::msg(format!("failed to load Miden package from stdin: {err}"))
-            })?
-        }
-    };
-
-    if let Some(entry) = config.entrypoint.as_ref() {
-        let id = entry
-            .parse::<miden_assembly::ast::QualifiedProcedureName>()
-            .map_err(|_| Report::msg(format!("invalid function identifier: '{entry}'")))?;
-        if !package.is_library() {
-            return Err(Report::msg("cannot use --entrypoint with executable packages"));
-        }
-
-        package.make_executable(&id).map(Arc::new)
-    } else {
-        Ok(package)
     }
 }
 

@@ -13,9 +13,11 @@ Not only does this provide richer output when something goes wrong, but it opens
 
 At the most basic level, to use the debugger programmatically, you must instantiate the debug executor, optionally configure it, and then execute a `Program`.
 
-The simplest case is when you have a Miden package (i.e. a `.masp` file) that
-you've assembled, and you want to run it under the debugger, either printing
-helpful diagnostic output on error, or asserting something about the output of the program:
+The simplest case is when you have a compiled Miden package (i.e. a `.masp`
+file), and you want to run it under the debugger, either printing helpful
+diagnostic output on error, or asserting something about the output of the
+program. Source compilation is deliberately outside the debugger API; use
+`midenc` or `miden build` to produce the package first.
 
 ```rust
 use std::sync::Arc;
@@ -24,7 +26,7 @@ use miden_debug::{Executor, debug_types::DefaultSourceManager, RawFelt};
 // Construct a source manager for use in printing diagnostics
 let source_manager = Arc::new(DefaultSourceManager::default());
 
-// Load an already assembled executable package, or assemble one
+// Load an already compiled executable package
 let package = Package::deserialize_from_file_trusted("path/to/program.masp").map(Arc::new).unwrap();
 
 // Construct the debug executor from the package, and specify the initial args
@@ -153,7 +155,7 @@ We will continue to expand on the set of useful APIs for examining program state
 ## Generating flamegraphs programmatically
 
 The flamegraph support is also exposed as a Rust API, so tests can profile a
-program without shelling out to the `miden-debug flamegraph` command. Enable the
+program without shelling out to the `miden debug flamegraph` command. Enable the
 `flamegraph` feature on `miden-debug`, execute a program with a `DebugExecutor`,
 and collect a `FlamegraphProfile` from it:
 

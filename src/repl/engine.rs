@@ -35,14 +35,6 @@ impl ReplEngine {
         })
     }
 
-    /// Create an engine from an already constructed debugger state.
-    pub(crate) fn from_state(state: State) -> Self {
-        Self {
-            state,
-            selected_frame: 0,
-        }
-    }
-
     /// Create an engine from a debugger configuration.
     pub fn from_config(config: Box<DebuggerConfig>) -> Result<Self, Report> {
         Self::new(config)

@@ -94,12 +94,12 @@ the client:
   script from disk and re-listen. This drives the *edit-and-continue*
   workflow for IDE clients.
 
-## Client side: `miden-debug --dap-connect`
+## Client side: `miden debug --dap-connect`
 
 To drive a running server through the standard TUI:
 
 ```bash
-miden-debug --dap-connect 127.0.0.1:4711
+miden debug --dap-connect 127.0.0.1:4711
 ```
 
 In this mode `miden-debug` does not load a program from disk; the program

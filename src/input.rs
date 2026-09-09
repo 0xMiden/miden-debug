@@ -91,10 +91,37 @@ impl clap::builder::TypedValueParser for InputFileParser {
                         format!("invalid input '{}': file does not exist", path.display()),
                     ));
                 }
+                if path.extension().is_none_or(|extension| !extension.eq_ignore_ascii_case("masp"))
+                {
+                    return Err(Error::raw(
+                        ErrorKind::ValueValidation,
+                        format!(
+                            "invalid input '{}': expected a compiled .masp package",
+                            path.display()
+                        ),
+                    ));
+                }
             }
             InputFile::Stdin(_) => (),
         }
 
         Ok(input_file)
+    }
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+    use clap::builder::TypedValueParser;
+
+    use super::*;
+
+    #[test]
+    fn parser_accepts_compiled_packages() {
+        let package = tempfile::Builder::new().suffix(".masp").tempfile().unwrap();
+        let input = InputFileParser
+            .parse_ref(&clap::Command::new("test"), None, package.path().as_os_str())
+            .unwrap();
+
+        assert!(matches!(input, InputFile::Real(path) if path == package.path()));
     }
 }

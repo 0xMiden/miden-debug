@@ -14,9 +14,9 @@ state, so you can step through the exact same execution as many times as you lik
 This is the simplest way to debug a real note-consumption transaction (e.g. a P2ID
 note) end to end.
 
-Both tools below are the locally built binaries: `miden-client` from the
+The examples below use a locally built `miden-client` from the
 [miden-client](https://github.com/0xMiden/miden-client) repo (built with the `dap`
-feature) and `miden-debug` from this repo.
+feature) and invoke the debugger through `midenup` as `miden debug`.
 
 ## Record a note-consumption transaction
 
@@ -65,7 +65,7 @@ HOME="$STORE" miden-client consume-notes -a "$WALLET" <NOTE_ID> \
 script → the wallet's `receive_asset`); press `c` to run to the end, `q` to quit:
 
 ```bash
-miden-debug --dap-connect 127.0.0.1:4711
+miden debug --dap-connect 127.0.0.1:4711
 ```
 
 When the session ends, Terminal 1 reports the snapshot:
@@ -79,7 +79,7 @@ Wrote replay snapshot to .../p2id.mdsnap; replay it with `miden-debug --replay .
 ## Replay offline
 
 ```bash
-miden-debug --replay "$STORE/p2id.mdsnap"
+miden debug --replay "$STORE/p2id.mdsnap"
 ```
 
 The recorded events are fed back through the debugger's event-replay host, so you step
@@ -90,7 +90,7 @@ To generate a cycle-weighted flamegraph from the same transaction without an int
 debugging session, enable the debugger's `flamegraph` feature and run:
 
 ```bash
-miden-debug flamegraph --replay "$STORE/p2id.mdsnap" -o p2id.svg
+miden debug flamegraph --replay "$STORE/p2id.mdsnap" -o p2id.svg
 ```
 
 ## Replaying a failed transaction

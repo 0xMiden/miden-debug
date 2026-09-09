@@ -28,7 +28,7 @@ enum InstallPackageError {
     },
 }
 
-/// The in-memory package registry used by the compiler
+/// The in-memory package registry used during debugger execution.
 ///
 /// This is initialized per-session, or on an as-needed basis.
 ///
@@ -49,7 +49,7 @@ impl HybridPackageRegistry {
         }
     }
 
-    /// Get a new instance of the registry, using the current compiler options
+    /// Get a new instance of the registry from compiled package inputs.
     pub fn new(
         sysroot: Option<&Path>,
         search_paths: &[PathBuf],
@@ -64,7 +64,7 @@ impl HybridPackageRegistry {
 
         // Load link libraries
         for lib in link_libraries {
-            let package = lib.load(search_paths, &mut registry)?;
+            let package = lib.load(search_paths)?;
             match registry.install_if_missing(package) {
                 Ok(_) => (),
                 // Ignore duplicates when initializing the registry

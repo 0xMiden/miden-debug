@@ -27,6 +27,9 @@ latest = true
 assets = ["miden-debug-*.tar.gz"]
 required-assets = ["miden-debug-*.tar.gz"]
 
+[units.private]
+kind = "private"
+
 # --- debugger unit ------------------------------------------------------------
 
 [[packages]]
@@ -40,3 +43,7 @@ unit = "debugger"
 [[packages]]
 name = "miden-debug-dap"
 unit = "debugger"
+
+[[packages]]
+name = "miden-debug-lit-support"
+unit = "private"

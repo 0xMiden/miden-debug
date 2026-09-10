@@ -29,7 +29,7 @@ pub use miden_debug_types as debug_types;
 pub use miden_processor as processor;
 
 #[cfg(feature = "std")]
-pub use self::linker::LinkLibrary;
+pub use self::linker::{LinkLibrary, Linkage};
 pub use self::{
     debug::*,
     exec::*,

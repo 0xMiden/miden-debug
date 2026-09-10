@@ -223,12 +223,12 @@ pub(crate) fn normalize_path(uri: &Uri) -> Cow<'_, str> {
         None => uri.as_str(),
     };
     let mut output = String::with_capacity(path.len());
-    for (i, c) in path.char_indices() {
+    for c in path.chars() {
         if matches!(c, '/') || !is_separator(c) {
             output.push(c);
             continue;
         }
-        path.push('/');
+        output.push('/');
     }
     Cow::Owned(output)
 }

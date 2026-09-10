@@ -52,7 +52,7 @@ the infrastructure crates that are never published.
 | --- | --- | --- | --- | --- |
 | `debugger` | crates | its own manifests | `v{version}` | `CHANGELOG.md` |
 
-Publication order is `main`. Any unit may be released alone, and any combination together. Only a stable `main` release claims the repository's "Latest release" slot.
+Publication order is `debugger`. Any unit may be released alone, and any combination together. Only a stable `debugger` release claims the repository's "Latest release" slot.
 
 ---
 
@@ -123,7 +123,7 @@ creates a tag, or publishes anything.
    compiler change that needs a template change.
 5. **Move the versions,** once per unit:
    ```bash
-   cargo make release set-version --unit main 1.0.1
+   cargo make release set-version --unit debugger 1.0.1
    ```
    Omit the version to bump to the next minor; `--dry-run` first to review.
    Expect edits to the crate manifests, every requirement naming them,
@@ -132,12 +132,12 @@ creates a tag, or publishes anything.
    ([R1](#r1-set-version-reports-disagreeing-versions))
 6. **Write the changelog** for each unit being released:
    ```bash
-   cargo make release changelog-prompt main --version 1.0.1
+   cargo make release changelog-prompt debugger --version 1.0.1
    ```
    This emits a *prompt*; it never writes entries. Review and edit what comes
    back. The range defaults to the unit's last release tag through `HEAD`,
    filtered to that unit's paths — but if there is no baseline, pass a range
-   explicitly for the unit (`cargo make release changelog-prompt main v1.0.0..HEAD --version 1.0.1`).
+   explicitly for the unit (`cargo make release changelog-prompt debugger v1.0.0..HEAD --version 1.0.1`).
 7. **Lint locally:** `cargo make release lint`. Expect
    `release lint: 42 packages classified, no findings`.
    ([R2](#r2-the-embedded-template-bundle-is-stale),

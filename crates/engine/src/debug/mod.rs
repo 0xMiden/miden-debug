@@ -5,6 +5,7 @@ mod native_ptr;
 mod stacktrace;
 mod variables;
 
+pub(crate) use self::breakpoint::{procedure_matches, procedure_pattern};
 #[cfg(feature = "std")]
 pub use self::stacktrace::{resolve_location_from_filesystem, resolve_source_path};
 pub use self::{

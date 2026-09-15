@@ -345,4 +345,69 @@ mod tests {
         debugger.delete_breakpoint(Some(bp.id)).unwrap();
         assert!(debugger.breakpoints().is_empty());
     }
+
+    #[test]
+    fn script_execution_context_and_clones_follow_the_same_session() {
+        let debugger = test_debugger();
+        let cloned = debugger.clone();
+        let initial = debugger.execution_context();
+        assert_eq!(initial.cycle, 0);
+        assert!(initial.stopped);
+        assert!(!initial.terminated);
+        assert!(initial.frame.variables.is_empty());
+        assert!(debugger.stack().is_empty());
+        assert!(debugger.source_path_prefixes().contains(
+            &miden_debug_engine::normalize_source_path(
+                std::env::current_dir().unwrap().to_str().unwrap()
+            )
+        ));
+        assert!(debugger.result().unwrap().is_none());
+        debugger.step(2).unwrap();
+        assert_eq!(cloned.cycle(), 2);
+        assert_eq!(debugger.frame(), cloned.frame());
+        assert!(debugger.frame_with_variables(true).variables.is_empty());
+        assert!(debugger.continue_().unwrap().contains("terminated successfully"));
+        assert!(cloned.terminated());
+        assert_eq!(debugger.stack()[0], 7);
+        assert!(debugger.execution_context().terminated);
+        assert!(debugger.frame().variables.is_empty());
+        assert!(debugger.handle_command("quit").unwrap_err().contains("quit requested"));
+        assert!(debugger.step(1).unwrap_err().contains("terminated"));
+        debugger.reload().unwrap();
+        assert_eq!(cloned.cycle(), 0);
+        assert!(!cloned.terminated());
+    }
+
+    #[test]
+    fn script_breakpoint_hits_and_deletion_preserve_internal_breakpoints() {
+        let debugger = test_debugger();
+        let breakpoint = debugger.set_breakpoint("at 3").unwrap();
+        assert_eq!(breakpoint.spec, "at cycle 3");
+        assert!(!breakpoint.internal);
+        assert!(breakpoint.one_shot);
+        debugger.continue_().unwrap();
+        assert_eq!(debugger.cycle(), 3);
+        assert_eq!(debugger.hit_breakpoints()[0].id, breakpoint.id);
+        debugger.clear_hit_breakpoints();
+        assert!(debugger.hit_breakpoints().is_empty());
+        assert!(debugger.delete_breakpoint(Some(99)).unwrap_err().contains("99"));
+        assert!(debugger.set_breakpoint("at invalid").is_err());
+        debugger.delete_breakpoint(None).unwrap();
+        assert!(debugger.breakpoints().is_empty());
+        debugger.engine.borrow_mut().state_mut().create_breakpoint(BreakpointType::Step);
+        debugger.delete_breakpoint(None).unwrap();
+        assert!(!debugger.engine.borrow().state().breakpoints.is_empty());
+        assert!(debugger.breakpoints().is_empty());
+        assert_eq!(debugger.read_memory("0 -t u32").unwrap(), "0");
+        assert!(debugger.read_memory("invalid").is_err());
+    }
+
+    #[test]
+    fn script_step_wrappers_advance_execution() {
+        for operation in [ScriptDebugger::next, ScriptDebugger::next_line, ScriptDebugger::finish] {
+            let debugger = test_debugger();
+            operation(&debugger).unwrap();
+            assert!(debugger.cycle() > 0);
+        }
+    }
 }

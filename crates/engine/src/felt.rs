@@ -923,7 +923,9 @@ mod tests {
 
     use miden_core::Word;
 
-    use super::{FromMidenRepr, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack};
+    use super::{
+        Felt, FromMidenRepr, RawFelt, ToMidenRepr, bytes_to_words, push_wasm_ty_to_operand_stack,
+    };
 
     #[test]
     fn bool_roundtrip() {
@@ -1128,5 +1130,68 @@ mod tests {
         assert_eq!(stack[0].as_canonical_u64(), ((i8::MIN as i32) as u32) as u64);
         assert_eq!(stack[1].as_canonical_u64(), ((i16::MIN as i32) as u32) as u64);
         assert_eq!(stack[2].as_canonical_u64(), u32::MAX as u64);
+    }
+
+    #[test]
+    fn signed_integer_roundtrips_cover_all_widths() {
+        macro_rules! assert_roundtrip {
+            ($ty:ty, $value:expr) => {{
+                let value: $ty = $value;
+                assert_eq!(<$ty as FromMidenRepr>::from_bytes(&value.to_bytes()), value);
+                assert_eq!(<$ty as FromMidenRepr>::from_felts(&value.to_felts()), value);
+                assert_eq!(<$ty as FromMidenRepr>::from_words(&value.to_words()), value);
+
+                let mut stack = value.to_felts().into_vec();
+                stack.reverse();
+                assert_eq!(<$ty as FromMidenRepr>::pop_from_stack(&mut stack), value);
+            }};
+        }
+
+        assert_roundtrip!(i8, -42);
+        assert_roundtrip!(i16, -4242);
+        assert_roundtrip!(i32, -424242);
+        assert_roundtrip!(i64, -4242424242);
+        assert_roundtrip!(i128, -424242424242424242);
+        assert_roundtrip!(i8, i8::MIN);
+        assert_roundtrip!(i8, i8::MAX);
+        assert_roundtrip!(i16, i16::MIN);
+        assert_roundtrip!(i16, i16::MAX);
+        assert_roundtrip!(i32, i32::MIN);
+        assert_roundtrip!(i32, i32::MAX);
+        assert_roundtrip!(i64, i64::MIN);
+        assert_roundtrip!(i64, i64::MAX);
+        assert_roundtrip!(i128, i128::MIN);
+        assert_roundtrip!(i128, i128::MAX);
+        assert_roundtrip!(i128, i128::from(i64::MAX) + 1);
+        assert_roundtrip!(i128, i128::from(i64::MIN) - 1);
+    }
+
+    #[test]
+    fn felt_and_word_representations_roundtrip() {
+        let felt = Felt::new(123);
+        assert_eq!(<Felt as FromMidenRepr>::from_felts(&felt.to_felts()), felt);
+        assert_eq!(<Felt as FromMidenRepr>::from_words(&felt.to_words()), felt);
+
+        let raw = RawFelt::from(456u32);
+        assert_eq!(<RawFelt as FromMidenRepr>::from_felts(&raw.to_felts()), raw);
+        assert_eq!(<RawFelt as FromMidenRepr>::from_words(&raw.to_words()), raw);
+
+        let raw_word = [
+            RawFelt::from(1u32),
+            RawFelt::from(2u32),
+            RawFelt::from(3u32),
+            RawFelt::from(4u32),
+        ];
+        let word = raw_word.map(Felt);
+        assert_eq!(<[Felt; 4] as FromMidenRepr>::from_felts(&raw_word), word);
+        assert_eq!(
+            <[Felt; 4] as FromMidenRepr>::from_words(&[Word::new([
+                raw_word[3],
+                raw_word[2],
+                raw_word[1],
+                raw_word[0],
+            ])]),
+            word
+        );
     }
 }

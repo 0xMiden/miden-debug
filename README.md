@@ -18,6 +18,19 @@ The engine is checked and tested separately with `--no-default-features`. Fully 
 still require upstream dependency fixes: VM 0.30 pulls in std-only dependencies such as `flume`
 through `miden-crypto` and `textwrap` through `miden-miette/fancy-no-syscall`.
 
+## Coverage
+
+Run the workspace tests with LLVM source coverage locally with:
+
+```bash
+cargo make coverage
+```
+
+This writes a Cobertura report to `rust-coverage.xml`. CI uploads the same report as the
+`rust-coverage` artifact and requires at least 80% line coverage for the debugger core. The
+terminal event loop, DAP transport glue, and test-only support binaries are excluded from this
+gate; TUI panes are covered separately with Ratatui's in-memory test backend.
+
 ## License
 
 MIT

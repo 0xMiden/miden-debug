@@ -1,5 +1,6 @@
 target/
 bin/
+rust-coverage.xml
 .crates.toml
 .crates2.json
 

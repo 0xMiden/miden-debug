@@ -20,6 +20,12 @@ Variable tests inspect values at a live breakpoint. After successful termination
 `vars all`, and `locals` report that there are no live variables, and Python variable queries
 return an empty dictionary. Completed program results remain available separately.
 
+The `call_frames*.test` cases compile plain MASM without compiler frame events and check
+backtraces and `finish` across merged `exec` bodies, tail wrappers, consecutive invocations
+of the same procedure, recursion, `call`, and `dyncall`. Exact frame counts and ordering are checked,
+along with the final operand-stack result. The DAP unit tests also deserialize these fixtures
+from package bytes before checking stack traces and step-out behavior.
+
 Python scripting tests run `miden-debug-python`, a second local copy built with
 the `python` feature, and pass `--no-user-python-init` so user configuration
 cannot affect their output.

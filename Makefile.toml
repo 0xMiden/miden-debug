@@ -301,6 +301,29 @@ args = [
     "${@}",
 ]
 
+[tasks.coverage]
+category = "Test"
+description = "Run workspace tests with LLVM source coverage"
+command = "cargo"
+args = [
+    "llvm-cov",
+    "--workspace",
+    "--all-targets",
+    "--cobertura",
+    "--output-path",
+    "rust-coverage.xml",
+    "--fail-under-lines",
+    "80",
+    "${@}",
+]
+dependencies = ["cargo-llvm-cov"]
+
+[tasks.cargo-llvm-cov]
+category = "Tools"
+description = "Install cargo-llvm-cov if it is unavailable"
+install_crate = { crate_name = "cargo-llvm-cov", binary = "cargo-llvm-cov", test_arg = "--version" }
+install_crate_args = ["--locked"]
+
 [tasks.test-lit]
 category = "Test"
 description = "Runs the lit/filecheck debugger test suite"

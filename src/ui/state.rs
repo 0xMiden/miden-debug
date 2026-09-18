@@ -1449,6 +1449,82 @@ fn create_local_state(
 mod tests {
     use super::*;
 
+    #[test]
+    fn memory_inspection_decodes_integer_widths_formats_and_reports_invalid_reads() {
+        let mut state = state_with_variables(
+            "begin push.4294967295 mem_store.0 push.1 mem_store.1 push.2 mem_store.2 push.3 \
+             mem_store.3 end",
+        );
+        state.run_until_stopped();
+        for (expression, expected) in [
+            ("0 -t i1", "true"),
+            ("0 -t i1 -f hex", "0x1"),
+            ("0 -t i1 -f binary", "0b1"),
+            ("0 -t i8", "-1"),
+            ("0 -t u8", "255"),
+            ("0 -t i16", "-1"),
+            ("0 -t u16", "65535"),
+            ("0 -t i32", "-1"),
+            ("0 -t u32", "4294967295"),
+            ("0 -t i64", "8589934591"),
+            ("0 -t u64", "8589934591"),
+            ("0 -t felt", "4294967295"),
+            ("0 -t word", "[4294967295, 1, 2, 3]"),
+            ("0 -t u8 -f hex", "0xff"),
+            ("0 -t u8 -f binary", "0b11111111"),
+            ("100 -t u32", "0"),
+        ] {
+            assert_eq!(
+                state.read_memory(&expression.parse().unwrap()).unwrap(),
+                expected,
+                "{expression}"
+            );
+        }
+        for (expression, expected) in [
+            ("0 -t u32 -c 2", "-count"),
+            ("1 -t felt -m byte", "element boundary"),
+            ("1 -t word", "word boundary"),
+            ("1 -t u16 -m byte", "unaligned reads"),
+            ("0 -t i128", "not implemented"),
+            ("4294967295 -t u64", "beyond end"),
+        ] {
+            assert!(
+                state.read_memory(&expression.parse().unwrap()).unwrap_err().contains(expected),
+                "{expression}"
+            );
+        }
+        assert_eq!(state.selected_stack_frame(), 0);
+        state.select_older_stack_frame();
+        state.select_newer_stack_frame();
+        assert_eq!(state.selected_stack_frame(), 0);
+        assert!(state.execution_failed().is_none());
+    }
+
+    #[test]
+    fn source_candidates_keep_absolute_paths_and_apply_only_declared_prefixes() {
+        assert_eq!(
+            source_path_candidates("src/lib.rs", &["/workspace".into()]),
+            vec![PathBuf::from("/workspace/src/lib.rs")]
+        );
+        assert!(source_path_candidates("/workspace/src/lib.rs", &["/workspace".into()]).is_empty());
+        assert!(source_paths_match(
+            "file:///workspace/src/lib.rs",
+            "src/lib.rs",
+            &["/workspace".into()]
+        ));
+        assert!(!source_paths_match(
+            "/workspace2/src/lib.rs",
+            "src/lib.rs",
+            &["/workspace".into()]
+        ));
+        assert_eq!(
+            strip_source_prefix("/workspace/src/lib.rs", "/workspace/"),
+            Some("src/lib.rs".into())
+        );
+        assert!(is_compiler_generated_name("local12"));
+        assert!(!is_compiler_generated_name("local_count"));
+    }
+
     fn state_with_entry_variables(source: &str) -> State {
         use miden_assembly_syntax::{
             Parse,

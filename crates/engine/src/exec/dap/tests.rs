@@ -340,6 +340,55 @@ fn dap_retains_unresolved_inline_call_sites_without_shifting_frames() {
 }
 
 #[test]
+fn dap_step_out_uses_event_free_frame_boundaries() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program(
+            "program",
+            "proc inner push.3 mul end proc outer push.2 add exec.inner push.4 add end begin \
+             exec.outer push.1 add end",
+        )
+        .unwrap();
+    let mut host = DebuggerHost::new(source_manager);
+    let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+    let mut processor = FastProcessor::new(StackInputs::new(&[Felt::from(5u32)]).unwrap());
+    let mut resume_ctx =
+        Some(processor.get_initial_resume_context_for_package(Arc::from(package)).unwrap());
+    let mut cycle = 0;
+    let mut current_asmop = None;
+    let mut debug_state = DapDebugVarState::new();
+    loop {
+        let ctx = resume_ctx.take().expect("must stop inside inner");
+        resume_ctx = advance_one(
+            &mut processor,
+            &mut wrapper,
+            ctx,
+            &mut cycle,
+            &mut current_asmop,
+            &mut debug_state,
+        )
+        .unwrap();
+        if wrapper.frames.len() == 3 {
+            break;
+        }
+    }
+    assert!(wrapper.frames[2].name.ends_with("::inner"));
+    for (depth, name) in [(2, "::outer"), (1, "::$main")] {
+        let result = step_out(
+            &mut processor,
+            &mut wrapper,
+            &mut resume_ctx,
+            &mut cycle,
+            &mut current_asmop,
+            &mut debug_state,
+        );
+        assert!(matches!(result, StepResult::Stepped));
+        assert_eq!(wrapper.frames.len(), depth);
+        assert!(wrapper.frames.last().unwrap().name.ends_with(name));
+    }
+}
+
+#[test]
 fn dap_propagates_asmop_columns_through_frame_presentation() {
     let path = PathBuf::from("target")
         .join("dap-source-tests")

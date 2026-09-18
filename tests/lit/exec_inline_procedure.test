@@ -10,7 +10,9 @@ continue
 backtrace
 frame 1
 
-# CHECK: Backtrace (2 frames):
+# CHECK: Backtrace (4 frames):
 # CHECK-NEXT: * #0 [inlined] fixture::inner at {{.*}}op_histogram_proc.masm:4:5
 # CHECK-NEXT:   #1 $exec::double at {{.*}}op_histogram_proc.masm:4:1
+# CHECK-NEXT:   #2 [inlined] fixture::inner at {{.*}}op_histogram_proc.masm:14:5
+# CHECK-NEXT:   #3 $exec::$main
 # CHECK: at {{.*}}op_histogram_proc.masm:4:1 in $exec::double

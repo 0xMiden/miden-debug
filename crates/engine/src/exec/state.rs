@@ -309,6 +309,7 @@ impl DebugExecutor {
                 source_node.debug_infos_for_operation(op_idx as u32, di).collect()
             })
             .unwrap_or_default();
+        let physical_frames = resume_ctx.debug_call_frames();
         let pre_step_stack = self.processor.state().get_stack_state();
 
         // Execute one step
@@ -362,6 +363,7 @@ impl DebugExecutor {
                     asmop: self.current_asmop.as_ref(),
                     clk: RowIndex::from(self.cycle as u32),
                     ctx: self.current_context,
+                    call_frames: debug_info.as_ref().map(|_| physical_frames.as_slice()),
                     inline_frames: &inline_frames,
                 };
                 let exited = self.callstack.next(&step_info);

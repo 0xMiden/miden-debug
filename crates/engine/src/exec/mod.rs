@@ -1,4 +1,5 @@
 mod advice;
+mod collect_trace;
 mod config;
 #[cfg(feature = "dap")]
 mod dap;
@@ -11,6 +12,7 @@ pub mod event;
 mod executor;
 mod host;
 mod query;
+mod recording_host;
 mod snapshot;
 mod state;
 mod trace;
@@ -22,12 +24,14 @@ pub use self::{
         EventMutationRecorder, clone_advice_mutation, clone_advice_mutations, read_advice_mutation,
         read_event_log, write_advice_mutation, write_event_log,
     },
+    collect_trace::{CallTraceReplay, replay_call_trace},
     config::ExecutionConfig,
     diagnostic::DiagnosticExecutor,
     event::Event,
     executor::Executor,
     host::DebuggerHost,
     query::DebugQuery,
+    recording_host::RecordingHost,
     snapshot::{
         MastForestRecorder, ReplaySnapshot, ReplaySnapshotRecorder, ReplaySnapshotWrite,
         ReplaySnapshotWriteError,

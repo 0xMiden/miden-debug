@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Switch to the Miden VM v0.33;
 
+### Added
+
+- `replay_call_trace` builds the call tree of a recorded `ReplaySnapshot` by replaying it and tracking frame-start/frame-end events, exposing each call's arguments and result via `CallTrace` ([#125](https://github.com/0xMiden/miden-debug/issues/125)).
+- `RecordingHost`, extracted from `DapHostWrapper`, wraps a live host to record the advice mutations and MAST forests required for replay.
+
 ### Fixed
 
 - Unqualified function breakpoints now consistently match fully-qualified procedure-name suffixes in local and DAP sessions ([#88](https://github.com/0xMiden/miden-debug/issues/88)).

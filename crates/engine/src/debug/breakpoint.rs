@@ -101,9 +101,8 @@ impl BreakpointType {
 
     /// Return true if this breakpoint indicates we should break on entry to `procedure`
     pub fn should_break_in(&self, procedure: &str) -> bool {
-        let procedure = miden_debug_types::Uri::from(format!("file://{procedure}"));
         match self {
-            Self::Called(pattern) => pattern.is_match(&procedure),
+            Self::Called(pattern) => procedure_matches(pattern, procedure),
             _ => false,
         }
     }
@@ -201,7 +200,7 @@ impl FromStr for BreakpointType {
 /// `*::` so they match by trailing path components: `entrypoint` and
 /// `fibonacci::entrypoint` both match the example above, while a partial
 /// component like `point` does not.
-fn procedure_pattern(spec: &str) -> Result<GlobMatcher, String> {
+pub(crate) fn procedure_pattern(spec: &str) -> Result<GlobMatcher, String> {
     let spec = spec.trim();
     let anchored;
     let spec = if spec.starts_with("::") || spec.starts_with('*') {
@@ -214,6 +213,12 @@ fn procedure_pattern(spec: &str) -> Result<GlobMatcher, String> {
         .build()
         .map(|glob| glob.compile_matcher())
         .map_err(|err| format!("invalid breakpoint pattern: {err}"))
+}
+
+/// Match a procedure pattern against a fully-qualified procedure name.
+pub(crate) fn procedure_matches(pattern: &GlobMatcher, procedure: &str) -> bool {
+    let procedure = miden_debug_types::Uri::from(format!("file://{procedure}"));
+    pattern.is_match(&procedure)
 }
 
 /// Compile a user-provided file spec into a glob pattern.
@@ -405,7 +410,25 @@ impl FromStr for OperationMatcher {
 mod tests {
     use alloc::string::ToString;
 
-    use super::OperationMatcher;
+    use super::{BreakpointType, OperationMatcher};
+
+    #[test]
+    fn unqualified_function_breakpoints_match_path_suffixes() {
+        let breakpoint = "in entrypoint".parse::<BreakpointType>().unwrap();
+
+        assert!(breakpoint.should_break_in("::\"root_ns:root@1.0.0\"::fibonacci::entrypoint"));
+        assert!(breakpoint.should_break_in("$exec::entrypoint"));
+        assert!(!breakpoint.should_break_in("$exec::other_entrypoint"));
+        assert!(!breakpoint.should_break_in("$exec::entrypoint_helper"));
+    }
+
+    #[test]
+    fn qualified_function_breakpoints_match_exact_suffixes() {
+        let breakpoint = "in fibonacci::entrypoint".parse::<BreakpointType>().unwrap();
+
+        assert!(breakpoint.should_break_in("::\"root_ns:root@1.0.0\"::fibonacci::entrypoint"));
+        assert!(!breakpoint.should_break_in("::\"root_ns:root@1.0.0\"::wallet::entrypoint"));
+    }
 
     #[test]
     fn log_deferred_breakpoint_accepts_legacy_name_and_displays_canonically() {

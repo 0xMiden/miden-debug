@@ -41,7 +41,8 @@ use super::{
 use crate::{
     debug::{
         DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, format_value,
-        inline_frames_for_operation, resolve_typed_variable_values, resolve_variable_values,
+        inline_frames_for_operation, procedure_matches, procedure_pattern,
+        resolve_typed_variable_values, resolve_variable_values,
     },
     exec::state::CurrentCycleInfo,
     normalize_source_path,
@@ -593,16 +594,14 @@ struct StoredBreakpoint {
 
 /// A function/pattern breakpoint stored from a SetFunctionBreakpoints request.
 ///
-/// Matching is done in two ways:
-/// 1. Glob pattern match against the full context name and source path
-/// 2. Suffix match — the raw name is checked as a suffix of the context name
-///    (e.g. `prologue::foo` matches `::$kernel::prologue::foo`)
+/// Procedure names use the same component-aware suffix rules as local breakpoints. The original
+/// pattern is retained for clients that use a source path as a function breakpoint.
 #[derive(Debug, Clone)]
 struct StoredFunctionBreakpoint {
-    /// The raw name string for suffix matching.
-    name: String,
-    /// Compiled glob pattern for matching.
-    pattern: crate::glob::GlobMatcher,
+    /// Compiled procedure pattern using the same matching rules as local breakpoints.
+    procedure_pattern: crate::glob::GlobMatcher,
+    /// Original pattern for matching source paths.
+    source_pattern: crate::glob::GlobMatcher,
 }
 
 struct ContinueBreakpoints<'a> {
@@ -1940,15 +1939,17 @@ impl DapExecutor {
                         function_breakpoints.clear();
                         let mut confirmed = Vec::new();
                         for fbp in &args.breakpoints {
-                            let verified = match crate::glob::GlobBuilder::new(&fbp.name).build() {
-                                Ok(glob) => {
+                            let procedure_pattern = procedure_pattern(&fbp.name);
+                            let source_pattern = crate::glob::GlobBuilder::new(&fbp.name).build();
+                            let verified = match (procedure_pattern, source_pattern) {
+                                (Ok(procedure_pattern), Ok(source_pattern)) => {
                                     function_breakpoints.push(StoredFunctionBreakpoint {
-                                        name: fbp.name.clone(),
-                                        pattern: glob.compile_matcher(),
+                                        procedure_pattern,
+                                        source_pattern: source_pattern.compile_matcher(),
                                     });
                                     true
                                 }
-                                Err(_) => false,
+                                _ => false,
                             };
                             confirmed.push(types::Breakpoint {
                                 verified,
@@ -2103,7 +2104,7 @@ impl DapExecutor {
                     stack: StackOutputs::new(&[]).expect("empty stack outputs"),
                     advice: Default::default(),
                     memory: Default::default(),
-                    deferred_state: Default::default(),
+                    precompile_witness: None,
                 });
             }
 
@@ -2177,13 +2178,18 @@ impl DapExecutor {
             let stack = StackOutputs::new(&stack_top)
                 .unwrap_or_else(|_| StackOutputs::new(&[]).expect("empty stack outputs"));
 
-            let deferred_state = processor.deferred_state().clone();
+            // The deferred state is only borrowable here, so clone it before consuming the
+            // processor; export mirrors `FastProcessor::into_execution_output`.
+            let precompile_witness =
+                processor.deferred_state().clone().into_witness().map_err(|_| {
+                    ExecutionError::Internal("failed to export deferred execution witness")
+                })?;
             let (advice, memory) = processor.into_parts();
             return Ok(ExecutionOutput {
                 stack,
                 advice,
                 memory,
-                deferred_state,
+                precompile_witness,
             });
         } // end outer restart loop
     }
@@ -2553,34 +2559,21 @@ fn step_until_breakpoint<H: Host>(
                         }
                     }
 
-                    // Check function/pattern breakpoints — match against context name and
-                    // source file path. Context names may have a leading `::` (absolute
-                    // paths like `::prologue::foo`), so we also try matching without it.
+                    // Check function breakpoints against procedure names and source paths.
                     if !breakpoints.function.is_empty() {
-                        let raw_context_name = asmop.context_name();
-                        let context_name = Uri::from(Arc::clone(raw_context_name));
-                        let stripped_name = Uri::from(
-                            raw_context_name.strip_prefix("::").unwrap_or(raw_context_name),
-                        );
+                        let context_name = asmop.context_name();
                         for fbp in breakpoints.function {
-                            // Match via glob pattern or suffix (e.g. "prologue::foo"
-                            // matches "::$kernel::prologue::foo").
-                            if fbp.pattern.is_match(&context_name)
-                                || fbp.pattern.is_match(&stripped_name)
-                                || context_name.as_str().ends_with(&fbp.name)
-                                || stripped_name.as_str().ends_with(&fbp.name)
-                            {
-                                if should_defer_function_breakpoint(
-                                    resolved.as_ref(),
-                                    context_name.as_str(),
-                                ) || resume_ctx.as_ref().is_some_and(|resume_ctx| {
-                                    should_wait_for_entry_variables(
-                                        resume_ctx,
-                                        context_name.as_str(),
-                                        &debug_state.debug_vars,
-                                        *cycle,
-                                    )
-                                }) {
+                            if procedure_matches(&fbp.procedure_pattern, context_name) {
+                                if should_defer_function_breakpoint(resolved.as_ref(), context_name)
+                                    || resume_ctx.as_ref().is_some_and(|resume_ctx| {
+                                        should_wait_for_entry_variables(
+                                            resume_ctx,
+                                            context_name,
+                                            &debug_state.debug_vars,
+                                            *cycle,
+                                        )
+                                    })
+                                {
                                     continue;
                                 }
                                 update_top_frame(host, current_asmop.as_ref());
@@ -2588,7 +2581,7 @@ fn step_until_breakpoint<H: Host>(
                                 return StepResult::Breakpoint(line);
                             }
                             if let Some((ref path, line)) = resolved
-                                && fbp.pattern.is_match(&Uri::new(path))
+                                && fbp.source_pattern.is_match(&Uri::new(path))
                             {
                                 update_top_frame(host, current_asmop.as_ref());
                                 return StepResult::Breakpoint(line);
@@ -2704,10 +2697,7 @@ mod tests {
     use miden_processor::event::EventHandler;
 
     use super::*;
-    use crate::{
-        exec::{DebuggerHost, EventMutationRecorder},
-        glob::GlobBuilder,
-    };
+    use crate::exec::{DebuggerHost, EventMutationRecorder};
 
     struct PushSeven;
 
@@ -2756,8 +2746,8 @@ mod tests {
         let mut current_asmop = None;
         let mut debug_state = DapDebugVarState::new();
         let function = [StoredFunctionBreakpoint {
-            name: "entrypoint".into(),
-            pattern: GlobBuilder::new("*entrypoint").build().unwrap().compile_matcher(),
+            procedure_pattern: procedure_pattern("entrypoint").unwrap(),
+            source_pattern: crate::glob::Glob::new("entrypoint").unwrap().compile_matcher(),
         }];
         let result = step_until_breakpoint(
             &mut processor,

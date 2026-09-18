@@ -24,10 +24,9 @@ use miden_processor::{
     event::{EventError, EventHandler, EventName},
     trace::RowIndex,
 };
-use miden_utils_sync::RwLock;
 
 use super::{
-    DebugExecutor, DebuggerHost, Event, ExecutionConfig, ExecutionTrace,
+    DebugExecutor, DebuggerHost, ExecutionConfig, ExecutionTrace,
     event::{FRAME_END_EVENT, FRAME_START_EVENT, PRINTLN_EVENT},
     query::read_memory_bytes,
 };
@@ -166,8 +165,7 @@ impl Executor {
             host = host.with_event_advice_mutations_recording();
         }
 
-        let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
-        register_builtin_event_handlers(&mut host, Arc::clone(&events));
+        register_builtin_event_handlers(&mut host);
 
         // Set up debug variable tracking
         let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
@@ -181,7 +179,7 @@ impl Executor {
             .get_initial_resume_context_for_package(package)
             .expect("failed to get initial resume context");
 
-        let callstack = CallStack::new(events);
+        let callstack = CallStack::new();
         let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
             processor,
@@ -236,8 +234,7 @@ impl Executor {
         let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
             Rc::new(Default::default());
 
-        let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
-        register_builtin_event_handlers(&mut host, Arc::clone(&events));
+        register_builtin_event_handlers(&mut host);
 
         let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
             .expect("advice inputs should fit advice map limits");
@@ -247,7 +244,7 @@ impl Executor {
             .get_initial_resume_context_for_package(package)
             .expect("failed to get initial resume context");
 
-        let callstack = CallStack::new(events);
+        let callstack = CallStack::new();
         let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
             processor,
@@ -384,10 +381,7 @@ enum PrintLnError {
     InvalidUtf8,
 }
 
-fn register_builtin_event_handlers(
-    host: &mut DebuggerHost<dyn SourceManager>,
-    events: Arc<RwLock<BTreeMap<RowIndex, Event>>>,
-) {
+fn register_builtin_event_handlers(host: &mut DebuggerHost<dyn SourceManager>) {
     let println_handler = |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
         match decode_println(process) {
             Ok(content) => {
@@ -410,30 +404,11 @@ fn register_builtin_event_handlers(
     host.register_event_handler(PRINTLN_EVENT, Arc::new(println_handler))
         .expect("failed to register println event handler");
 
-    let frame_start_events = Arc::clone(&events);
-    let frame_start_handler =
-        move |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
-            frame_start_events.write().insert(process.clock(), Event::FrameStart);
-            Ok(vec![])
-        };
-    host.register_event_handler(FRAME_START_EVENT, Arc::new(frame_start_handler))
+    let handler = |_: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> { Ok(vec![]) };
+    host.register_event_handler(FRAME_START_EVENT, Arc::new(handler))
         .expect("failed to register frame start event handler");
-
-    let frame_end_events = Arc::clone(&events);
-    let frame_end_handler =
-        move |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
-            frame_end_events.write().insert(process.clock(), Event::FrameEnd);
-            Ok(vec![])
-        };
-    host.register_event_handler(FRAME_END_EVENT, Arc::from(frame_end_handler))
+    host.register_event_handler(FRAME_END_EVENT, Arc::new(handler))
         .expect("failed to register frame end event handler");
-
-    /*
-    let assertion_events = Rc::clone(&events);
-    host.register_assert_failed_tracer(move |process, event| {
-        assertion_events.borrow_mut().insert(process.clock(), event);
-    });
-     */
 }
 
 /// Decode a [`Event::PrintLn`] event into a UTF-8 string.
@@ -707,9 +682,9 @@ mod tests {
         assert_eq!(replayed_result, recorded_result);
     }
 
-    /// Replayed builtin events still reach their handlers so debugger state remains available.
+    /// Legacy frame events are consumed during replay but do not drive debugger frame state.
     #[test]
-    fn replay_invokes_builtin_event_handlers() {
+    fn replay_ignores_legacy_frame_events_for_callstack_tracking() {
         use miden_assembly::DefaultSourceManager;
 
         let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
@@ -740,8 +715,8 @@ end
         }
 
         assert!(
-            debug_executor.callstack.frames().len() >= 2,
-            "expected replayed frame-start events to update the debugger call stack"
+            debug_executor.callstack.frames().len() <= 1,
+            "legacy frame events must not create debugger call frames"
         );
     }
 

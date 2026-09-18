@@ -2512,6 +2512,7 @@ fn step_out<H: Host>(
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let target_depth = host.frames.len().saturating_sub(1);
+    let target_frame = host.frames.last().and_then(|frame| frame.debug_frame.clone());
 
     loop {
         let ctx = match resume_ctx.take() {
@@ -2523,7 +2524,15 @@ fn step_out<H: Host>(
             Ok(Some(new_ctx)) => {
                 *resume_ctx = Some(new_ctx);
 
-                if host.frames.len() <= target_depth {
+                let frame_exited = if let Some(expected) = target_frame.as_ref() {
+                    host.frames
+                        .get(target_depth)
+                        .and_then(|frame| frame.debug_frame.as_ref())
+                        .is_none_or(|frame| !frame.is_same_frame(expected))
+                } else {
+                    host.frames.len() <= target_depth
+                };
+                if frame_exited {
                     update_top_frame(host, current_asmop.as_ref());
                     return StepResult::Stepped;
                 }
@@ -2714,6 +2723,141 @@ mod tests {
     use crate::exec::{DebuggerHost, EventMutationRecorder};
 
     struct PushSeven;
+
+    fn assert_serialized_dap_stacktraces(
+        source: &str,
+        expected_traces: &[&[&str]],
+        expected_output: u32,
+    ) {
+        use miden_core::serde::{Deserializable, Serializable};
+
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let package = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program("program", source)
+            .unwrap();
+        let package = Package::read_from_bytes(&package.to_bytes()).unwrap();
+        assert_eq!(
+            package.debug_info().unwrap().unwrap().version(),
+            miden_mast_package::debug_info::DEBUG_INFO_VERSION,
+        );
+        let mut host = DebuggerHost::new(source_manager);
+        let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+        let mut processor = FastProcessor::new(StackInputs::new(&[Felt::from(5u32)]).unwrap());
+        let mut resume_ctx =
+            Some(processor.get_initial_resume_context_for_package(Arc::from(package)).unwrap());
+        let mut cycle = 0;
+        let mut current_asmop = None;
+        let mut debug_state = DapDebugVarState::new();
+
+        for _ in 0..512 {
+            let ctx = resume_ctx.take().expect("must reach the callee");
+            resume_ctx = advance_one(
+                &mut processor,
+                &mut wrapper,
+                ctx,
+                &mut cycle,
+                &mut current_asmop,
+                &mut debug_state,
+            )
+            .unwrap();
+            if current_asmop.as_ref().is_some_and(|op| op.op().as_ref() == "mul") {
+                break;
+            }
+        }
+        assert!(current_asmop.as_ref().is_some_and(|op| op.op().as_ref() == "mul"));
+
+        for (index, expected) in expected_traces.iter().enumerate() {
+            if index > 0 {
+                let previous = wrapper.frames.last().unwrap().debug_frame.clone().unwrap();
+                let result = step_out(
+                    &mut processor,
+                    &mut wrapper,
+                    &mut resume_ctx,
+                    &mut cycle,
+                    &mut current_asmop,
+                    &mut debug_state,
+                );
+                assert!(matches!(result, StepResult::Stepped));
+                assert!(
+                    wrapper.frames.iter().all(|frame| !frame
+                        .debug_frame
+                        .as_ref()
+                        .unwrap()
+                        .is_same_frame(&previous))
+                );
+            }
+            assert!(wrapper.frames.iter().all(|frame| frame.debug_frame.is_some()));
+            let frames = presented_frames(&wrapper, current_asmop.as_ref(), cycle);
+            let names = frames.iter().map(|frame| frame.name.as_ref()).collect::<Vec<_>>();
+            assert_eq!(names, *expected, "unexpected stack after {index} step-outs");
+            assert!(frames.iter().all(|frame| !frame.inline));
+            if index == 0 {
+                assert_eq!(frames[0].line, 2);
+                assert!(frames[0].source_path.is_some());
+            }
+        }
+
+        for _ in 0..512 {
+            let Some(ctx) = resume_ctx.take() else {
+                break;
+            };
+            resume_ctx = advance_one(
+                &mut processor,
+                &mut wrapper,
+                ctx,
+                &mut cycle,
+                &mut current_asmop,
+                &mut debug_state,
+            )
+            .unwrap();
+        }
+        assert!(resume_ctx.is_none(), "fixture must terminate");
+        assert_eq!(processor.state().get_stack_state()[0], Felt::from(expected_output));
+    }
+
+    #[test]
+    fn dap_stacktrace_retains_tail_wrappers_from_package_metadata() {
+        assert_serialized_dap_stacktraces(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/lit/call_frames_tail.masm"
+            )),
+            &[&["::$exec::inner", "::$exec::outer", "::$exec::$main"], &["::$exec::$main"]],
+            16,
+        );
+    }
+
+    #[test]
+    fn dap_stacktrace_distinguishes_adjacent_invocations_from_package_metadata() {
+        assert_serialized_dap_stacktraces(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/lit/call_frames_siblings.masm"
+            )),
+            &[
+                &["::$exec::leaf", "::$exec::$main"],
+                &["::$exec::leaf", "::$exec::$main"],
+                &["::$exec::$main"],
+            ],
+            46,
+        );
+    }
+
+    #[test]
+    fn dap_stacktrace_tracks_dynamic_calls_from_package_metadata() {
+        assert_serialized_dap_stacktraces(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/lit/call_frames_dyncall.masm"
+            )),
+            &[
+                &["::$exec::inner", "::$exec::outer", "::$exec::$main"],
+                &["::$exec::outer", "::$exec::$main"],
+                &["::$exec::$main"],
+            ],
+            26,
+        );
+    }
 
     #[test]
     fn dap_step_out_uses_event_free_frame_boundaries() {

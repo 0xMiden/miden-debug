@@ -1,7 +1,7 @@
 use alloc::{
     borrow::Cow,
     boxed::Box,
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeSet, VecDeque},
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
@@ -13,10 +13,9 @@ use std::path::{Path, PathBuf};
 use miden_core::operations::AssemblyOp;
 use miden_debug_types::{Location, SourceFile, SourceManager, SourceSpan, Uri};
 use miden_mast_package::debug_info::{DebugSourceInlineCall, DebugSourceNodeId, PackageDebugInfo};
-use miden_processor::{ContextId, SourceInlineCallContext, operation::Operation, trace::RowIndex};
-use miden_utils_sync::RwLock;
-
-use crate::Event;
+use miden_processor::{
+    ContextId, DebugCallFrame, SourceInlineCallContext, operation::Operation, trace::RowIndex,
+};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ControlFlowOp {
@@ -33,6 +32,7 @@ pub struct StepInfo<'a> {
     pub asmop: Option<&'a AssemblyOp>,
     pub clk: RowIndex,
     pub ctx: ContextId,
+    pub call_frames: Option<&'a [DebugCallFrame]>,
     pub inline_frames: &'a [InlineCallFrame],
 }
 
@@ -156,15 +156,18 @@ struct SpanContext {
 }
 
 pub struct CallStack {
-    events: Arc<RwLock<BTreeMap<RowIndex, Event>>>,
     contexts: BTreeSet<Arc<str>>,
     frames: Vec<CallFrame>,
     block_stack: Vec<Option<SpanContext>>,
 }
+impl Default for CallStack {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 impl CallStack {
-    pub fn new(events: Arc<RwLock<BTreeMap<RowIndex, Event>>>) -> Self {
+    pub fn new() -> Self {
         Self {
-            events,
             contexts: BTreeSet::default(),
             frames: vec![],
             block_stack: vec![],
@@ -175,7 +178,6 @@ impl CallStack {
     #[cfg(feature = "dap")]
     pub fn from_remote_frames(frames: Vec<CallFrame>) -> Self {
         Self {
-            events: Arc::new(Default::default()),
             contexts: BTreeSet::default(),
             frames,
             block_stack: vec![],
@@ -242,19 +244,12 @@ impl CallStack {
     ///
     /// Returns the call frame exited this cycle, if any
     pub fn next(&mut self, info: &StepInfo<'_>) -> Option<CallFrame> {
-        let procedure = info.asmop.map(|op| self.cache_procedure_name(op.context_name()));
-
-        let event = {
-            let mut events = self.events.write();
-            match events.first_key_value() {
-                Some((clk, _)) if *clk <= info.clk => events.pop_first().map(|(_, event)| event),
-                _ => None,
-            }
+        let popped_frame = info.call_frames.and_then(|frames| self.sync_debug_frames(frames));
+        let procedure = if info.call_frames.is_some() {
+            self.frames.last().and_then(|frame| frame.procedure.clone())
+        } else {
+            info.asmop.map(|op| self.cache_procedure_name(op.context_name()))
         };
-        log::trace!("handling {:?}/{:?} at cycle {}: {:?}", info.control, info.op, info.clk, event);
-        let is_frame_start = event.as_ref().is_some_and(|event| event.is_frame_start());
-        let is_frame_end = event.as_ref().is_some_and(|event| event.is_frame_end());
-        let popped_frame = self.handle_event(event, procedure.clone(), info.op, info.asmop);
 
         match info.control {
             Some(ControlFlowOp::Span) => {
@@ -277,16 +272,25 @@ impl CallStack {
             Some(ControlFlowOp::Respan) | None => {}
         }
 
-        if !is_frame_end {
-            if self.frames.is_empty() {
-                self.frames.push(CallFrame::new(procedure.clone()));
-            }
-            self.frames.last_mut().unwrap().inline_frames = info.inline_frames.to_vec();
-            self.update_current_procedure(procedure.clone());
+        if self.frames.is_empty() {
+            self.frames.push(CallFrame::new(procedure.clone()));
         }
-
-        if is_frame_start || is_frame_end {
-            return popped_frame;
+        let mut consumed = 0;
+        for (index, frame) in self.frames.iter_mut().rev().enumerate() {
+            let inherited =
+                frame.debug_frame.as_ref().map_or(0, DebugCallFrame::inherited_inline_calls);
+            let end = info.inline_frames.len().saturating_sub(inherited);
+            if index == 0 || end > consumed {
+                frame.inline_frames =
+                    info.inline_frames.get(consumed..end).unwrap_or_default().to_vec();
+            }
+            consumed = end;
+            if inherited == 0 {
+                break;
+            }
+        }
+        if info.call_frames.is_none() {
+            self.update_current_procedure(procedure.clone());
         }
 
         let Some(op) = info.op else {
@@ -321,9 +325,9 @@ impl CallStack {
         // available
         let procedure = procedure.or_else(|| self.frames.last().and_then(|f| f.procedure.clone()));
 
-        // `exec` changes procedure context without creating a physical frame. Keep the physical
-        // frame synchronized with the best context available for the current operation.
-        self.update_current_procedure(procedure);
+        if info.call_frames.is_none() {
+            self.update_current_procedure(procedure);
+        }
         let current_frame = self.frames.last_mut().unwrap();
 
         // Push op into call frame if this is any op other than `nop` or frame setup
@@ -363,38 +367,46 @@ impl CallStack {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: Option<Event>,
-        procedure: Option<Arc<str>>,
-        op: Option<Operation>,
-        asmop: Option<&AssemblyOp>,
-    ) -> Option<CallFrame> {
-        // Do we need to handle any frame events?
-        match event? {
-            Event::FrameStart => {
-                // Record the fact that we exec'd a new procedure in the op context
-                if let Some(current_frame) = self.frames.last_mut() {
-                    current_frame.push_exec(procedure.clone());
-                }
-                // The event is emitted at the start of the callee.
-                let mut frame = CallFrame::new(procedure);
-                if let Some(op) = op {
-                    frame.push(op, 0, asmop);
-                }
-                self.frames.push(frame);
+    fn sync_debug_frames(&mut self, call_frames: &[DebugCallFrame]) -> Option<CallFrame> {
+        let common_prefix = self
+            .frames
+            .iter()
+            .zip(call_frames)
+            .take_while(|(current, expected)| {
+                current
+                    .debug_frame
+                    .as_ref()
+                    .is_some_and(|current| current.is_same_frame(expected))
+            })
+            .count();
+
+        let mut exited = None;
+        while self.frames.len() > common_prefix {
+            let popped = self.frames.pop().unwrap();
+            if exited.is_none() {
+                exited = Some(popped);
             }
-            Event::Unknown(code) => log::debug!("unknown trace event: {code}"),
-            Event::FrameEnd => {
-                return self.frames.pop();
-            }
-            _ => (),
         }
-        None
+
+        for debug_frame in &call_frames[common_prefix..] {
+            let function = debug_frame.function();
+            let name = debug_frame
+                .debug_info()
+                .get_string(function.name_idx)
+                .unwrap_or_else(|| Arc::from("<unknown>"));
+            let procedure = Some(self.cache_procedure_name(&name));
+            if let Some(caller) = self.frames.last_mut() {
+                caller.push_exec(procedure.clone());
+            }
+            self.frames.push(CallFrame::from_debug(debug_frame.clone(), procedure));
+        }
+
+        exited
     }
 }
 
 pub struct CallFrame {
+    debug_frame: Option<DebugCallFrame>,
     procedure: Option<Arc<str>>,
     context: VecDeque<OpDetail>,
     display_name: OnceCell<Arc<str>>,
@@ -404,6 +416,18 @@ pub struct CallFrame {
 impl CallFrame {
     pub fn new(procedure: Option<Arc<str>>) -> Self {
         Self {
+            debug_frame: None,
+            procedure,
+            context: Default::default(),
+            display_name: Default::default(),
+            finishing: false,
+            inline_frames: Vec::new(),
+        }
+    }
+
+    fn from_debug(debug_frame: DebugCallFrame, procedure: Option<Arc<str>>) -> Self {
+        Self {
+            debug_frame: Some(debug_frame),
             procedure,
             context: Default::default(),
             display_name: Default::default(),
@@ -430,6 +454,7 @@ impl CallFrame {
             });
         }
         Self {
+            debug_frame: None,
             procedure,
             context,
             display_name: Default::default(),
@@ -928,7 +953,7 @@ mod tests {
         );
         frame.push(Operation::Add, 1, Some(&asmop));
 
-        let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+        let mut callstack = CallStack::new();
         callstack.frames.push(frame);
         let source_manager = DefaultSourceManager::default();
         let logical = callstack.logical_frames("");
@@ -952,7 +977,7 @@ mod tests {
             name: Arc::from("crate::inline"),
             call_site: Location::new(Uri::new("test.masm"), ByteIndex::new(0), ByteIndex::new(1)),
         };
-        let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+        let mut callstack = CallStack::new();
 
         callstack.next(&StepInfo {
             op: None,
@@ -960,6 +985,7 @@ mod tests {
             asmop: None,
             clk: RowIndex::from(0u32),
             ctx: ContextId::root(),
+            call_frames: None,
             inline_frames: std::slice::from_ref(&inline),
         });
 
@@ -974,6 +1000,7 @@ mod tests {
             asmop: None,
             clk: RowIndex::from(1u32),
             ctx: ContextId::root(),
+            call_frames: None,
             inline_frames: &[],
         });
 
@@ -984,7 +1011,7 @@ mod tests {
 
     #[test]
     fn logical_physical_frame_tracks_exec_procedure_changes() {
-        let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+        let mut callstack = CallStack::new();
         let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
         callstack.next(&StepInfo {
             op: Some(Operation::Add),
@@ -992,6 +1019,7 @@ mod tests {
             asmop: Some(&main),
             clk: RowIndex::from(0u32),
             ctx: ContextId::root(),
+            call_frames: None,
             inline_frames: &[],
         });
 
@@ -1010,6 +1038,7 @@ mod tests {
             asmop: Some(&exec),
             clk: RowIndex::from(1u32),
             ctx: ContextId::root(),
+            call_frames: None,
             inline_frames: std::slice::from_ref(&inline),
         });
 
@@ -1023,7 +1052,7 @@ mod tests {
 
     #[test]
     fn control_cycle_tracks_exec_procedure_change_before_first_operation() {
-        let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+        let mut callstack = CallStack::new();
         let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
         callstack.next(&StepInfo {
             op: Some(Operation::Add),
@@ -1031,6 +1060,7 @@ mod tests {
             asmop: Some(&main),
             clk: RowIndex::from(0u32),
             ctx: ContextId::root(),
+            call_frames: None,
             inline_frames: &[],
         });
 
@@ -1041,6 +1071,7 @@ mod tests {
             asmop: Some(&exec),
             clk: RowIndex::from(1u32),
             ctx: ContextId::root(),
+            call_frames: None,
             inline_frames: &[],
         });
 

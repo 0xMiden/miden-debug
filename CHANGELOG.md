@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Track procedure entry and return using assembler-generated frame metadata in local and DAP sessions, including plain MASM `exec`, dynamic calls, and merged basic blocks. Legacy compiler frame events no longer control backtraces or stepping out.
+
 - Unqualified function breakpoints now consistently match fully-qualified procedure-name suffixes in local and DAP sessions ([#88](https://github.com/0xMiden/miden-debug/issues/88)).
 
 ## [0.15.0]

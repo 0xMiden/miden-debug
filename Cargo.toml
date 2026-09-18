@@ -21,15 +21,15 @@ log = "0.4"
 inventory = "0.3"
 miden-debug-dap = { version = "0.16.0", path = "crates/dap", features = ["client"] }
 miden-debug-engine = { version = "0.16.0", path = "crates/engine", default-features = false }
-miden-assembly = { version = "0.33.0" }
-miden-assembly-syntax = { version = "0.33.0", default-features = false }
-miden-core = { version = "0.33.0", default-features = false }
-miden-debug-types = { version = "0.33.0", default-features = false }
-miden-mast-package = { version = "0.33.0", default-features = false }
-miden-processor = { version = "0.33.0", default-features = false }
-miden-package-registry = { version = "0.33.0", features = ["resolver"] }
-miden-project = { version = "0.33.0" }
-miden-utils-sync = { version = "0.33.0", default-features = false }
+miden-assembly = { path = "../miden-vm/crates/assembly", version = "0.34.0" }
+miden-assembly-syntax = { path = "../miden-vm/crates/assembly-syntax", version = "0.34.0", default-features = false }
+miden-core = { path = "../miden-vm/core", version = "0.34.0", default-features = false }
+miden-debug-types = { path = "../miden-vm/crates/debug-types", version = "0.34.0", default-features = false }
+miden-mast-package = { path = "../miden-vm/crates/mast-package", version = "0.34.0", default-features = false }
+miden-processor = { path = "../miden-vm/processor", version = "0.34.0", default-features = false }
+miden-package-registry = { path = "../miden-vm/crates/package-registry", version = "0.34.0", features = ["resolver"] }
+miden-project = { path = "../miden-vm/crates/project", version = "0.34.0" }
+miden-utils-sync = { path = "../miden-vm/crates/utils-sync", version = "0.34.0", default-features = false }
 rustc-hash = { version = "2.1" }
 serde = { version = "1.0", default-features = false, features = [
     "serde_derive",

@@ -2527,6 +2527,7 @@ fn step_out<H: Host>(
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
     let target_depth = host.frames.len().saturating_sub(1);
+    let target_frame = host.frames.last().and_then(|frame| frame.debug_frame.clone());
 
     loop {
         let ctx = match resume_ctx.take() {
@@ -2538,7 +2539,15 @@ fn step_out<H: Host>(
             Ok(Some(new_ctx)) => {
                 *resume_ctx = Some(new_ctx);
 
-                if host.frames.len() <= target_depth {
+                let frame_exited = if let Some(expected) = target_frame.as_ref() {
+                    host.frames
+                        .get(target_depth)
+                        .and_then(|frame| frame.debug_frame.as_ref())
+                        .is_none_or(|frame| !frame.is_same_frame(expected))
+                } else {
+                    host.frames.len() <= target_depth
+                };
+                if frame_exited {
                     update_top_frame(host, current_asmop.as_ref());
                     return StepResult::Stepped;
                 }

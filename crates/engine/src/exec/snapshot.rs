@@ -53,7 +53,6 @@ impl MastForestRecorder {
     }
 
     /// Record a forest resolved by the host, ignoring forests already recorded this run.
-    #[cfg(feature = "dap")]
     pub(crate) fn record(&self, forest: LoadedMastForest) {
         let mut guard = self.forests.write();
         if !guard

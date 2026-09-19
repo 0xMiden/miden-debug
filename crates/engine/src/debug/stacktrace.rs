@@ -160,7 +160,15 @@ pub struct CallStack {
     contexts: BTreeSet<Arc<str>>,
     frames: Vec<CallFrame>,
     block_stack: Vec<Option<SpanContext>>,
+    frame_transition: Option<FrameTransition>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameTransition {
+    Entered,
+    Exited,
+}
+
 impl CallStack {
     pub fn new(events: Arc<RwLock<BTreeMap<RowIndex, Event>>>) -> Self {
         Self {
@@ -168,6 +176,7 @@ impl CallStack {
             contexts: BTreeSet::default(),
             frames: vec![],
             block_stack: vec![],
+            frame_transition: None,
         }
     }
 
@@ -179,6 +188,7 @@ impl CallStack {
             contexts: BTreeSet::default(),
             frames,
             block_stack: vec![],
+            frame_transition: None,
         }
     }
 
@@ -238,6 +248,12 @@ impl CallStack {
         logical
     }
 
+    /// Takes the frame event handled by the most recent [`Self::next`], clearing it so a later
+    /// cycle does not read it as its own.
+    pub fn take_frame_transition(&mut self) -> Option<FrameTransition> {
+        self.frame_transition.take()
+    }
+
     /// Updates the call stack from `info`
     ///
     /// Returns the call frame exited this cycle, if any
@@ -254,6 +270,11 @@ impl CallStack {
         log::trace!("handling {:?}/{:?} at cycle {}: {:?}", info.control, info.op, info.clk, event);
         let is_frame_start = event.as_ref().is_some_and(|event| event.is_frame_start());
         let is_frame_end = event.as_ref().is_some_and(|event| event.is_frame_end());
+        self.frame_transition = match (is_frame_start, is_frame_end) {
+            (true, _) => Some(FrameTransition::Entered),
+            (_, true) => Some(FrameTransition::Exited),
+            _ => None,
+        };
         let popped_frame = self.handle_event(event, procedure.clone(), info.op, info.asmop);
 
         match info.control {

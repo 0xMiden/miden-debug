@@ -151,6 +151,30 @@ jobs:
         run: |
           cargo make test-lit
 
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - *checkout
+      - *install-rust
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ github.workflow }}-shared-coverage
+          prefix-key: ${{ env.RUST_CACHE_KEY }}
+          save-if: ${{ github.ref == 'refs/heads/next' }}
+      - *install-cargo-make
+      - name: Install LLVM tools
+        run: rustup component add llvm-tools-preview
+      - name: Run Rust coverage
+        run: cargo make coverage
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: rust-coverage
+          path: rust-coverage.xml
+          if-no-files-found: warn
+
   check_release:
     name: release checks
     runs-on: ubuntu-latest

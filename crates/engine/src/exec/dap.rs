@@ -26,8 +26,9 @@ use miden_mast_package::{
     debug_info::{DebugFileIdx, DebugSourceAsmOp, DebugSourceNodeId, PackageDebugInfo},
 };
 use miden_processor::{
-    BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend,
-    Host, LoadedMastForest, ProcessorState, ResumeContext, StackInputs, StackOutputs,
+    BaseHost, DebugCallFrame, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor,
+    FutureMaybeSend, Host, LoadedMastForest, ProcessorState, ResumeContext, StackInputs,
+    StackOutputs,
     advice::{AdviceInputs, AdviceMutation},
     event::EventError,
     trace::RowIndex,
@@ -155,6 +156,7 @@ impl Default for DapConfig {
 /// A single frame in the DAP call stack.
 #[derive(Debug, Clone)]
 struct DapCallFrame {
+    debug_frame: Option<DebugCallFrame>,
     name: Arc<str>,
     source_path: Option<String>,
     line: i64,
@@ -179,11 +181,9 @@ struct DapPresentedFrame {
     inline: bool,
 }
 
-/// A host wrapper that intercepts trace events to track the call stack for DAP stack traces,
-/// while delegating all other operations to the inner host.
+/// A host wrapper that records replay inputs while delegating execution to the inner host.
 struct DapHostWrapper<'a, H> {
     inner: &'a mut H,
-    call_depth: usize,
     frames: Vec<DapCallFrame>,
     /// When set, the advice mutations produced by each `on_event` invocation of the inner host
     /// are recorded here, in execution order, so they can be replayed later (e.g. transaction
@@ -202,7 +202,6 @@ impl<'a, H> DapHostWrapper<'a, H> {
     ) -> Self {
         Self {
             inner,
-            call_depth: 0,
             frames: Vec::new(),
             event_recorder,
             forest_recorder,
@@ -245,23 +244,6 @@ impl<S: ?Sized + miden_assembly::SourceManager> SyncHost
         &mut self,
         process: &ProcessorState<'_>,
     ) -> Result<Vec<AdviceMutation>, EventError> {
-        use miden_core::events::EventId;
-        match crate::Event::from(EventId::from_felt(process.get_stack_item(0))) {
-            crate::Event::FrameStart => {
-                self.call_depth += 1;
-                self.frames.push(DapCallFrame {
-                    name: Arc::default(),
-                    source_path: None,
-                    line: 0,
-                    column: 0,
-                });
-            }
-            crate::Event::FrameEnd => {
-                self.call_depth = self.call_depth.saturating_sub(1);
-                self.frames.pop();
-            }
-            _ => (),
-        }
         // Every invocation is recorded, including empty mutation sets: event replay pops one
         // entry per event, so the log must stay aligned with the event stream.
         let recorder = self.event_recorder.clone();
@@ -295,24 +277,6 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
         &mut self,
         process: &ProcessorState<'_>,
     ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
-        use miden_core::events::EventId;
-        match crate::Event::from(EventId::from_felt(process.get_stack_item(0))) {
-            crate::Event::FrameStart => {
-                self.call_depth += 1;
-                self.frames.push(DapCallFrame {
-                    name: Arc::default(),
-                    source_path: None,
-                    line: 0,
-                    column: 0,
-                    inline_frames: Vec::new(),
-                });
-            }
-            crate::Event::FrameEnd => {
-                self.call_depth = self.call_depth.saturating_sub(1);
-                self.frames.pop();
-            }
-            _ => (),
-        }
         // Every invocation is recorded, including empty mutation sets: event replay pops one
         // entry per event, so the log must stay aligned with the event stream.
         let recorder = self.event_recorder.clone();
@@ -1078,8 +1042,7 @@ fn evaluate_debug_variable<H: Host>(
 
 /// Update the top frame on the host's frame stack with the current asmop's name and location.
 ///
-/// If the frame stack is empty (e.g. before the first FrameStart trace event), a root frame
-/// is pushed so there is always at least one frame visible in the stack trace.
+/// When frame metadata is unavailable, a single frame supplies the current assembly context.
 fn update_top_frame<H: Host>(host: &mut DapHostWrapper<'_, H>, current_asmop: Option<&AssemblyOp>) {
     let (name, source_path, line, column) = match current_asmop {
         Some(asmop) => {
@@ -1093,6 +1056,7 @@ fn update_top_frame<H: Host>(host: &mut DapHostWrapper<'_, H>, current_asmop: Op
 
     if host.frames.is_empty() {
         host.frames.push(DapCallFrame {
+            debug_frame: None,
             name,
             source_path,
             line,
@@ -1100,7 +1064,9 @@ fn update_top_frame<H: Host>(host: &mut DapHostWrapper<'_, H>, current_asmop: Op
             inline_frames: Vec::new(),
         });
     } else if let Some(top) = host.frames.last_mut() {
-        top.name = name;
+        if top.debug_frame.is_none() {
+            top.name = name;
+        }
         top.source_path = source_path;
         top.line = line;
         top.column = column;
@@ -1114,7 +1080,7 @@ fn update_top_frame_with_debug<H: Host>(
 ) {
     update_top_frame(host, current_asmop);
 
-    let inline_frames = inline_frames
+    let inline_frames: Vec<_> = inline_frames
         .iter()
         .map(|frame| {
             let (source_path, line, column) =
@@ -1131,8 +1097,53 @@ fn update_top_frame_with_debug<H: Host>(
         })
         .collect();
 
-    if let Some(top) = host.frames.last_mut() {
-        top.inline_frames = inline_frames;
+    let mut consumed = 0;
+    for (index, frame) in host.frames.iter_mut().rev().enumerate() {
+        let inherited =
+            frame.debug_frame.as_ref().map_or(0, DebugCallFrame::inherited_inline_calls);
+        let end = inline_frames.len().saturating_sub(inherited);
+        if index == 0 || end > consumed {
+            frame.inline_frames = inline_frames.get(consumed..end).unwrap_or_default().to_vec();
+        }
+        consumed = end;
+        if inherited == 0 {
+            break;
+        }
+    }
+}
+
+fn sync_dap_frames<H: Host>(host: &mut DapHostWrapper<'_, H>, call_frames: &[DebugCallFrame]) {
+    let common_prefix = host
+        .frames
+        .iter()
+        .zip(call_frames)
+        .take_while(|(current, expected)| {
+            current
+                .debug_frame
+                .as_ref()
+                .is_some_and(|current| current.is_same_frame(expected))
+        })
+        .count();
+    host.frames.truncate(common_prefix);
+
+    for debug_frame in &call_frames[common_prefix..] {
+        let debug_info = debug_frame.debug_info();
+        let function = debug_frame.function();
+        let name = debug_info
+            .get_string(function.name_idx)
+            .unwrap_or_else(|| Arc::from("<unknown>"));
+        let source_path = debug_info
+            .get_file(function.file_idx)
+            .and_then(|file| debug_info.get_string(file.path_idx))
+            .map(|path| path.to_string());
+        host.frames.push(DapCallFrame {
+            debug_frame: Some(debug_frame.clone()),
+            name,
+            source_path,
+            line: i64::from(function.line.to_u32()) + 1,
+            column: i64::from(function.column.to_u32()) + 1,
+            inline_frames: Vec::new(),
+        });
     }
 }
 
@@ -1354,6 +1365,7 @@ impl DapExecutor {
                     op_idx,
                     ..
                 } = extract_current_op(ctx);
+                sync_dap_frames(&mut wrapper, &ctx.debug_call_frames());
                 current_asmop =
                     extract_asm_op(current_debug_info.as_deref(), source_node_id, op_idx);
                 current_inline_frames = inline_frames_for_operation(
@@ -2285,6 +2297,7 @@ fn advance_one<H: Host>(
         }
         None => (None, vec![]),
     };
+    let physical_frames = ctx.debug_call_frames();
     let pre_step_stack = processor.state().get_stack_state();
     let result = if let Some(debug_info) = debug_info.as_ref() {
         poll_immediately(processor.step_with_package_debug_info(host, ctx, debug_info))
@@ -2296,6 +2309,7 @@ fn advance_one<H: Host>(
             *cycle += 1;
             record_debug_vars(debug_state, *cycle, debug_var_infos, &pre_step_stack);
             *current_asmop = executed_asmop;
+            sync_dap_frames(host, &physical_frames);
             update_top_frame_with_debug(host, current_asmop.as_ref(), &inline_frames);
             Ok(Some(new_ctx))
         }
@@ -2497,7 +2511,8 @@ fn step_out<H: Host>(
     current_asmop: &mut Option<AssemblyOp>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
-    let target_depth = host.call_depth.saturating_sub(1);
+    let target_depth = host.frames.len().saturating_sub(1);
+    let target_frame = host.frames.last().and_then(|frame| frame.debug_frame.clone());
 
     loop {
         let ctx = match resume_ctx.take() {
@@ -2509,7 +2524,15 @@ fn step_out<H: Host>(
             Ok(Some(new_ctx)) => {
                 *resume_ctx = Some(new_ctx);
 
-                if host.call_depth <= target_depth {
+                let frame_exited = if let Some(expected) = target_frame.as_ref() {
+                    host.frames
+                        .get(target_depth)
+                        .and_then(|frame| frame.debug_frame.as_ref())
+                        .is_none_or(|frame| !frame.is_same_frame(expected))
+                } else {
+                    host.frames.len() <= target_depth
+                };
+                if frame_exited {
                     update_top_frame(host, current_asmop.as_ref());
                     return StepResult::Stepped;
                 }
@@ -2700,6 +2723,190 @@ mod tests {
     use crate::exec::{DebuggerHost, EventMutationRecorder};
 
     struct PushSeven;
+
+    fn assert_serialized_dap_stacktraces(
+        source: &str,
+        expected_traces: &[&[&str]],
+        expected_output: u32,
+    ) {
+        use miden_core::serde::{Deserializable, Serializable};
+
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let package = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program("program", source)
+            .unwrap();
+        let package = Package::read_from_bytes(&package.to_bytes()).unwrap();
+        assert_eq!(
+            package.debug_info().unwrap().unwrap().version(),
+            miden_mast_package::debug_info::DEBUG_INFO_VERSION,
+        );
+        let mut host = DebuggerHost::new(source_manager);
+        let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+        let mut processor = FastProcessor::new(StackInputs::new(&[Felt::from(5u32)]).unwrap());
+        let mut resume_ctx =
+            Some(processor.get_initial_resume_context_for_package(Arc::from(package)).unwrap());
+        let mut cycle = 0;
+        let mut current_asmop = None;
+        let mut debug_state = DapDebugVarState::new();
+
+        for _ in 0..512 {
+            let ctx = resume_ctx.take().expect("must reach the callee");
+            resume_ctx = advance_one(
+                &mut processor,
+                &mut wrapper,
+                ctx,
+                &mut cycle,
+                &mut current_asmop,
+                &mut debug_state,
+            )
+            .unwrap();
+            if current_asmop.as_ref().is_some_and(|op| op.op().as_ref() == "mul") {
+                break;
+            }
+        }
+        assert!(current_asmop.as_ref().is_some_and(|op| op.op().as_ref() == "mul"));
+
+        for (index, expected) in expected_traces.iter().enumerate() {
+            if index > 0 {
+                let previous = wrapper.frames.last().unwrap().debug_frame.clone().unwrap();
+                let result = step_out(
+                    &mut processor,
+                    &mut wrapper,
+                    &mut resume_ctx,
+                    &mut cycle,
+                    &mut current_asmop,
+                    &mut debug_state,
+                );
+                assert!(matches!(result, StepResult::Stepped));
+                assert!(
+                    wrapper.frames.iter().all(|frame| !frame
+                        .debug_frame
+                        .as_ref()
+                        .unwrap()
+                        .is_same_frame(&previous))
+                );
+            }
+            assert!(wrapper.frames.iter().all(|frame| frame.debug_frame.is_some()));
+            let frames = presented_frames(&wrapper, current_asmop.as_ref(), cycle);
+            let names = frames.iter().map(|frame| frame.name.as_ref()).collect::<Vec<_>>();
+            assert_eq!(names, *expected, "unexpected stack after {index} step-outs");
+            assert!(frames.iter().all(|frame| !frame.inline));
+            if index == 0 {
+                assert_eq!(frames[0].line, 2);
+                assert!(frames[0].source_path.is_some());
+            }
+        }
+
+        for _ in 0..512 {
+            let Some(ctx) = resume_ctx.take() else {
+                break;
+            };
+            resume_ctx = advance_one(
+                &mut processor,
+                &mut wrapper,
+                ctx,
+                &mut cycle,
+                &mut current_asmop,
+                &mut debug_state,
+            )
+            .unwrap();
+        }
+        assert!(resume_ctx.is_none(), "fixture must terminate");
+        assert_eq!(processor.state().get_stack_state()[0], Felt::from(expected_output));
+    }
+
+    #[test]
+    fn dap_stacktrace_retains_tail_wrappers_from_package_metadata() {
+        assert_serialized_dap_stacktraces(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/lit/call_frames_tail.masm"
+            )),
+            &[&["::$exec::inner", "::$exec::outer", "::$exec::$main"], &["::$exec::$main"]],
+            16,
+        );
+    }
+
+    #[test]
+    fn dap_stacktrace_distinguishes_adjacent_invocations_from_package_metadata() {
+        assert_serialized_dap_stacktraces(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/lit/call_frames_siblings.masm"
+            )),
+            &[
+                &["::$exec::leaf", "::$exec::$main"],
+                &["::$exec::leaf", "::$exec::$main"],
+                &["::$exec::$main"],
+            ],
+            46,
+        );
+    }
+
+    #[test]
+    fn dap_stacktrace_tracks_dynamic_calls_from_package_metadata() {
+        assert_serialized_dap_stacktraces(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/lit/call_frames_dyncall.masm"
+            )),
+            &[
+                &["::$exec::inner", "::$exec::outer", "::$exec::$main"],
+                &["::$exec::outer", "::$exec::$main"],
+                &["::$exec::$main"],
+            ],
+            26,
+        );
+    }
+
+    #[test]
+    fn dap_step_out_uses_event_free_frame_boundaries() {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let package = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program(
+                "program",
+                "proc inner push.3 mul end proc outer push.2 add exec.inner push.4 add end begin \
+                 exec.outer push.1 add end",
+            )
+            .unwrap();
+        let mut host = DebuggerHost::new(source_manager);
+        let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+        let mut processor = FastProcessor::new(StackInputs::new(&[Felt::from(5u32)]).unwrap());
+        let mut resume_ctx =
+            Some(processor.get_initial_resume_context_for_package(Arc::from(package)).unwrap());
+        let mut cycle = 0;
+        let mut current_asmop = None;
+        let mut debug_state = DapDebugVarState::new();
+        loop {
+            let ctx = resume_ctx.take().expect("must stop inside inner");
+            resume_ctx = advance_one(
+                &mut processor,
+                &mut wrapper,
+                ctx,
+                &mut cycle,
+                &mut current_asmop,
+                &mut debug_state,
+            )
+            .unwrap();
+            if wrapper.frames.len() == 3 {
+                break;
+            }
+        }
+        assert!(wrapper.frames[2].name.ends_with("::inner"));
+        for (depth, name) in [(2, "::outer"), (1, "::$main")] {
+            let result = step_out(
+                &mut processor,
+                &mut wrapper,
+                &mut resume_ctx,
+                &mut cycle,
+                &mut current_asmop,
+                &mut debug_state,
+            );
+            assert!(matches!(result, StepResult::Stepped));
+            assert_eq!(wrapper.frames.len(), depth);
+            assert!(wrapper.frames.last().unwrap().name.ends_with(name));
+        }
+    }
 
     #[test]
     fn function_breakpoint_waits_for_entry_variables() {
@@ -2959,6 +3166,7 @@ mod tests {
     #[test]
     fn dap_presents_inline_frames_in_innermost_first_order() {
         let frames = vec![DapCallFrame {
+            debug_frame: None,
             name: "crate::physical".into(),
             source_path: Some("src/lib.rs".into()),
             line: 30,

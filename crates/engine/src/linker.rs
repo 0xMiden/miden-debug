@@ -338,21 +338,39 @@ mod tests {
             path: Some(invalid.clone()),
             linkage: Linkage::Dynamic,
         };
-        assert!(from_path.load(&[]).is_err());
+        assert!(
+            from_path
+                .load(&[])
+                .unwrap_err()
+                .to_string()
+                .contains("failed to load Miden package")
+        );
 
         let wrong_extension = LinkLibrary {
             name: "source".into(),
             path: Some(directory.path().join("source.masm")),
             linkage: Linkage::Dynamic,
         };
-        assert!(wrong_extension.load(&[]).is_err());
+        assert!(
+            wrong_extension
+                .load(&[])
+                .unwrap_err()
+                .to_string()
+                .contains("not a compiled .masp package")
+        );
 
         let missing = LinkLibrary {
             name: "missing".into(),
             path: None,
             linkage: Linkage::Dynamic,
         };
-        assert!(missing.load(&[directory.path().to_path_buf()]).is_err());
+        assert!(
+            missing
+                .load(&[directory.path().to_path_buf()])
+                .unwrap_err()
+                .to_string()
+                .contains("unable to locate library 'missing'")
+        );
 
         let bad_entry = directory.path().join("bad.masp");
         std::fs::create_dir(&bad_entry).unwrap();
@@ -361,6 +379,12 @@ mod tests {
             path: None,
             linkage: Linkage::Dynamic,
         };
-        assert!(bad_entry_library.load(&[directory.path().to_path_buf()]).is_err());
+        assert!(
+            bad_entry_library
+                .load(&[directory.path().to_path_buf()])
+                .unwrap_err()
+                .to_string()
+                .contains("not a file")
+        );
     }
 }

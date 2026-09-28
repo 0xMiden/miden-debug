@@ -1195,6 +1195,7 @@ mod tests {
     fn acknowledgements_preserve_request_sequence_and_command() {
         for (name, arguments) in [
             ("attach", json!({})),
+            ("configurationDone", json!({})),
             ("disconnect", json!({})),
             ("goto", json!({"threadId": 1, "targetId": 2})),
             ("launch", json!({})),
@@ -1209,24 +1210,23 @@ mod tests {
             ("terminate", json!({})),
             ("terminateThreads", json!({"threadIds": [1]})),
         ] {
-            let command =
-                serde_json::from_value(json!({"command": name, "arguments": arguments})).unwrap();
+            let request = if name == "configurationDone" {
+                json!({"command": name})
+            } else {
+                json!({"command": name, "arguments": arguments})
+            };
+            let command = serde_json::from_value(request).unwrap();
             let response = Request { seq: 42, command }.ack().unwrap();
             assert!(response.success);
             assert_eq!(response.request_seq, 42);
             assert!(response.message.is_none());
             assert!(response.error.is_none());
+            if name == "configurationDone" {
+                assert!(matches!(response.body, Some(ResponseBody::ConfigurationDone)));
+            }
             let wire = serde_json::to_value(response).unwrap();
             assert_eq!(wire["command"], name);
         }
-        let response = Request {
-            seq: 9,
-            command: Command::ConfigurationDone,
-        }
-        .ack()
-        .unwrap();
-        assert_eq!(response.request_seq, 9);
-        assert!(matches!(response.body, Some(ResponseBody::ConfigurationDone)));
         assert!(matches!(
             Request {
                 seq: 1,

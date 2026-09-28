@@ -130,3 +130,50 @@ fn verify_package_dependencies(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use alloc::string::ToString;
+    use std::{net::TcpListener, thread, time::Duration};
+
+    use miden_assembly::Assembler;
+
+    use super::*;
+
+    #[test]
+    fn standalone_server_runs_with_remote_state_client() {
+        let directory = tempfile::tempdir().unwrap();
+        let package_path = directory.path().join("standalone.masp");
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let package = Assembler::new(source_manager)
+            .assemble_program("standalone", "begin push.3 push.4 add add end")
+            .unwrap();
+        package.write_to_file(&package_path).unwrap();
+
+        let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = reservation.local_addr().unwrap().to_string();
+        drop(reservation);
+
+        let config = Box::new(DebuggerConfig {
+            input: Some(crate::InputFile::from_path(&package_path)),
+            start_debug_adapter: Some(address.clone()),
+            ..Default::default()
+        });
+        let server = thread::spawn(move || run(config));
+
+        let mut state = (0..100)
+            .find_map(|_| match crate::State::new_for_dap(&address) {
+                Ok(state) => Some(state),
+                Err(_) => {
+                    thread::sleep(Duration::from_millis(50));
+                    None
+                }
+            })
+            .expect("remote state did not connect to the standalone server");
+        assert_eq!(state.debug_mode, crate::DebugMode::Remote);
+        assert_eq!(state.executor().cycle, 0);
+        assert!(matches!(state.step_remote().unwrap(), crate::exec::DapStopReason::Terminated));
+        drop(state);
+        server.join().unwrap().unwrap();
+    }
+}

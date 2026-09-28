@@ -529,5 +529,11 @@ mod tests {
         let state = processor.state();
         assert!(!breakpoint.should_break_for(&Operation::Noop, &state));
         assert!(breakpoint.should_break_for(&Operation::Emit, &state));
+
+        let other_processor = miden_processor::FastProcessor::new(
+            miden_processor::StackInputs::new(&[Event::FrameStart.as_event_id().as_felt()])
+                .unwrap(),
+        );
+        assert!(!breakpoint.should_break_for(&Operation::Emit, &other_processor.state()));
     }
 }

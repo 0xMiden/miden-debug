@@ -2696,7 +2696,7 @@ mod protocol_tests {
         time::Duration,
     };
 
-    use miden_assembly::{Assembler, DefaultSourceManager};
+    use miden_assembly::{Assembler, DefaultSourceManager, ast::Module};
     use miden_core::Felt;
     use serde_json::{Value, json};
 
@@ -2712,13 +2712,29 @@ mod protocol_tests {
 
     impl Session {
         fn start(source: &str, config: DapConfig) -> Self {
-            let listener = DapExecutor::bind_listener("127.0.0.1:0").unwrap();
-            let address = listener.local_addr().unwrap();
             let source_manager = Arc::new(DefaultSourceManager::default());
             let package: Arc<Package> = Assembler::new(source_manager.clone())
                 .assemble_program("protocol-test", source)
                 .unwrap()
                 .into();
+            Self::start_package(package, source_manager, config)
+        }
+
+        fn start_module(module: Module, source_manager: Arc<DefaultSourceManager>) -> Self {
+            let package: Arc<Package> = Assembler::new(source_manager.clone())
+                .assemble_program("protocol-test", module)
+                .unwrap()
+                .into();
+            Self::start_package(package, source_manager, DapConfig::new("127.0.0.1:0"))
+        }
+
+        fn start_package(
+            package: Arc<Package>,
+            source_manager: Arc<DefaultSourceManager>,
+            config: DapConfig,
+        ) -> Self {
+            let listener = DapExecutor::bind_listener("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
             let mut executor = DapExecutor::new(
                 StackInputs::default(),
                 AdviceInputs::default(),
@@ -2815,14 +2831,10 @@ mod protocol_tests {
     }
 
     #[test]
-    fn dap_session_inspects_steps_breaks_restarts_and_records_a_snapshot() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("replay.bin");
-        let mut config = DapConfig::new("127.0.0.1:0");
-        let recorder = config.record_snapshot(path.clone());
+    fn dap_session_inspects_initial_state_and_evaluations() {
         let mut session = Session::start(
             "proc increment push.1 add end\nbegin push.7 dup.0 mem_store.0 exec.increment add end",
-            config,
+            DapConfig::new("127.0.0.1:0"),
         );
         session.handshake("attach");
         let threads = session.request("threads", json!({}));
@@ -2863,6 +2875,20 @@ mod protocol_tests {
             session.request("pause", json!({"threadId": 1}))["message"],
             "Unsupported command"
         );
+        session.disconnect();
+    }
+
+    #[test]
+    fn dap_session_steps_breaks_restarts_and_records_a_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("replay.bin");
+        let mut config = DapConfig::new("127.0.0.1:0");
+        let recorder = config.record_snapshot(path.clone());
+        let mut session = Session::start(
+            "proc increment push.1 add end\nbegin push.7 dup.0 mem_store.0 exec.increment add end",
+            config,
+        );
+        session.handshake("attach");
         let breakpoints = session.request(
             "setBreakpoints",
             json!({"source": {"path": "missing.rs"}, "breakpoints": [{"line": 10}]}),
@@ -2914,6 +2940,60 @@ mod protocol_tests {
         let snapshot = crate::exec::ReplaySnapshot::read_from_file(&path).unwrap();
         assert!(snapshot.event_log.is_empty());
         assert_eq!(recorder.take().unwrap().unwrap().path, Uri::from(path.as_path()));
+    }
+
+    #[test]
+    fn dap_locals_scope_reports_a_live_debug_variable() {
+        use miden_assembly_syntax::{
+            Parse,
+            ast::{Instruction, Op},
+            debuginfo::{SourceSpan, Span},
+        };
+
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let mut module =
+            Parse::parse("begin push.5 nop push.1 add add end", false, source_manager.clone())
+                .unwrap();
+        let entrypoint =
+            module.procedures_mut().find(|procedure| procedure.is_entrypoint()).unwrap();
+        for operation in entrypoint.body_mut().iter_mut() {
+            if let Op::Inst(instruction) = operation
+                && matches!(instruction.inner(), Instruction::Nop)
+            {
+                *instruction = Span::new(
+                    SourceSpan::default(),
+                    Instruction::DebugVar(DebugVarInfo::new("answer", DebugVarLocation::Stack(0))),
+                );
+            }
+        }
+
+        let mut session = Session::start_module(*module, source_manager);
+        session.handshake("launch");
+        let mut variable = None;
+        for _ in 0..20 {
+            assert_eq!(
+                session.request("stepIn", json!({"threadId": 1, "granularity": "instruction"}))
+                    ["success"],
+                true
+            );
+            let (event, _) = session.stop();
+            assert_eq!(event["event"], "stopped");
+            let response =
+                session.request("variables", json!({"variablesReference": SCOPE_LOCALS}));
+            variable = response["body"]["variables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|variable| variable["name"] == "answer")
+                .cloned();
+            if variable.is_some() {
+                break;
+            }
+        }
+        let variable = variable.expect("live DAP local was not reported");
+        assert_eq!(variable["value"], "5");
+        assert_eq!(variable["type"], "Felt");
+        session.disconnect();
     }
 
     #[test]

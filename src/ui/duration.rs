@@ -101,3 +101,6 @@ impl fmt::Display for HumanDuration {
         write!(f, "0{}", if alt { "s" } else { " seconds" })
     }
 }
+
+#[cfg(test)]
+mod tests;

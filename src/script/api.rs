@@ -307,42 +307,8 @@ fn script_breakpoint_from(bp: &Breakpoint) -> ScriptBreakpoint {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn test_debugger() -> ScriptDebugger {
-    let config = DebuggerConfig {
-        input: Some(crate::program_loader::test_package_input()),
-        ..Default::default()
-    };
-    ScriptDebugger::from_config(Box::new(config)).expect("test package should load")
-}
+#[cfg(all(test, feature = "python"))]
+pub(crate) use tests::test_debugger;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn script_debugger_executes_commands_and_exposes_state() {
-        let debugger = test_debugger();
-
-        assert_eq!(debugger.cycle(), 0);
-
-        let output = debugger.handle_command("step").unwrap();
-        assert!(output.contains("in") || output.is_empty(), "unexpected output: {output}");
-        assert_eq!(debugger.cycle(), 1);
-
-        let stack_output = debugger.handle_command("stack").unwrap();
-        assert!(stack_output.contains("Operand Stack"));
-    }
-
-    #[test]
-    fn script_debugger_can_manage_breakpoints() {
-        let debugger = test_debugger();
-
-        let bp = debugger.set_breakpoint("after 1").unwrap();
-        assert_eq!(bp.id, 0);
-        assert_eq!(debugger.breakpoints().len(), 1);
-
-        debugger.delete_breakpoint(Some(bp.id)).unwrap();
-        assert!(debugger.breakpoints().is_empty());
-    }
-}
+mod tests;

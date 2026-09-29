@@ -436,3 +436,6 @@ impl Home {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -250,3 +250,6 @@ impl Pane for BreakpointsPane {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

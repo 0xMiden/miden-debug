@@ -413,3 +413,6 @@ pub(crate) fn format_bp_type(ty: &BreakpointType) -> String {
         BreakpointType::Event(event) => format!("event {event:?}"),
     }
 }
+
+#[cfg(all(test, feature = "repl"))]
+mod tests;

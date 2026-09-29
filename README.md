@@ -18,6 +18,22 @@ The engine is checked and tested separately with `--no-default-features`. Fully 
 still require upstream dependency fixes: VM 0.30 pulls in std-only dependencies such as `flume`
 through `miden-crypto` and `textwrap` through `miden-miette/fancy-no-syscall`.
 
+## Coverage
+
+Run the workspace tests with LLVM source coverage locally with:
+
+```bash
+cargo make coverage
+```
+
+This writes a Cobertura report to `rust-coverage.xml`. CI uploads the same report as the
+`rust-coverage` artifact, including when the coverage gate fails, and updates a coverage comment
+on each pull request. It requires at least 75% line coverage of production code across the
+workspace. Unit tests live in separate `tests.rs` or `*_tests.rs` files, and shared test helpers
+live under `tests/`. These paths are excluded from the report by cargo-llvm-cov's default
+filename filters. All workspace tests still run, including TUI rendering tests using Ratatui's
+in-memory test backend; the production code they exercise contributes to coverage.
+
 ## License
 
 MIT

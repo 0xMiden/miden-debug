@@ -212,12 +212,4 @@ Other:
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_frame_selection() {
-        assert!(matches!("frame 2".parse(), Ok(ReplCommand::Frame(2))));
-        assert!("frame".parse::<ReplCommand>().is_err());
-    }
-}
+mod tests;

@@ -130,3 +130,6 @@ impl Pane for DebugPane {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

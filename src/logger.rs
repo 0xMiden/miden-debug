@@ -149,3 +149,6 @@ impl DebugLogger {
         Self::install_with_max_level(Box::new(builder.build()), LevelFilter::Trace)
     }
 }
+
+#[cfg(test)]
+mod tests;

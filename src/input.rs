@@ -183,18 +183,4 @@ impl clap::builder::TypedValueParser for InputFileParser {
 }
 
 #[cfg(all(test, feature = "std"))]
-mod tests {
-    use clap::builder::TypedValueParser;
-
-    use super::*;
-
-    #[test]
-    fn parser_accepts_compiled_packages() {
-        let package = tempfile::Builder::new().suffix(".masp").tempfile().unwrap();
-        let input = InputFileParser
-            .parse_ref(&clap::Command::new("test"), None, package.path().as_os_str())
-            .unwrap();
-
-        assert_matches!(input.path.to_path(), Some(path) if path == package.path());
-    }
-}
+mod tests;

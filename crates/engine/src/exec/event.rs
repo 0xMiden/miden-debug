@@ -157,13 +157,4 @@ impl From<EventName> for Event {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn print_ln_event_roundtrips() {
-        assert_eq!(Event::from(PRINTLN_EVENT.to_event_id()), Event::PrintLn);
-        assert_eq!(Event::PrintLn.as_event_id(), *PRINTLN_EVENT_ID);
-        assert_eq!(Event::from(PRINTLN_EVENT), Event::PrintLn);
-    }
-}
+mod tests;

@@ -350,28 +350,4 @@ impl clap::builder::TypedValueParser for FormatTypeParser {
 }
 
 #[cfg(test)]
-mod tests {
-    use alloc::string::{String, ToString};
-
-    use super::FormatType;
-    use crate::test_utils::write_scalar_bytes;
-
-    #[test]
-    fn write_scalar_bytes_reads_little_endian_u64() {
-        let mut output = String::new();
-
-        write_scalar_bytes(&mut output, "u64", FormatType::Decimal, &[1, 2, 3, 4, 5, 6, 7, 8])
-            .unwrap();
-
-        assert_eq!(output, u64::from_le_bytes([1, 2, 3, 4, 5, 6, 7, 8]).to_string());
-    }
-
-    #[test]
-    fn write_scalar_bytes_reads_little_endian_u16_hex() {
-        let mut output = String::new();
-
-        write_scalar_bytes(&mut output, "u16", FormatType::Hex, &[0x34, 0x12]).unwrap();
-
-        assert_eq!(output, "1234");
-    }
-}
+mod tests;

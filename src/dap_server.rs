@@ -1,4 +1,4 @@
-use std::{boxed::Box, path::Path, sync::Arc, vec::Vec};
+use std::{boxed::Box, net::TcpListener, path::Path, sync::Arc, vec::Vec};
 
 use miden_assembly::DefaultSourceManager;
 use miden_assembly_syntax::diagnostics::Report;
@@ -23,8 +23,17 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
         .start_debug_adapter
         .as_ref()
         .ok_or_else(|| Report::msg("missing --start-debug-adapter address"))?;
+    let listener = DapExecutor::bind_listener(addr).map_err(Report::msg)?;
+    run_on_listener(config, listener)
+}
+
+fn run_on_listener(config: Box<DebuggerConfig>, listener: TcpListener) -> Result<(), Report> {
+    let addr = listener
+        .local_addr()
+        .map_err(|err| Report::msg(format!("failed to read DAP listener address: {err}")))?;
     DapConfig::set_global(
-        DapConfig::new(addr).with_source_path_prefixes(config.source_path_prefixes.clone()),
+        DapConfig::new(format!("{addr}"))
+            .with_source_path_prefixes(config.source_path_prefixes.clone()),
     );
 
     let source_manager = Arc::new(DefaultSourceManager::default());
@@ -47,7 +56,8 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     }
 
     let executor = DapExecutor::new(inputs.inputs, inputs.advice_inputs, inputs.options);
-    futures_executor::block_on(executor.execute_async(program, &mut host))
+    executor
+        .execute_on_listener(program, &mut host, listener)
         .map(|_| ())
         .map_err(|err| Report::msg(format!("program execution failed: {err}")))
 }
@@ -130,3 +140,6 @@ fn verify_package_dependencies(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

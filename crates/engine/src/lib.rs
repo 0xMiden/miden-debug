@@ -22,6 +22,7 @@ pub mod profiling;
 mod registry;
 mod source_path;
 #[cfg(test)]
+#[path = "tests/utils.rs"]
 mod test_utils;
 
 pub use miden_core::events;

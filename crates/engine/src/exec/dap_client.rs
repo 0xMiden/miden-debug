@@ -59,6 +59,11 @@ impl DapClient {
     pub fn connect(addr: &str) -> Result<Self, String> {
         let stream = TcpStream::connect(addr)
             .map_err(|e| format!("failed to connect to DAP server at {addr}: {e}"))?;
+        Self::from_stream(stream)
+    }
+
+    /// Use an established connection, preserving its configured socket options and timeouts.
+    pub fn from_stream(stream: TcpStream) -> Result<Self, String> {
         let reader = BufReader::new(
             stream.try_clone().map_err(|e| format!("failed to clone TCP stream: {e}"))?,
         );
@@ -429,3 +434,6 @@ impl Drop for DapClient {
         let _ = self.disconnect();
     }
 }
+
+#[cfg(test)]
+mod tests;

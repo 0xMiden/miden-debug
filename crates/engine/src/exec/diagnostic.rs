@@ -171,3 +171,6 @@ impl DiagnosticExecutor {
         }
     }
 }
+
+#[cfg(all(test, feature = "std"))]
+mod tests;

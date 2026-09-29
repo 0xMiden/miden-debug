@@ -89,3 +89,6 @@ impl core::fmt::Debug for ProfilerConfig {
         builder.finish()
     }
 }
+
+#[cfg(all(test, feature = "std"))]
+mod tests;

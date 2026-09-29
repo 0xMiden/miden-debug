@@ -62,3 +62,6 @@ pub trait Pane {
 
     fn draw(&mut self, f: &mut Frame<'_>, area: Rect, state: &State) -> Result<(), Report>;
 }
+
+#[cfg(test)]
+mod tests;

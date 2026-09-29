@@ -301,6 +301,30 @@ args = [
     "${@}",
 ]
 
+[tasks.coverage]
+category = "Test"
+description = "Measure production code coverage with workspace tests"
+command = "cargo"
+args = [
+    "llvm-cov",
+    "--workspace",
+    "--all-targets",
+    "--cobertura",
+    "--output-path",
+    "rust-coverage.xml",
+    "--fail-under-lines",
+    "75",
+    "${@}",
+]
+dependencies = ["cargo-llvm-cov"]
+
+[tasks.cargo-llvm-cov]
+private = true
+category = "Tools"
+description = "Install cargo-llvm-cov if it is unavailable"
+install_crate = { crate_name = "cargo-llvm-cov", binary = "cargo-llvm-cov", test_arg = "--version" }
+install_crate_args = ["--locked"]
+
 [tasks.test-lit]
 category = "Test"
 description = "Runs the lit/filecheck debugger test suite"
@@ -362,6 +386,7 @@ args = [
 ]
 
 [tasks.lit-fixture-builders]
+private = true
 category = "Build"
 description = "Builds private package builders used by lit tests"
 toolchain = "nightly"

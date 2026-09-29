@@ -369,3 +369,6 @@ fn midenup_channel() -> Option<String> {
         Some(trimmed.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests;

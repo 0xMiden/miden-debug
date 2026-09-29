@@ -489,3 +489,6 @@ pub fn convert_to_syntect_color(color: Color) -> syntax::Color {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -88,3 +88,6 @@ fn run_lines(debugger: &ScriptDebugger, script: &str, out: &mut dyn Write) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

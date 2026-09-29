@@ -245,3 +245,6 @@ impl PackageStore for HybridPackageRegistry {
         self.install_if_missing(package).map_err(Report::from)
     }
 }
+
+#[cfg(all(test, feature = "std"))]
+mod tests;

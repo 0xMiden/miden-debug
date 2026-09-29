@@ -407,35 +407,4 @@ impl FromStr for OperationMatcher {
 }
 
 #[cfg(test)]
-mod tests {
-    use alloc::string::ToString;
-
-    use super::{BreakpointType, OperationMatcher};
-
-    #[test]
-    fn unqualified_function_breakpoints_match_path_suffixes() {
-        let breakpoint = "in entrypoint".parse::<BreakpointType>().unwrap();
-
-        assert!(breakpoint.should_break_in("::\"root_ns:root@1.0.0\"::fibonacci::entrypoint"));
-        assert!(breakpoint.should_break_in("$exec::entrypoint"));
-        assert!(!breakpoint.should_break_in("$exec::other_entrypoint"));
-        assert!(!breakpoint.should_break_in("$exec::entrypoint_helper"));
-    }
-
-    #[test]
-    fn qualified_function_breakpoints_match_exact_suffixes() {
-        let breakpoint = "in fibonacci::entrypoint".parse::<BreakpointType>().unwrap();
-
-        assert!(breakpoint.should_break_in("::\"root_ns:root@1.0.0\"::fibonacci::entrypoint"));
-        assert!(!breakpoint.should_break_in("::\"root_ns:root@1.0.0\"::wallet::entrypoint"));
-    }
-
-    #[test]
-    fn log_deferred_breakpoint_accepts_legacy_name_and_displays_canonically() {
-        let canonical = "log_deferred".parse::<OperationMatcher>().unwrap();
-        let legacy = "log_precompile".parse::<OperationMatcher>().unwrap();
-
-        assert_eq!(canonical, legacy);
-        assert_eq!(canonical.to_string(), "log_deferred");
-    }
-}
+mod tests;

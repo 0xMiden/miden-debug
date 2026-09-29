@@ -204,3 +204,6 @@ impl Pane for FooterPane {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

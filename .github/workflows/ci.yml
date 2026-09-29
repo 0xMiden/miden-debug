@@ -184,29 +184,6 @@ jobs:
             coverage-pr-context.txt
           if-no-files-found: warn
 
-  coverage_comment:
-    name: coverage comment
-    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && always() }}
-    needs: coverage
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
-      issues: write
-    steps:
-      - *checkout
-      - uses: actions/download-artifact@v4
-        with:
-          name: rust-coverage
-          path: ${{ runner.temp }}/coverage
-      - name: Update pull request coverage comment
-        uses: actions/github-script@v8
-        env:
-          COVERAGE_ARTIFACT: ${{ runner.temp }}/coverage
-        with:
-          script: |
-            await require(process.env.GITHUB_WORKSPACE + '/.github/scripts/coverage-comment.js')({ github, context, core });
-
   check_release:
     name: release checks
     runs-on: ubuntu-latest

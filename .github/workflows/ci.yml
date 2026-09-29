@@ -168,12 +168,44 @@ jobs:
         run: rustup component add llvm-tools-preview
       - name: Run Rust coverage
         run: cargo make coverage
+      - name: Record pull request for coverage comment
+        if: ${{ github.event_name == 'pull_request' && always() }}
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: printf '%s\n' "$PR_NUMBER" "$PR_HEAD_SHA" "$PR_HEAD_REPO" > coverage-pr-context.txt
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
           name: rust-coverage
-          path: rust-coverage.xml
+          path: |
+            rust-coverage.xml
+            coverage-pr-context.txt
           if-no-files-found: warn
+
+  coverage_comment:
+    name: coverage comment
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && always() }}
+    needs: coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - *checkout
+      - uses: actions/download-artifact@v4
+        with:
+          name: rust-coverage
+          path: ${{ runner.temp }}/coverage
+      - name: Update pull request coverage comment
+        uses: actions/github-script@v8
+        env:
+          COVERAGE_ARTIFACT: ${{ runner.temp }}/coverage
+        with:
+          script: |
+            await require(process.env.GITHUB_WORKSPACE + '/.github/scripts/coverage-comment.js')({ github, context, core });
 
   check_release:
     name: release checks

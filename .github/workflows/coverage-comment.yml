@@ -1,0 +1,33 @@
+name: Coverage comment
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
+jobs:
+  comment:
+    if: ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_repository.full_name != github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v5
+        with:
+          name: rust-coverage
+          path: ${{ runner.temp }}/coverage
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Update pull request coverage comment
+        uses: actions/github-script@v8
+        env:
+          COVERAGE_ARTIFACT: ${{ runner.temp }}/coverage
+        with:
+          script: |
+            await require(process.env.GITHUB_WORKSPACE + '/.github/scripts/coverage-comment.js')({ github, context, core });

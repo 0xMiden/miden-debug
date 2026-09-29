@@ -45,7 +45,7 @@ jobs:
     outputs:
       subject: ${{ steps.subject.outputs.sha }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -93,7 +93,7 @@ jobs:
             --subject "${GITHUB_SHA}" --output "${RUNNER_TEMP}/intent.json"
           cat "${RUNNER_TEMP}/intent.json"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-intent
           path: ${{ runner.temp }}/intent.json
@@ -118,7 +118,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.subject }}
           persist-credentials: false
@@ -126,7 +126,7 @@ jobs:
       - *install-rust
       - *install-release-tool
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-intent
           path: ${{ runner.temp }}
@@ -146,7 +146,7 @@ jobs:
       #    release-tool bundle \
       #      --output "${RUNNER_TEMP}/templates.tar.gz"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-plan
           path: |
@@ -172,7 +172,7 @@ jobs:
           - { runner: ubuntu-24.04, target: x86_64-unknown-linux-gnu, binary: miden-debug }
           - { runner: macos-15, target: aarch64-apple-darwin, binary: miden-debug }
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.subject }}
           persist-credentials: false
@@ -209,7 +209,7 @@ jobs:
             --name "${{ matrix.binary }}" \
             --output "${RUNNER_TEMP}/${{ matrix.binary }}-${{ matrix.target }}.tar.gz"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: artifact-${{ matrix.binary }}-${{ matrix.target }}
           path: ${{ runner.temp }}/${{ matrix.binary }}-${{ matrix.target }}.tar.gz
@@ -229,7 +229,7 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: artifact-*
           merge-multiple: true
@@ -248,7 +248,7 @@ jobs:
     permissions:
       contents: write # draft creation and asset upload
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.subject }}
           persist-credentials: false
@@ -256,12 +256,12 @@ jobs:
       - *install-rust
       - *install-release-tool
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-plan
           path: ${{ runner.temp }}
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: artifact-*
           merge-multiple: true
@@ -292,7 +292,7 @@ jobs:
       contents: write # tag creation
       id-token: write # Trusted Publishing
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.subject }}
           persist-credentials: false
@@ -300,7 +300,7 @@ jobs:
       - *install-rust
       - *install-release-tool
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-plan
           path: ${{ runner.temp }}
@@ -328,7 +328,7 @@ jobs:
             --plan "${RUNNER_TEMP}/plan.json" \
             --journal "${RUNNER_TEMP}/journal.json"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: release-journal
@@ -349,7 +349,7 @@ jobs:
     permissions:
       contents: write # publishing a release
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.subject }}
           persist-credentials: false
@@ -357,7 +357,7 @@ jobs:
       - *install-rust
       - *install-release-tool
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-plan
           path: ${{ runner.temp }}

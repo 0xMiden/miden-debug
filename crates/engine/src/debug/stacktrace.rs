@@ -70,6 +70,7 @@ enum LogicalFrameLocation {
 
 #[derive(Debug, Clone)]
 pub struct LogicalStackFrame {
+    inferred: bool,
     name: Arc<str>,
     kind: LogicalFrameKind,
     location: Option<LogicalFrameLocation>,
@@ -77,6 +78,10 @@ pub struct LogicalStackFrame {
 }
 
 impl LogicalStackFrame {
+    pub fn is_inferred(&self) -> bool {
+        self.inferred
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -91,6 +96,7 @@ impl LogicalStackFrame {
 
     pub fn display_name(&self) -> String {
         match self.kind {
+            LogicalFrameKind::Physical if self.inferred => format!("[inferred] {}", self.name),
             LogicalFrameKind::Physical => self.name.to_string(),
             LogicalFrameKind::Inline => format!("[inlined] {}", self.name),
         }
@@ -206,6 +212,7 @@ impl CallStack {
                 .map(|inline| LogicalFrameLocation::Assembly(inline.call_site.clone()))
                 .or_else(|| current_location.clone());
             logical.push(LogicalStackFrame {
+                inferred: frame.debug_frame.as_ref().is_some_and(DebugCallFrame::is_inferred),
                 name: frame.procedure(strip_prefix).unwrap_or_else(|| Arc::from("<unknown>")),
                 kind: LogicalFrameKind::Physical,
                 location,
@@ -222,6 +229,7 @@ impl CallStack {
                     ))
                 };
                 logical.push(LogicalStackFrame {
+                    inferred: false,
                     name: Arc::from(inline.display_name().into_boxed_str()),
                     kind: LogicalFrameKind::Inline,
                     location,
@@ -378,6 +386,10 @@ impl CallStack {
             if exited.is_none() {
                 exited = Some(popped);
             }
+        }
+
+        for (current, expected) in self.frames.iter_mut().zip(call_frames) {
+            current.debug_frame = Some(expected.clone());
         }
 
         for debug_frame in &call_frames[common_prefix..] {

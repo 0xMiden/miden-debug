@@ -9,6 +9,6 @@ delete 0
 continue
 
 # CHECK: Breakpoint 0 set: call *::frame_values
-# CHECK: in $exec::frame_values
+# CHECK: in [inferred] $exec::frame_values
 # CHECK: Deleted breakpoint 0
 # CHECK: Program terminated successfully

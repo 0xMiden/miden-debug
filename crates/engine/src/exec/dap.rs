@@ -183,6 +183,7 @@ struct DapPresentedFrame {
 
 /// A host wrapper that records replay inputs while delegating execution to the inner host.
 struct DapHostWrapper<'a, H> {
+    frame_resolver: miden_processor::DebugCallFrameResolver,
     inner: &'a mut H,
     frames: Vec<DapCallFrame>,
     /// When set, the advice mutations produced by each `on_event` invocation of the inner host
@@ -202,6 +203,7 @@ impl<'a, H> DapHostWrapper<'a, H> {
     ) -> Self {
         Self {
             inner,
+            frame_resolver: miden_processor::DebugCallFrameResolver::new(),
             frames: Vec::new(),
             event_recorder,
             forest_recorder,
@@ -533,7 +535,11 @@ fn present_recorded_frames(frames: &[DapCallFrame]) -> Vec<DapPresentedFrame> {
             |inline| (inline.source_path.clone(), inline.line, inline.column),
         );
         presented.push(DapPresentedFrame {
-            name: frame.name.clone(),
+            name: if frame.debug_frame.as_ref().is_some_and(DebugCallFrame::is_inferred) {
+                Arc::from(format!("[inferred] {}", frame.name))
+            } else {
+                frame.name.clone()
+            },
             source_path,
             line,
             column,
@@ -1125,6 +1131,9 @@ fn sync_dap_frames<H: Host>(host: &mut DapHostWrapper<'_, H>, call_frames: &[Deb
         })
         .count();
     host.frames.truncate(common_prefix);
+    for (current, expected) in host.frames.iter_mut().zip(call_frames) {
+        current.debug_frame = Some(expected.clone());
+    }
 
     for debug_frame in &call_frames[common_prefix..] {
         let debug_info = debug_frame.debug_info();
@@ -1380,7 +1389,8 @@ impl DapExecutor {
                     op_idx,
                     ..
                 } = extract_current_op(ctx);
-                sync_dap_frames(&mut wrapper, &ctx.debug_call_frames());
+                let frames = wrapper.frame_resolver.resolve(ctx);
+                sync_dap_frames(&mut wrapper, &frames);
                 current_asmop =
                     extract_asm_op(current_debug_info.as_deref(), source_node_id, op_idx);
                 current_inline_frames = inline_frames_for_operation(
@@ -2312,7 +2322,7 @@ fn advance_one<H: Host>(
         }
         None => (None, vec![]),
     };
-    let physical_frames = ctx.debug_call_frames();
+    let physical_frames = host.frame_resolver.resolve(&ctx);
     let pre_step_stack = processor.state().get_stack_state();
     let result = if let Some(debug_info) = debug_info.as_ref() {
         poll_immediately(processor.step_with_package_debug_info(host, ctx, debug_info))

@@ -9,8 +9,8 @@ where
 backtrace
 
 # CHECK: Breakpoint 0 set: **/op_histogram_proc.masm:4
-# CHECK: at {{.*}}op_histogram_proc.masm:4:5 in $exec::double
-# CHECK: {{.*}}op_histogram_proc.masm:4:5 in $exec::double
+# CHECK: at {{.*}}op_histogram_proc.masm:4:5 in [inferred] $exec::double
+# CHECK: {{.*}}op_histogram_proc.masm:4:5 in [inferred] $exec::double
 # CHECK: Backtrace (2 frames):
-# CHECK-NEXT: * #0 $exec::double at {{.*}}op_histogram_proc.masm:4:5
+# CHECK-NEXT: * #0 [inferred] $exec::double at {{.*}}op_histogram_proc.masm:4:5
 # CHECK-NEXT:   #1 $exec::$main

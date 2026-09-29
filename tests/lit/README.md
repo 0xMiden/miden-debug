@@ -24,7 +24,10 @@ The `call_frames*.test` cases compile plain MASM without compiler frame events a
 backtraces and `finish` across merged `exec` bodies, tail wrappers, consecutive invocations
 of the same procedure, recursion, `call`, and `dyncall`. Exact frame counts and ordering are checked,
 along with the final operand-stack result. The DAP unit tests also deserialize these fixtures
-from package bytes before checking stack traces and step-out behavior.
+from package bytes before checking stack traces and step-out behavior. Optimized `exec` frames
+are labeled `[inferred]`. A tail-only wrapper can be indistinguishable from its callee in the
+existing metadata; the tail fixture checks that we omit it rather than invent a frame and explain
+that optimized callers may be missing. Ordinary `call` frames retain source-based identities.
 
 Python scripting tests run `miden-debug-python`, a second local copy built with
 the `python` feature, and pass `--no-user-python-init` so user configuration

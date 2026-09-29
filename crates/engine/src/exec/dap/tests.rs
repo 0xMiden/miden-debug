@@ -431,13 +431,13 @@ fn assert_serialized_dap_stacktraces(
 }
 
 #[test]
-fn dap_stacktrace_retains_tail_wrappers_from_package_metadata() {
+fn dap_stacktrace_labels_inferred_frames_without_inventing_tail_wrappers() {
     assert_serialized_dap_stacktraces(
         include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/lit/call_frames_tail.masm"
         )),
-        &[&["::$exec::inner", "::$exec::outer", "::$exec::$main"], &["::$exec::$main"]],
+        &[&["[inferred] ::$exec::inner", "::$exec::$main"], &["::$exec::$main"]],
         16,
     );
 }
@@ -450,8 +450,8 @@ fn dap_stacktrace_distinguishes_adjacent_invocations_from_package_metadata() {
             "/../../tests/lit/call_frames_siblings.masm"
         )),
         &[
-            &["::$exec::leaf", "::$exec::$main"],
-            &["::$exec::leaf", "::$exec::$main"],
+            &["[inferred] ::$exec::leaf", "::$exec::$main"],
+            &["[inferred] ::$exec::leaf", "::$exec::$main"],
             &["::$exec::$main"],
         ],
         46,

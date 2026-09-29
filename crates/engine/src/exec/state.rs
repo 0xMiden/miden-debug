@@ -31,6 +31,8 @@ use crate::{
 /// This is used by the debugger to execute programs, and provide all of the functionality made
 /// available by the TUI.
 pub struct DebugExecutor {
+    /// Cached frame lookups derived from the session's package metadata.
+    pub frame_resolver: miden_processor::DebugCallFrameResolver,
     /// The underlying [FastProcessor] being driven
     pub processor: FastProcessor,
     /// The host providing debugging callbacks
@@ -309,7 +311,7 @@ impl DebugExecutor {
                 source_node.debug_infos_for_operation(op_idx as u32, di).collect()
             })
             .unwrap_or_default();
-        let physical_frames = resume_ctx.debug_call_frames();
+        let physical_frames = self.frame_resolver.resolve(&resume_ctx);
         let pre_step_stack = self.processor.state().get_stack_state();
 
         // Execute one step

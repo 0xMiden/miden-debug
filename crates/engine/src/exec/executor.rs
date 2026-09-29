@@ -182,6 +182,7 @@ impl Executor {
         let callstack = CallStack::new();
         let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
+            frame_resolver: miden_processor::DebugCallFrameResolver::new(),
             processor,
             host,
             resume_ctx: Some(resume_ctx),
@@ -247,6 +248,7 @@ impl Executor {
         let callstack = CallStack::new();
         let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
+            frame_resolver: miden_processor::DebugCallFrameResolver::new(),
             processor,
             host,
             resume_ctx: Some(resume_ctx),

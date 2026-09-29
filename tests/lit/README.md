@@ -29,6 +29,12 @@ are labeled `[inferred]`. A tail-only wrapper can be indistinguishable from its 
 existing metadata; the tail fixture checks that we omit it rather than invent a frame and explain
 that optimized callers may be missing. Ordinary `call` frames retain source-based identities.
 
+Additional frame regressions cover both sides of a conditional, repeated loop invocations,
+multi-level `exec`/`dynexec` unwinding, distinct procedures with identical executable bodies, and
+reloading a paused session. They check frame counts, names, source locations, inference labels,
+step-out destinations, and final stack results. Fixtures are assembled explicitly by each test;
+no compiled packages are checked in.
+
 Python scripting tests run `miden-debug-python`, a second local copy built with
 the `python` feature, and pass `--no-user-python-init` so user configuration
 cannot affect their output.

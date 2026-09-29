@@ -59,6 +59,11 @@ impl DapClient {
     pub fn connect(addr: &str) -> Result<Self, String> {
         let stream = TcpStream::connect(addr)
             .map_err(|e| format!("failed to connect to DAP server at {addr}: {e}"))?;
+        Self::from_stream(stream)
+    }
+
+    /// Use an established connection, preserving its configured socket options and timeouts.
+    pub fn from_stream(stream: TcpStream) -> Result<Self, String> {
         let reader = BufReader::new(
             stream.try_clone().map_err(|e| format!("failed to clone TCP stream: {e}"))?,
         );
@@ -500,6 +505,17 @@ mod tests {
             json!({"type": "event", "event": "miden/uiState", "body": {"cycle": cycle, "current_stack": [7], "callstack": []}}),
             json!({"type": "event", "event": "stopped", "body": {"reason": "step", "threadId": 1}}),
         ]
+    }
+
+    #[test]
+    fn configured_stream_times_out_when_peer_does_not_answer_handshake() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (_peer, _) = listener.accept().unwrap();
+        stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut client = DapClient::from_stream(stream).unwrap();
+        assert!(client.handshake().unwrap_err().contains("read error"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use std::{boxed::Box, path::Path, sync::Arc, vec::Vec};
+use std::{boxed::Box, net::TcpListener, path::Path, sync::Arc, vec::Vec};
 
 use miden_assembly::DefaultSourceManager;
 use miden_assembly_syntax::diagnostics::Report;
@@ -23,8 +23,17 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
         .start_debug_adapter
         .as_ref()
         .ok_or_else(|| Report::msg("missing --start-debug-adapter address"))?;
+    let listener = DapExecutor::bind_listener(addr).map_err(Report::msg)?;
+    run_on_listener(config, listener)
+}
+
+fn run_on_listener(config: Box<DebuggerConfig>, listener: TcpListener) -> Result<(), Report> {
+    let addr = listener
+        .local_addr()
+        .map_err(|err| Report::msg(format!("failed to read DAP listener address: {err}")))?;
     DapConfig::set_global(
-        DapConfig::new(addr).with_source_path_prefixes(config.source_path_prefixes.clone()),
+        DapConfig::new(format!("{addr}"))
+            .with_source_path_prefixes(config.source_path_prefixes.clone()),
     );
 
     let source_manager = Arc::new(DefaultSourceManager::default());
@@ -47,7 +56,8 @@ pub fn run(config: Box<DebuggerConfig>) -> Result<(), Report> {
     }
 
     let executor = DapExecutor::new(inputs.inputs, inputs.advice_inputs, inputs.options);
-    futures_executor::block_on(executor.execute_async(program, &mut host))
+    executor
+        .execute_on_listener(program, &mut host, listener)
         .map(|_| ())
         .map_err(|err| Report::msg(format!("program execution failed: {err}")))
 }
@@ -134,7 +144,12 @@ fn verify_package_dependencies(
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;
-    use std::{net::TcpListener, thread, time::Duration};
+    use std::{
+        net::{TcpListener, TcpStream},
+        sync::mpsc,
+        thread,
+        time::Duration,
+    };
 
     use miden_assembly::Assembler;
 
@@ -150,30 +165,30 @@ mod tests {
             .unwrap();
         package.write_to_file(&package_path).unwrap();
 
-        let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = reservation.local_addr().unwrap().to_string();
-        drop(reservation);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let timeout = Duration::from_secs(5);
 
         let config = Box::new(DebuggerConfig {
             input: Some(crate::InputFile::from_path(&package_path)),
-            start_debug_adapter: Some(address.clone()),
+            start_debug_adapter: Some(address.to_string()),
             ..Default::default()
         });
-        let server = thread::spawn(move || run(config));
+        let (completed, completion) = mpsc::channel();
+        let server = thread::spawn(move || {
+            completed.send(run_on_listener(config, listener)).unwrap();
+        });
 
-        let mut state = (0..100)
-            .find_map(|_| match crate::State::new_for_dap(&address) {
-                Ok(state) => Some(state),
-                Err(_) => {
-                    thread::sleep(Duration::from_millis(50));
-                    None
-                }
-            })
-            .expect("remote state did not connect to the standalone server");
+        let stream = TcpStream::connect_timeout(&address, timeout).unwrap();
+        stream.set_read_timeout(Some(timeout)).unwrap();
+        stream.set_write_timeout(Some(timeout)).unwrap();
+        let client = crate::exec::DapClient::from_stream(stream).unwrap();
+        let mut state = crate::State::from_dap_client(&address.to_string(), client).unwrap();
         assert_eq!(state.debug_mode, crate::DebugMode::Remote);
         assert_eq!(state.executor().cycle, 0);
         assert!(matches!(state.step_remote().unwrap(), crate::exec::DapStopReason::Terminated));
         drop(state);
-        server.join().unwrap().unwrap();
+        completion.recv_timeout(timeout).expect("DAP server did not finish").unwrap();
+        server.join().unwrap();
     }
 }

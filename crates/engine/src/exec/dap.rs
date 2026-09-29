@@ -1229,7 +1229,7 @@ impl DapExecutor {
 impl DapExecutor {
     /// Bind the DAP listen socket, reporting failures (bad address, port in
     /// use, ...) as errors instead of aborting the process.
-    fn bind_listener(listen_addr: &str) -> Result<TcpListener, String> {
+    pub fn bind_listener(listen_addr: &str) -> Result<TcpListener, String> {
         use std::net::ToSocketAddrs;
 
         use socket2::{Domain, Socket, Type};
@@ -1257,8 +1257,6 @@ impl DapExecutor {
         root_package: Arc<Package>,
         host: &mut H,
     ) -> Result<ExecutionOutput, ExecutionError> {
-        assert!(root_package.is_program(), "cannot execute a non-executable package");
-
         let listener = match Self::bind_listener(&self.config.listen_addr) {
             Ok(listener) => listener,
             Err(err) => {
@@ -1266,15 +1264,21 @@ impl DapExecutor {
                 return Err(ExecutionError::Internal("failed to start DAP server"));
             }
         };
-        self.run_dap_session(root_package, host, listener)
+        self.execute_on_listener(root_package, host, listener)
     }
 
-    fn run_dap_session<H: Host>(
+    /// Execute a program using an already-bound listener, accepting one DAP client.
+    ///
+    /// This blocks until the session finishes. The caller owns listener setup and can publish
+    /// its address before starting execution, including when binding an ephemeral port.
+    pub fn execute_on_listener<H: Host>(
         self,
         root_package: Arc<Package>,
         host: &mut H,
         listener: TcpListener,
     ) -> Result<ExecutionOutput, ExecutionError> {
+        assert!(root_package.is_program(), "cannot execute a non-executable package");
+
         // Clone inputs so they can be reused across restarts.
         let Self {
             stack_inputs,
@@ -1285,7 +1289,10 @@ impl DapExecutor {
         } = self;
         log::info!(
             "DAP server listening on {}. Waiting for client connection...",
-            config.listen_addr
+            listener
+                .local_addr()
+                .map(|addr| addr.to_string())
+                .unwrap_or(config.listen_addr.clone())
         );
 
         // Accept one client connection (persists across restarts).
@@ -2745,7 +2752,7 @@ mod protocol_tests {
             executor.forest_recorder = Some(MastForestRecorder::new());
             let server = thread::spawn(move || {
                 let mut host = DebuggerHost::new(source_manager);
-                executor.run_dap_session(package, &mut host, listener)
+                executor.execute_on_listener(package, &mut host, listener)
             });
             let stream = std::net::TcpStream::connect(address).unwrap();
             stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();

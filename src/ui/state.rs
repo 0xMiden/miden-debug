@@ -116,7 +116,11 @@ struct RemoteSnapshot {
 
 #[cfg(feature = "dap")]
 impl RemoteState {
-    fn connect(addr: &str, source_manager: &Arc<dyn SourceManager>) -> Result<Self, Report> {
+    fn from_client(
+        addr: &str,
+        mut client: crate::exec::DapClient,
+        source_manager: &Arc<dyn SourceManager>,
+    ) -> Result<Self, Report> {
         use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
         use miden_debug_engine::{debug::DebugVarTracker, profiling::Profiler};
@@ -124,7 +128,6 @@ impl RemoteState {
 
         use crate::exec::DebuggerHost;
 
-        let mut client = crate::exec::DapClient::connect(addr).map_err(Report::msg)?;
         let ui_state = client.handshake().map_err(Report::msg)?;
         let snapshot = convert_ui_state(&ui_state, source_manager);
 
@@ -1324,8 +1327,16 @@ impl State {
     /// Connects to a DAP server, performs the handshake, and queries the
     /// initial state to populate the executor fields that the TUI panes read.
     pub fn new_for_dap(addr: &str) -> Result<Self, Report> {
+        let client = crate::exec::DapClient::connect(addr).map_err(Report::msg)?;
+        Self::from_dap_client(addr, client)
+    }
+
+    pub(crate) fn from_dap_client(
+        addr: &str,
+        client: crate::exec::DapClient,
+    ) -> Result<Self, Report> {
         let source_manager: Arc<dyn SourceManager> = Arc::new(DefaultSourceManager::default());
-        let remote = RemoteState::connect(addr, &source_manager)?;
+        let remote = RemoteState::from_client(addr, client, &source_manager)?;
 
         Ok(Self {
             source_manager,

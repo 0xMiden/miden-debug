@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.17.0]
+
+### Added
+
+- Rust integrations can bind a DAP listener before starting execution with `DapExecutor::bind_listener` and `DapExecutor::execute_on_listener`, including discovering an automatically assigned port before accepting a client.
+- Rust DAP clients can use an established TCP connection with `DapClient::from_stream`, preserving socket options and timeouts configured before the handshake.
+
+### Changed
+
+- The DAP server log now reports the actual listening address, including the assigned port when started with port `0`.
+
+### Migration and breaking changes
+
+- The debugger now uses Miden VM 0.34.0 instead of 0.33.0. Rust integrations exchanging VM, package, or debug-info types with the debugger must use matching 0.34.0 dependencies.
+- Standalone DAP mode now binds its listening socket before loading the program and its dependencies. The port is reserved during loading, and invalid addresses or occupied ports are reported before package-loading errors.
+
 ## [0.16.0]
 
 ### Changed

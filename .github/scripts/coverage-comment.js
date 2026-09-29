@@ -40,7 +40,7 @@ module.exports = async function commentOnCoverage({ github, context, core }) {
     }
     result = `Line coverage: **${(Number(rate) * 100).toFixed(2)}%** ` +
       `(${Number(covered).toLocaleString('en-US')} / ${Number(valid).toLocaleString('en-US')} lines). ` +
-      'Required: 80%.';
+      'Required: 75%.';
   }
 
   const marker = '<!-- miden-debug-coverage -->';

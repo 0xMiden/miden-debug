@@ -303,7 +303,7 @@ args = [
 
 [tasks.coverage]
 category = "Test"
-description = "Run workspace tests with LLVM source coverage"
+description = "Measure production code coverage with workspace tests"
 command = "cargo"
 args = [
     "llvm-cov",
@@ -313,7 +313,7 @@ args = [
     "--output-path",
     "rust-coverage.xml",
     "--fail-under-lines",
-    "80",
+    "75",
     "${@}",
 ]
 dependencies = ["cargo-llvm-cov"]

@@ -28,6 +28,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Recover procedure frames from existing function/source metadata and VM continuations in local and DAP sessions. Best-effort optimized frames are labeled `[inferred]`; indistinguishable tail wrappers may be omitted. No additional package metadata is required, and legacy compiler frame events no longer control backtraces or stepping out.
+
 - Unqualified function breakpoints now consistently match fully-qualified procedure-name suffixes in local and DAP sessions ([#88](https://github.com/0xMiden/miden-debug/issues/88)).
 
 ## [0.15.0]

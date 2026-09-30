@@ -371,6 +371,12 @@ impl ReplEngine {
 
             let _ = writeln!(out, "{} #{} {}{}", marker, i, frame.display_name(), loc_str);
         }
+        if frames.iter().any(|frame| frame.is_inferred()) {
+            let _ = writeln!(
+                out,
+                "[inferred] frames are best-effort; optimized callers may be missing."
+            );
+        }
         Ok(())
     }
 

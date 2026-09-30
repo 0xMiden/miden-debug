@@ -261,6 +261,7 @@ fn next_source_line_ignores_pre_body_mappings() {
 #[test]
 fn dap_presents_inline_frames_in_innermost_first_order() {
     let frames = vec![DapCallFrame {
+        debug_frame: None,
         name: "crate::physical".into(),
         source_path: Some("src/lib.rs".into()),
         line: 30,
@@ -433,10 +434,7 @@ fn assert_serialized_dap_stacktraces(
 #[test]
 fn dap_stacktrace_labels_inferred_frames_without_inventing_tail_wrappers() {
     assert_serialized_dap_stacktraces(
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../tests/lit/call_frames_tail.masm"
-        )),
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/lit/call_frames_tail.masm")),
         &[&["[inferred] ::$exec::inner", "::$exec::$main"], &["::$exec::$main"]],
         16,
     );

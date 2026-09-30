@@ -73,7 +73,7 @@ fn logical_frames_place_innermost_inline_frame_on_top() {
     );
     frame.push(Operation::Add, 1, Some(&asmop));
 
-    let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+    let mut callstack = CallStack::new();
     callstack.frames.push(frame);
     let source_manager = DefaultSourceManager::default();
     // Frame ordering does not depend on the std-only filesystem fallback.
@@ -99,7 +99,7 @@ fn control_cycles_replace_and_clear_inline_frames() {
         name: Arc::from("crate::inline"),
         call_site: Location::new(Uri::new("test.masm"), ByteIndex::new(0), ByteIndex::new(1)),
     };
-    let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+    let mut callstack = CallStack::new();
 
     callstack.next(&StepInfo {
         op: None,
@@ -107,6 +107,7 @@ fn control_cycles_replace_and_clear_inline_frames() {
         asmop: None,
         clk: RowIndex::from(0u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: std::slice::from_ref(&inline),
     });
 
@@ -121,6 +122,7 @@ fn control_cycles_replace_and_clear_inline_frames() {
         asmop: None,
         clk: RowIndex::from(1u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: &[],
     });
 
@@ -131,7 +133,7 @@ fn control_cycles_replace_and_clear_inline_frames() {
 
 #[test]
 fn logical_physical_frame_tracks_exec_procedure_changes() {
-    let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+    let mut callstack = CallStack::new();
     let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
     callstack.next(&StepInfo {
         op: Some(Operation::Add),
@@ -139,6 +141,7 @@ fn logical_physical_frame_tracks_exec_procedure_changes() {
         asmop: Some(&main),
         clk: RowIndex::from(0u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: &[],
     });
 
@@ -157,6 +160,7 @@ fn logical_physical_frame_tracks_exec_procedure_changes() {
         asmop: Some(&exec),
         clk: RowIndex::from(1u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: std::slice::from_ref(&inline),
     });
 
@@ -170,7 +174,7 @@ fn logical_physical_frame_tracks_exec_procedure_changes() {
 
 #[test]
 fn control_cycle_tracks_exec_procedure_change_before_first_operation() {
-    let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+    let mut callstack = CallStack::new();
     let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
     callstack.next(&StepInfo {
         op: Some(Operation::Add),
@@ -178,6 +182,7 @@ fn control_cycle_tracks_exec_procedure_change_before_first_operation() {
         asmop: Some(&main),
         clk: RowIndex::from(0u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: &[],
     });
 
@@ -188,6 +193,7 @@ fn control_cycle_tracks_exec_procedure_change_before_first_operation() {
         asmop: Some(&exec),
         clk: RowIndex::from(1u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: &[],
     });
 

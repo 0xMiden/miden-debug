@@ -26,7 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - &checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -36,7 +36,7 @@ jobs:
           rustup update --no-self-update
           rustc --version
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Use a common cache for the basic compilation/formatter/clippy checks
           shared-key: ${{ github.workflow }}-shared
@@ -59,13 +59,13 @@ jobs:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: ${{ github.workflow }}-shared-feature-combinations
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: ${{ github.ref == 'refs/heads/next' }}
       - *install-cargo-make
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-hack@0.6.44
       - name: Check feature combinations
@@ -83,7 +83,7 @@ jobs:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Use a common cache for the basic compilation/formatter/clippy checks
           shared-key: ${{ github.workflow }}-shared
@@ -104,7 +104,7 @@ jobs:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # NOTE: We use a different cache for the tests, so they can be run in parallel, but we
           # also share the cache for the tests for efficiency
@@ -112,7 +112,9 @@ jobs:
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: ${{ github.ref == 'refs/heads/next' }}
       - *install-cargo-make
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-nextest@0.9
       - name: Check
         # We run `cargo check` to verify that the workspace compiles correctly before attempting
         # to execute the tests. This produces easier to read output if a compilation error occurs
@@ -131,7 +133,7 @@ jobs:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # Dedicated cache for the lit job
           shared-key: ${{ github.workflow }}-shared-lit-tests
@@ -158,7 +160,7 @@ jobs:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: ${{ github.workflow }}-shared-coverage
           prefix-key: ${{ env.RUST_CACHE_KEY }}
@@ -175,7 +177,7 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: printf '%s\n' "$PR_NUMBER" "$PR_HEAD_SHA" "$PR_HEAD_REPO" > coverage-pr-context.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ always() }}
         with:
           name: rust-coverage
@@ -184,6 +186,22 @@ jobs:
             coverage-pr-context.txt
           if-no-files-found: warn
 
+  coverage-comment:
+    name: append coverage report to pull request
+    needs: [coverage]
+    if: ${{ github.event_name == 'pull_request' && needs.coverage.result == 'success' }}
+    # A called workflow can only *downgrade* the calling job's token, so this
+    # grant is the ceiling for every job in `coverage-comment.yml`.
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/coverage-comment.yml
+    with:
+      ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      run_id: ${{ github.run_id }}
+
   check_release:
     name: release checks
     runs-on: ubuntu-latest
@@ -191,7 +209,7 @@ jobs:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # NOTE: We use a different cache for the these release checks
           shared-key: ${{ github.workflow }}-shared-release-checks

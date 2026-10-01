@@ -1722,7 +1722,7 @@ dependencies = [
 
 [[package]]
 name = "miden-debug"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "clap",
  "compact_str",
@@ -1756,7 +1756,7 @@ dependencies = [
 
 [[package]]
 name = "miden-debug-dap"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "fake",
  "rand 0.10.2",
@@ -1767,7 +1767,7 @@ dependencies = [
 
 [[package]]
 name = "miden-debug-engine"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "clap",
  "hashbrown 0.17.1",

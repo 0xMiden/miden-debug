@@ -178,7 +178,6 @@ impl EventMutationRecorder {
     }
 
     /// Record the mutations produced by one `on_event` invocation.
-    #[cfg(feature = "dap")]
     pub(crate) fn record(&self, mutations: Vec<AdviceMutation>) {
         self.log.write().push(mutations);
     }

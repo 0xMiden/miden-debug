@@ -8,7 +8,10 @@ use miden_assembly_syntax::ast::types::{
     CallConv, FunctionType, MIDEN_CORE_TYPES, Type, TypedError, TypedProcInfo, WitScalarCodec,
 };
 use miden_core::Felt;
-use miden_mast_package::Package;
+use miden_mast_package::{
+    Package,
+    debug_info::{DebugPrimitiveType, DebugTypeInfo, PackageDebugInfo, recover_type_at},
+};
 
 /// Typed ABI metadata for a package entrypoint.
 ///
@@ -76,6 +79,37 @@ pub fn format_value(
 
 pub(crate) fn value_felt_count(ty: &Type) -> Option<usize> {
     value_decoder(ty)?.output_felt_count().ok()?
+}
+
+/// Number of felts the named function returns, or `None` if the function or its return type is
+/// unknown. Uses `value_felt_count`, same as arguments.
+pub(crate) fn return_felt_count(info: &PackageDebugInfo, name: &str) -> Option<usize> {
+    // MASM procedures often have no debug info. `None` means "result unknown", not an error
+    let is_named = |idx| info.get_string(idx).as_deref() == Some(name);
+    let functions = info.functions();
+    let func = functions.iter().find(|func| is_named(func.name_idx)).or_else(|| {
+        functions
+            .iter()
+            .find(|func| func.linkage_name_idx.into_option().is_some_and(is_named))
+    })?;
+    let DebugTypeInfo::Function {
+        return_type_idx, ..
+    } = info.get_type(func.type_idx.into_option()?)?
+    else {
+        return None;
+    };
+    // No return value: no return type, or `Void`.
+    let Some(return_type_idx) = return_type_idx else {
+        return Some(0);
+    };
+    if matches!(
+        info.get_type(*return_type_idx)?,
+        DebugTypeInfo::Primitive(DebugPrimitiveType::Void)
+    ) {
+        return Some(0);
+    }
+    let (ty, _) = recover_type_at(*return_type_idx, info, &mut Default::default())?;
+    value_felt_count(&ty)
 }
 
 fn value_decoder(ty: &Type) -> Option<TypedProcedure> {
@@ -175,6 +209,11 @@ mod tests {
     use alloc::sync::Arc;
 
     use miden_assembly_syntax::ast::types::{ArrayType, StructType};
+    use miden_core::Word;
+    use miden_debug_types::{ColumnNumber, LineNumber};
+    use miden_mast_package::debug_info::{
+        DebugFileInfo, DebugFunctionInfo, DebugTypeIdx, PackageDebugInfoBuilder,
+    };
 
     use super::*;
 
@@ -265,5 +304,60 @@ mod tests {
         let array = Type::Array(Arc::new(ArrayType::new(Type::U32, 3)));
 
         assert_eq!(render(&array, &[felt(5), felt(6), felt(7)]).as_deref(), Some("[5, 6, 7]"));
+    }
+
+    /// Adds `name` to `builder` as a function that returns `return_type_idx`.
+    fn add_function(
+        builder: &mut PackageDebugInfoBuilder,
+        name: &str,
+        linkage_name: Option<&str>,
+        return_type_idx: Option<DebugTypeIdx>,
+    ) {
+        let name_idx = builder.add_string(Arc::from(name));
+        let path_idx = builder.add_string(Arc::from("lib.rs"));
+        let file_idx = builder.add_file_info(DebugFileInfo::new(path_idx));
+        let signature = builder.add_type(DebugTypeInfo::Function {
+            return_type_idx,
+            param_type_indices: Vec::new(),
+        });
+        let mut info = DebugFunctionInfo::new(
+            None,
+            name_idx,
+            file_idx,
+            LineNumber::new(1).unwrap(),
+            ColumnNumber::new(1).unwrap(),
+            Word::default(),
+        )
+        .with_type(signature);
+        if let Some(linkage_name) = linkage_name {
+            info = info.with_linkage_name(builder.add_string(Arc::from(linkage_name)));
+        }
+        builder.add_function(info);
+    }
+
+    #[test]
+    fn return_felt_counts() {
+        let mut builder = PackageDebugInfoBuilder::default();
+        let felt = builder.add_type(DebugTypeInfo::Primitive(DebugPrimitiveType::Felt));
+        // A `Word` is emitted as `[Felt; 4]`
+        let word = builder.add_type(DebugTypeInfo::Array {
+            element_type_idx: felt,
+            count: Some(4),
+        });
+        let void = builder.add_type(DebugTypeInfo::Primitive(DebugPrimitiveType::Void));
+        add_function(&mut builder, "felt_fn", None, Some(felt));
+        add_function(&mut builder, "word_fn", None, Some(word));
+        add_function(&mut builder, "void_fn", None, Some(void));
+        add_function(&mut builder, "no_return_fn", None, None);
+        add_function(&mut builder, "source_fn", Some("linked_fn"), Some(felt));
+        let info = builder.build();
+
+        assert_eq!(return_felt_count(&info, "felt_fn"), Some(1));
+        assert_eq!(return_felt_count(&info, "word_fn"), Some(4));
+        assert_eq!(return_felt_count(&info, "void_fn"), Some(0));
+        assert_eq!(return_felt_count(&info, "no_return_fn"), Some(0));
+        assert_eq!(return_felt_count(&info, "source_fn"), Some(1));
+        assert_eq!(return_felt_count(&info, "linked_fn"), Some(1));
+        assert_eq!(return_felt_count(&info, "missing_fn"), None);
     }
 }

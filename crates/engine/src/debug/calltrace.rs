@@ -39,21 +39,26 @@ impl CallFrameRecord {
 /// Builds a [`CallTrace`] from frame entries and exits reported in execution order.
 #[derive(Default)]
 pub struct CallTraceRecorder {
+    /// Frames that started and did not end yet. The last one is the current frame.
     open: Vec<OpenFrame>,
+    /// Frames that ended when no parent frame was open.
     roots: Vec<CallFrameRecord>,
 }
 
 struct OpenFrame {
     record: CallFrameRecord,
     caller: Option<Arc<str>>,
-    enter_depth: usize,
+    /// Felts the callee returns; `None` means unknown.
+    output_felt_count: Option<usize>,
+    /// A `call`/`dynexec` entered this frame, so the callee may share the caller's name (recursion).
+    boundary_crossed: bool,
     /// Set once this frame makes a call, after which arguments are no longer recorded.
     args_sealed: bool,
 }
 
 impl CallTraceRecorder {
     /// Open a frame entered at `clk`.
-    pub fn enter(&mut self, clk: usize, caller: Option<Arc<str>>, stack_depth: usize) {
+    pub fn enter(&mut self, clk: usize, caller: Option<Arc<str>>) {
         if let Some(parent) = self.open.last_mut() {
             parent.args_sealed = true;
         }
@@ -67,32 +72,59 @@ impl CallTraceRecorder {
                 children: Vec::new(),
             },
             caller,
-            enter_depth: stack_depth,
+            output_felt_count: None,
+            boundary_crossed: false,
             args_sealed: false,
         });
     }
 
-    /// Name the innermost call after the first name that is not the caller, and keep that name.
-    ///
-    /// The markers sit in the caller, around the call, so the caller runs first and last:
+    /// Names the innermost call after the first name that is not the caller's (or any name after
+    /// [`Self::mark_call_boundary`], for recursion). Returns `true` when it sets the name.
     ///
     /// ```text
     /// fn function_1() -> Felt { function_2() }
     ///
-    /// function_1   the start marker runs      -> same as the caller, skipped
-    /// function_2   the callee runs            -> this names the call
-    /// function_1   the callee has returned    -> the call has a name, skipped
+    /// function_1   start marker   -> caller, skipped
+    /// function_2   callee runs    -> names the call
+    /// function_1   after return   -> already named, skipped
+    ///
+    /// fn fib(n) -> Felt { fib(n - 1) + .. }   // dynexec to itself
+    ///
+    /// fib          start marker   -> caller, skipped
+    /// fib          after boundary -> names the call
     /// ```
     ///
-    /// Without the caller check the call is named after its caller; without the `is_none` check
-    /// it is renamed back to the caller once the callee returns.
-    pub fn observe_name(&mut self, name: &str) {
+    /// The name is wrong if the callee has no debug info or starts with `exec`.
+    pub fn observe_name(&mut self, name: &str) -> bool {
         if let Some(frame) = self.open.last_mut()
             && frame.record.callee.is_none()
-            && frame.caller.as_deref() != Some(name)
+            && (frame.boundary_crossed || frame.caller.as_deref() != Some(name))
         {
             frame.record.callee = Some(String::from(name));
+            return true;
         }
+        false
+    }
+
+    /// A `call`/`dynexec` entered the innermost frame, so its callee may share the caller's name.
+    pub fn mark_call_boundary(&mut self) {
+        if let Some(frame) = self.open.last_mut() {
+            frame.boundary_crossed = true;
+        }
+    }
+
+    /// Sets how many felts the innermost callee returns; `None` keeps results unknown.
+    pub fn observe_output_width(&mut self, count: Option<usize>) {
+        if let Some(frame) = self.open.last_mut()
+            && frame.output_felt_count.is_none()
+        {
+            frame.output_felt_count = count;
+        }
+    }
+
+    /// The trace's first frame, whose result width comes from the manifest.
+    pub fn is_first_frame(&self) -> bool {
+        self.open.len() == 1 && self.roots.is_empty()
     }
 
     /// The cycle the innermost open frame was entered at, while it still takes arguments.
@@ -115,19 +147,14 @@ impl CallTraceRecorder {
             .is_some_and(|frame| frame.record.args.iter().any(|arg| arg.index == index))
     }
 
-    /// Record an argument of the innermost open frame, keeping the value the call was made with.
-    ///
-    /// `felt_count` is how many stack elements the argument takes - [`Self::exit`] counts it
-    /// back to work out the results - or `None` when the width is not known.
-    ///
-    /// A parameter is a local variable, so the body can overwrite it; only the first observation
-    /// is kept.
+    /// Records an argument of the innermost frame. Only the first value is kept, because the body
+    /// can overwrite a parameter.
     ///
     /// ```text
-    /// fn function_1(mut op: Felt, amount: Felt) -> Felt { op = 99; op + amount }
+    /// fn function_1(mut op: Felt) { op = 99; .. }
     ///
-    /// op = 3    the call was made with this   -> kept
-    /// op = 99   the body wrote this later     -> skipped
+    /// op = 3    value at the call   -> kept
+    /// op = 99   written by the body -> skipped
     /// ```
     pub fn observe_arg(
         &mut self,
@@ -150,22 +177,13 @@ impl CallTraceRecorder {
         });
     }
 
-    /// Close the innermost open frame at `clk`, reading its results from `stack`.
-    ///
-    /// Arguments are counted by width, not one element each: `Felt` 1, `u64` 2, `Word` 4. One
-    /// argument of unknown width makes the total unknown, and the results with it.
+    /// Closes the innermost frame at `clk`; its results are the top
+    /// [`Self::observe_output_width`] felts of `stack`.
     ///
     /// ```text
-    /// fn function_1(op: Felt, amount: Felt) -> Felt { op + amount }   // function_1(3, 5)
-    ///
-    /// stack 18 -> 17, two arguments   -> one result, 8
-    /// stack 17 -> 16, one argument    -> no results
-    /// stack 17 -> 16, no arguments    -> not known, the call popped more than it pushed
-    ///
-    /// fn function_2(x: u64) -> u64 { .. }
-    ///
-    /// stack 18 -> 18, one argument two elements wide   -> two results
-    /// stack 18 -> 18, one argument of unknown width    -> not known
+    /// -> Felt          width 1     -> results = [top felt]
+    /// returns nothing  width 0     -> results = []
+    /// no signature     width None  -> results = None (unknown)
     /// ```
     pub fn exit(&mut self, clk: usize, stack: &[u64]) {
         let Some(frame) = self.open.pop() else {
@@ -174,14 +192,10 @@ impl CallTraceRecorder {
         let mut record = frame.record;
         record.exit_clk = Some(clk);
 
-        // A call pops its arguments and pushes its results, so `popped + args_width` is how many
-        // elements it left. A negative count means not all arguments were recorded, and a `None`
-        // width means one of them has no known size; either way the results are unknown.
-        let popped = stack.len() as isize - frame.enter_depth as isize;
-        let args_width: Option<usize> = record.args.iter().map(|arg| arg.felt_count).sum();
-        record.results = args_width
-            .and_then(|width| usize::try_from(popped + width as isize).ok())
-            .map(|count| stack.iter().take(count).copied().collect());
+        // If the stack is shorter than the width, the width is wrong, so the result is unknown.
+        record.results = frame
+            .output_felt_count
+            .and_then(|count| (stack.len() >= count).then(|| stack[..count].to_vec()));
 
         self.attach(record);
     }
@@ -232,14 +246,17 @@ mod tests {
     #[test]
     fn frames_follow_entry_and_exit_order() {
         let mut recorder = CallTraceRecorder::default();
-        recorder.enter(10, Some("$main".into()), 16);
+        recorder.enter(10, Some("$main".into()));
         recorder.observe_name("$main");
         recorder.observe_name("function_1");
-        recorder.enter(20, Some("function_1".into()), 16);
+        recorder.observe_output_width(Some(2)); // function_1 returns (Felt, Felt)
+        recorder.enter(20, Some("function_1".into()));
         recorder.observe_name("function_2");
+        recorder.observe_output_width(Some(1)); // function_2 returns Felt
         recorder.exit(30, &stack(17, &[42]));
-        recorder.enter(40, Some("function_1".into()), 17);
+        recorder.enter(40, Some("function_1".into()));
         recorder.observe_name("function_3");
+        recorder.observe_output_width(Some(1)); // function_3 returns Felt
         recorder.exit(50, &stack(18, &[7, 42]));
         recorder.exit(60, &stack(18, &[7, 42]));
 
@@ -258,6 +275,31 @@ mod tests {
         assert_eq!(function_1.children[1].results.as_deref(), Some([7].as_slice()));
     }
 
+    /// The call being traced:
+    ///
+    /// ```text
+    /// fn consume_u64(n: u64)   // takes a u64, returns nothing
+    /// ```
+    ///
+    /// It is called while the stack is already at the VM's minimum depth of 16, consumes its two
+    /// `u64` limbs, and pushes nothing. Entry and exit depths are therefore both 16, so a count
+    /// derived from the stack depth would add the argument width back and report two padding felts
+    /// as a result. Taking the width from the signature (returns nothing -> 0 felts) reports no
+    /// results instead.
+    #[test]
+    fn min_depth_padding_is_not_counted_as_result() {
+        let mut recorder = CallTraceRecorder::default();
+        // `clk` is just the cycle the event happens at; only the order matters, not the values.
+        recorder.enter(10, Some("caller".into())); // the call opens at cycle 10
+        recorder.observe_name("consume_u64"); // name differs from the caller, so it is recorded
+        recorder.observe_arg(0, "n", Some(2), Some(vec![0, 0])); // one u64 argument (2 felts)
+        recorder.observe_output_width(Some(0)); // signature: returns nothing
+        recorder.exit(20, &stack(16, &[])); // closes at cycle 20; stack held at the minimum depth 16
+
+        let consume = &recorder.finish().roots[0];
+        assert_eq!(consume.results.as_deref(), Some([].as_slice()));
+    }
+
     /// ```text
     /// fn function_2(x: Felt) -> Felt { load_sw(x) }   // load_sw is MASM, it has no markers
     ///
@@ -269,7 +311,7 @@ mod tests {
     #[test]
     fn an_unmarked_call_does_not_rename_the_frame_it_runs_in() {
         let mut recorder = CallTraceRecorder::default();
-        recorder.enter(10, Some("function_1".into()), 16);
+        recorder.enter(10, Some("function_1".into()));
         recorder.observe_name("function_1");
         recorder.observe_name("function_2");
         recorder.observe_name("intrinsics::mem::load_sw");
@@ -278,6 +320,75 @@ mod tests {
         let trace = recorder.finish();
 
         assert_eq!(trace.roots[0].callee.as_deref(), Some("function_2"));
+    }
+
+    /// The call being traced:
+    ///
+    /// ```text
+    /// fn fib(n: Felt) -> Felt   // fib(0) = 0, fib(1) = 1, fib(n) = fib(n-1) + fib(n-2)
+    /// ```
+    ///
+    /// `fib` calls itself, so every recursive frame's caller and callee are both "fib". Without a
+    /// call boundary `observe_name` would treat the shared name as the caller's marker and skip it,
+    /// leaving every frame unnamed; the assertions below pass only because `mark_call_boundary`
+    /// (the `Dyn` boundary crossed on a `dynexec` self-call) lets the recursive callee take the
+    /// name. Driven here for `fib(4) = 3`, whose call tree is:
+    ///
+    /// ```text
+    /// fib(4)
+    /// ├─ fib(3)
+    /// │  ├─ fib(2) ─ [fib(1), fib(0)]
+    /// │  └─ fib(1)
+    /// └─ fib(2) ─ [fib(1), fib(0)]
+    /// ```
+    #[test]
+    fn a_recursive_call_is_named_after_the_call_boundary() {
+        fn fib_value(n: u64) -> u64 {
+            if n < 2 {
+                n
+            } else {
+                fib_value(n - 1) + fib_value(n - 2)
+            }
+        }
+
+        // Drive the recorder as `collect_trace` does for a `dynexec` self-call: open the frame,
+        // cross the `Dyn` boundary, name the callee, then run its body (which may recurse). `clk`
+        // is just the cycle; only its order matters.
+        fn drive(recorder: &mut CallTraceRecorder, n: u64, clk: &mut usize) {
+            *clk += 10;
+            recorder.enter(*clk, Some("fib".into())); // caller is "fib" too (recursion)
+            recorder.mark_call_boundary(); // the `Dyn` node: control enters the callee
+            recorder.observe_name("fib"); // named despite matching the caller
+            recorder.observe_output_width(Some(1)); // fib returns one Felt
+            if n >= 2 {
+                drive(recorder, n - 1, clk);
+                drive(recorder, n - 2, clk);
+            }
+            *clk += 10;
+            recorder.exit(*clk, &stack(16, &[fib_value(n)])); // fib(n) on top of the stack
+        }
+
+        let mut recorder = CallTraceRecorder::default();
+        drive(&mut recorder, 4, &mut 0);
+        let root = recorder.finish().roots.remove(0);
+
+        // Every recursive frame keeps the name "fib" and its result, down the tree.
+        assert_eq!(root.callee.as_deref(), Some("fib"));
+        assert_eq!(root.results.as_deref(), Some([3].as_slice())); // fib(4) = 3
+        assert_eq!(root.children.len(), 2);
+
+        let fib3 = &root.children[0];
+        let fib2 = &root.children[1];
+        assert_eq!(fib3.callee.as_deref(), Some("fib"));
+        assert_eq!(fib3.results.as_deref(), Some([2].as_slice())); // fib(3) = 2
+        assert_eq!(fib2.callee.as_deref(), Some("fib"));
+        assert_eq!(fib2.results.as_deref(), Some([1].as_slice())); // fib(2) = 1
+
+        // Deepest level: fib(3) -> fib(2) -> [fib(1), fib(0)], all still named and resolved.
+        let deep = &fib3.children[0];
+        assert_eq!(deep.callee.as_deref(), Some("fib")); // fib(2)
+        assert_eq!(deep.children[0].results.as_deref(), Some([1].as_slice())); // fib(1) = 1
+        assert_eq!(deep.children[1].results.as_deref(), Some([0].as_slice())); // fib(0) = 0
     }
 
     /// ```text
@@ -291,9 +402,9 @@ mod tests {
     #[test]
     fn a_frame_left_open_has_no_exit() {
         let mut recorder = CallTraceRecorder::default();
-        recorder.enter(10, Some("$main".into()), 16);
+        recorder.enter(10, Some("$main".into()));
         recorder.observe_name("function_1");
-        recorder.enter(20, Some("function_1".into()), 16);
+        recorder.enter(20, Some("function_1".into()));
         recorder.observe_name("function_2");
         recorder.exit(30, &stack(17, &[42]));
 
@@ -317,10 +428,10 @@ mod tests {
     #[test]
     fn arguments_are_not_collected_after_the_frame_makes_a_call() {
         let mut recorder = CallTraceRecorder::default();
-        recorder.enter(10, Some("$main".into()), 17);
+        recorder.enter(10, Some("$main".into()));
         recorder.observe_name("function_1");
         observe_felt_arg(&mut recorder, 1, "a", 5);
-        recorder.enter(20, Some("function_1".into()), 18);
+        recorder.enter(20, Some("function_1".into()));
         recorder.observe_name("function_2");
         observe_felt_arg(&mut recorder, 1, "b", 7);
         observe_felt_arg(&mut recorder, 2, "c", 9);
@@ -345,14 +456,14 @@ mod tests {
         let mut recorder = CallTraceRecorder::default();
         assert!(!recorder.has_arg(1), "no frame is open");
 
-        recorder.enter(10, Some("$main".into()), 17);
+        recorder.enter(10, Some("$main".into()));
         assert!(!recorder.has_arg(1));
         observe_felt_arg(&mut recorder, 1, "a", 3);
         assert!(recorder.has_arg(1));
         assert!(!recorder.has_arg(2));
 
         // The inner frame holds none of the outer frame's arguments.
-        recorder.enter(20, Some("function_1".into()), 17);
+        recorder.enter(20, Some("function_1".into()));
         assert!(!recorder.has_arg(1));
     }
 
@@ -368,7 +479,7 @@ mod tests {
     #[test]
     fn arguments_are_ordered_and_the_first_observation_is_kept() {
         let mut recorder = CallTraceRecorder::default();
-        recorder.enter(10, Some("$main".into()), 18);
+        recorder.enter(10, Some("$main".into()));
         recorder.observe_name("function_1");
         observe_felt_arg(&mut recorder, 2, "amount", 5);
         observe_felt_arg(&mut recorder, 1, "op", 3);
@@ -386,17 +497,16 @@ mod tests {
     }
 
     /// ```text
-    /// fn function_1(op: Felt, amount: Felt) -> Felt { op + amount }   // function_1(3, 5)
-    ///
-    /// stack 18 -> 17   two arguments off, 8 on
+    /// fn function_1(op: Felt, amount: Felt) -> Felt { op + amount }   // returns one felt
     /// ```
     ///
-    /// One result is reported.
+    /// The signature says one result, so the top felt of the stack is reported.
     #[test]
-    fn results_are_derived_from_the_stack_depth_and_the_arguments() {
+    fn a_felt_result_is_the_top_of_the_stack() {
         let mut recorder = CallTraceRecorder::default();
-        recorder.enter(10, Some("$main".into()), 18);
+        recorder.enter(10, Some("$main".into()));
         recorder.observe_name("function_1");
+        recorder.observe_output_width(Some(1));
         observe_felt_arg(&mut recorder, 1, "a", 3);
         observe_felt_arg(&mut recorder, 2, "b", 5);
         recorder.exit(20, &stack(17, &[8]));
@@ -406,13 +516,14 @@ mod tests {
         assert_eq!(trace.roots[0].results.as_deref(), Some([8].as_slice()));
     }
 
-    /// An argument the debug information gives no type for has no width, and a call holding one
-    /// reports no results: the stack alone does not say how much of it was the argument.
+    /// Argument width no longer drives the results: an argument of unknown width still leaves the
+    /// results known, because the count comes from the callee's signature.
     #[test]
-    fn an_argument_of_unknown_width_leaves_the_results_unknown() {
+    fn an_argument_of_unknown_width_does_not_affect_the_results() {
         let mut recorder = CallTraceRecorder::default();
-        recorder.enter(10, Some("$main".into()), 18);
+        recorder.enter(10, Some("$main".into()));
         recorder.observe_name("function_1");
+        recorder.observe_output_width(Some(1));
         observe_felt_arg(&mut recorder, 1, "a", 3);
         recorder.observe_arg(2, "b", None, None);
         recorder.exit(20, &stack(17, &[8]));
@@ -420,23 +531,22 @@ mod tests {
         let trace = recorder.finish();
 
         let function_1 = &trace.roots[0];
-        assert_eq!(function_1.results, None);
+        assert_eq!(function_1.results.as_deref(), Some([8].as_slice()));
         assert_eq!(function_1.args[1].felt_count, None);
         assert_eq!(function_1.args[1].values, None);
     }
 
     /// ```text
-    /// fn function_1(x: u64) -> u64 { .. }   // function_1(1 << 32)
-    ///
-    /// stack 18 -> 18   one argument, two elements off and two on
+    /// fn function_1(x: u64) -> u64 { .. }   // returns a u64
     /// ```
     ///
-    /// The argument is one entry but two stack elements, so two results are reported, not one.
+    /// A `u64` result is two felts, so the top two of the stack are reported.
     #[test]
-    fn a_wide_argument_counts_for_the_stack_it_takes() {
+    fn a_u64_result_is_two_felts() {
         let mut recorder = CallTraceRecorder::default();
-        recorder.enter(10, Some("$main".into()), 18);
+        recorder.enter(10, Some("$main".into()));
         recorder.observe_name("function_1");
+        recorder.observe_output_width(Some(2));
         recorder.observe_arg(1, "x", Some(2), Some(vec![0, 1]));
         recorder.exit(20, &stack(18, &[9, 8]));
 
@@ -448,18 +558,17 @@ mod tests {
     }
 
     /// ```text
-    /// fn function_1(w: Word, n: Felt) { .. }
-    ///
-    /// stack 21 -> 16   five elements off, nothing on
+    /// fn function_1(w: Word, n: Felt) { .. }   // returns nothing
     /// ```
     ///
-    /// Counting entries instead of widths would put this below zero and report the results as
-    /// unknown; counting widths gives the right answer: none.
+    /// The signature says no results, so none are reported and the 99 left on top of the stack is
+    /// ignored.
     #[test]
-    fn a_call_taking_wide_arguments_and_returning_nothing_reports_no_results() {
+    fn a_call_that_returns_nothing_reports_no_results() {
         let mut recorder = CallTraceRecorder::default();
-        recorder.enter(10, Some("$main".into()), 21);
+        recorder.enter(10, Some("$main".into()));
         recorder.observe_name("function_1");
+        recorder.observe_output_width(Some(0));
         recorder.observe_arg(1, "w", Some(4), Some(vec![1, 2, 3, 4]));
         observe_felt_arg(&mut recorder, 2, "n", 5);
         recorder.exit(20, &stack(16, &[99]));
@@ -470,17 +579,17 @@ mod tests {
     }
 
     /// ```text
-    /// fn function_1(a: Felt) { .. }   // function_1(3)
-    ///
-    /// stack 17 -> 16   the argument off, nothing on
+    /// fn function_1(a: Felt) { .. }   // returns nothing
     /// ```
     ///
-    /// The 99 left on top belongs to the caller, so no result is reported.
+    /// The 99 left on top belongs to the caller, and the signature says no results, so none are
+    /// reported.
     #[test]
-    fn a_call_without_results_reports_none() {
+    fn a_call_without_results_reports_empty() {
         let mut recorder = CallTraceRecorder::default();
-        recorder.enter(10, Some("$main".into()), 17);
+        recorder.enter(10, Some("$main".into()));
         recorder.observe_name("function_1");
+        recorder.observe_output_width(Some(0));
         observe_felt_arg(&mut recorder, 1, "a", 3);
         recorder.exit(20, &stack(16, &[99]));
 
@@ -489,17 +598,12 @@ mod tests {
         assert_eq!(trace.roots[0].results.as_deref(), Some([].as_slice()));
     }
 
-    /// ```text
-    /// fn function_1(a: Felt) -> Felt { .. }   // from a package with no debug information
-    ///
-    /// stack 17 -> 16   the argument off and one result on, but no arguments are reported
-    /// ```
-    ///
-    /// The count comes out below zero, so the results are not known.
+    /// A call whose callee has no signature has no output width, so its results are unknown rather
+    /// than guessed from the stack.
     #[test]
-    fn results_are_unknown_when_the_arguments_were_not_recorded() {
+    fn results_are_unknown_without_a_signature() {
         let mut recorder = CallTraceRecorder::default();
-        recorder.enter(10, Some("$main".into()), 17);
+        recorder.enter(10, Some("$main".into()));
         recorder.observe_name("function_1");
         recorder.exit(20, &stack(16, &[8]));
 

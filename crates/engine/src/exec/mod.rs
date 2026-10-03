@@ -13,7 +13,6 @@ mod executor;
 mod host;
 mod query;
 mod recording_host;
-mod return_type;
 mod snapshot;
 mod state;
 mod trace;

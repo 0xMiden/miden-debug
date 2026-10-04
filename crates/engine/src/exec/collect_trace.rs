@@ -6,8 +6,8 @@ use miden_processor::{ExecutionError, Felt, event::EventId};
 
 use super::{DebugQuery, Event, ExecutionConfig, Executor, ReplaySnapshot, state::DebugExecutor};
 use crate::debug::{
-    CallTrace, CallTraceRecorder, DebugVarSnapshot, FrameTransition, resolve_variable_values,
-    value_felt_count,
+    CallTrace, CallTraceRecorder, ControlFlowOp, DebugVarSnapshot, FrameTransition, TypedProcedure,
+    resolve_typed_variable_values, value_felt_count,
 };
 
 /// The result of replaying a recorded execution with [`replay_call_trace`].
@@ -33,6 +33,10 @@ pub fn replay_call_trace(recording: ReplaySnapshot) -> CallTraceReplay {
         advice_inputs,
         options,
     });
+    // The root frame gets its result width from the manifest, nested calls get it from debug info.
+    let entrypoint_output = TypedProcedure::for_package_entrypoint(&package)
+        .and_then(|proc| proc.output_felt_count().ok().flatten());
+
     let mut executor = executor.into_debug_with_replay(
         package,
         Arc::new(DefaultSourceManager::default()),
@@ -40,7 +44,7 @@ pub fn replay_call_trace(recording: ReplaySnapshot) -> CallTraceReplay {
         VecDeque::from(event_log),
     );
 
-    let (trace, error) = collect_call_trace(&mut executor);
+    let (trace, error) = collect_call_trace(&mut executor, entrypoint_output);
 
     CallTraceReplay {
         trace,
@@ -52,7 +56,10 @@ pub fn replay_call_trace(recording: ReplaySnapshot) -> CallTraceReplay {
 /// Run `executor` to completion and collect its call trace.
 ///
 /// If execution fails, the trace collected up to the failure is returned alongside the error.
-fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<ExecutionError>) {
+fn collect_call_trace(
+    executor: &mut DebugExecutor,
+    entrypoint_output: Option<usize>,
+) -> (CallTrace, Option<ExecutionError>) {
     let mut recorder = CallTraceRecorder::default();
     let mut error = None;
 
@@ -61,50 +68,67 @@ fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<Execut
             error = Some(err);
             break;
         }
+        // The last step runs no cycle, so the executor state is stale and must not be read.
+        if executor.stopped {
+            break;
+        }
 
         let clk = executor.cycle;
-        // Frames are opened and closed by the frame events, not by the call stack: a frame-end
-        // event ends a call even when the call stack has nothing left to pop.
+        // Frame events open and close frames, even when the call stack has nothing to pop.
         let transition = executor.callstack.take_frame_transition();
 
+        // Only `exit` uses the stack.
         let stack = match transition {
-            Some(_) => stack_without_frame_marker(&executor.current_stack),
-            None => Vec::new(),
+            Some(FrameTransition::Exited) => stack_without_frame_marker(&executor.current_stack),
+            _ => Vec::new(),
         };
 
         match transition {
             Some(FrameTransition::Exited) => recorder.exit(clk, &stack),
             // On the entry cycle execution is still in the caller, so the callee is named later.
-            Some(FrameTransition::Entered) => {
-                recorder.enter(clk, executor.current_proc.clone(), stack.len())
-            }
+            Some(FrameTransition::Entered) => recorder.enter(clk, executor.current_proc.clone()),
             None => {
-                if let Some(name) = executor.current_proc.as_deref() {
-                    recorder.observe_name(name);
+                // Once the callee is named, set its result width too.
+                if let Some(name) = executor.current_proc.as_deref()
+                    && recorder.observe_name(name)
+                {
+                    let width = if recorder.is_first_frame() {
+                        entrypoint_output
+                    } else {
+                        executor.current_return_felts
+                    };
+                    recorder.observe_output_width(width);
+                }
+                // After a `call`/`dynexec`, the callee may share the caller's name (recursion).
+                if matches!(
+                    executor.current_control,
+                    Some(ControlFlowOp::Call | ControlFlowOp::Dyn)
+                ) {
+                    recorder.mark_call_boundary();
                 }
             }
         }
 
+        // Match arguments by cycle, which works because every call has frame markers.
         if let Some(enter_clk) = recorder.accepting_args() {
             for snapshot in executor.debug_vars.current_variables() {
                 let Some(index) = snapshot.info.arg_index() else {
                     continue;
                 };
-                // Variables recorded before the frame was entered belong to the caller.
-                if usize::from(snapshot.clk) < enter_clk {
+                // Up to and including `enter_clk`, variables belong to the caller.
+                if usize::from(snapshot.clk) <= enter_clk {
                     continue;
                 }
-                // Resolving a value reads VM memory, and the frame keeps the value the call was
-                // made with, so skip an argument that is already recorded.
+                // Already recorded, so skip reading VM memory again.
                 if recorder.has_arg(index.get()) {
                     continue;
                 }
-                // The argument's stack width comes from its type - 1 element for `Felt`, 2 for
-                // `u64`, 4 for `Word` - and results are counted back from it. An untyped argument
-                // has no width, so record it by name with no value.
-                let felt_count = snapshot.info.ty().and_then(value_felt_count);
-                let values =
-                    felt_count.and_then(|count| resolve_arg_values(executor, snapshot, count));
+                // An untyped argument has no width, so it is recorded by name only.
+                let ty = snapshot.info.ty();
+                let felt_count = ty.and_then(value_felt_count);
+                let values = felt_count
+                    .zip(ty)
+                    .and_then(|(count, ty)| resolve_arg_values(executor, snapshot, ty, count));
                 recorder.observe_arg(index.get(), snapshot.info.name(), felt_count, values);
             }
         }
@@ -113,10 +137,11 @@ fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<Execut
     (recorder.finish(), error)
 }
 
-/// Read `count` consecutive felts of an argument out of the VM state.
+/// Read `count` consecutive felts of a typed argument out of the VM state.
 fn resolve_arg_values(
     executor: &DebugExecutor,
     snapshot: &DebugVarSnapshot,
+    ty: &miden_assembly_syntax::ast::types::Type,
     count: usize,
 ) -> Option<Vec<u64>> {
     let to_u64 = |values: Vec<Felt>| values.iter().map(Felt::as_canonical_u64).collect();
@@ -137,8 +162,9 @@ fn resolve_arg_values(
         read_memory(addr)
     };
 
-    resolve_variable_values(
+    resolve_typed_variable_values(
         snapshot.info.value_location(),
+        ty,
         count,
         &executor.current_stack,
         read_memory,
@@ -218,7 +244,8 @@ end
             .expect("failed to assemble test program");
         let mut executor = Executor::new(Vec::<Felt>::new()).into_debug(package, source_manager);
 
-        let (trace, error) = collect_call_trace(&mut executor);
+        // The entrypoint (function_1) returns two felts; nested calls have no signature here.
+        let (trace, error) = collect_call_trace(&mut executor, Some(2));
 
         assert!(error.is_none(), "execution failed: {error:?}");
         assert_eq!(trace.roots.len(), 1, "expected one root, got {:?}", trace.roots);
@@ -230,12 +257,18 @@ end
 
         let function_2 = &function_1.children[0];
         assert_eq!(function_2.callee.as_deref(), Some("::$exec::function_2"));
-        assert_eq!(function_2.results.as_deref(), Some([42].as_slice()));
+        assert_eq!(
+            function_2.results, None,
+            "a nested call has no signature, so results are unknown"
+        );
         assert!(function_2.children.is_empty());
 
         let function_3 = &function_1.children[1];
         assert_eq!(function_3.callee.as_deref(), Some("::$exec::function_3"));
-        assert_eq!(function_3.results.as_deref(), Some([7].as_slice()));
+        assert_eq!(
+            function_3.results, None,
+            "a nested call has no signature, so results are unknown"
+        );
         assert!(function_3.children.is_empty());
 
         let exit = |frame: &CallFrameRecord| frame.exit_clk.expect("every call returned");
@@ -286,7 +319,7 @@ end
             .expect("failed to assemble test program");
         let mut executor = Executor::new(Vec::<Felt>::new()).into_debug(package, source_manager);
 
-        let (trace, error) = collect_call_trace(&mut executor);
+        let (trace, error) = collect_call_trace(&mut executor, None);
 
         assert!(error.is_some(), "execution should fail in function_3");
         assert_eq!(trace.roots.len(), 1, "expected one root, got {:?}", trace.roots);
@@ -299,7 +332,10 @@ end
         let function_2 = &function_1.children[0];
         assert_eq!(function_2.callee.as_deref(), Some("::$exec::function_2"));
         assert!(function_2.exit_clk.is_some());
-        assert_eq!(function_2.results.as_deref(), Some([42].as_slice()));
+        assert_eq!(
+            function_2.results, None,
+            "a nested call has no signature, so results are unknown"
+        );
 
         let function_3 = &function_1.children[1];
         assert_eq!(function_3.callee.as_deref(), Some("::$exec::function_3"));
@@ -345,7 +381,7 @@ end
             .expect("failed to assemble test program");
         let mut executor = Executor::new(Vec::<Felt>::new()).into_debug(package, source_manager);
 
-        let (trace, error) = collect_call_trace(&mut executor);
+        let (trace, error) = collect_call_trace(&mut executor, None);
 
         assert!(error.is_none(), "execution failed: {error:?}");
         let function_2 = &trace.roots[0].children[0];
@@ -441,7 +477,7 @@ end
 
         let mut executor =
             Executor::new(Vec::<Felt>::new()).into_debug(Arc::from(package), source_manager);
-        let (trace, error) = collect_call_trace(&mut executor);
+        let (trace, error) = collect_call_trace(&mut executor, None);
 
         assert!(error.is_none(), "execution failed: {error:?}");
         let mut function_1 = trace.roots.into_iter().next().expect("the program made a call");
@@ -450,11 +486,8 @@ end
         function_2
     }
 
-    /// A `u64` argument takes two stack elements, and both the value and the result count follow
-    /// from its type rather than from the number of arguments.
-    ///
-    /// The frame is entered at depth 18 and left at 16. Counting the argument as two elements
-    /// gives 0 results; counting it as one gives -1, which reads as unknown.
+    /// A `u64` argument takes two stack elements, and both limbs are read from its type. Results
+    /// are unknown here because the callee is a nested call with no signature.
     #[test]
     fn a_wide_argument_is_read_and_counted_by_its_type() {
         use miden_mast_package::debug_info::{DebugPrimitiveType, DebugTypeInfo};
@@ -470,7 +503,9 @@ end
             Some([2, 1].as_slice()),
             "both limbs, not just the low one"
         );
-        assert_eq!(function_2.results.as_deref(), Some([].as_slice()));
+        // function_2 is a nested call, so its results are unknown; the result width for the traced
+        // entrypoint is covered by the recorder tests in `debug::calltrace`.
+        assert_eq!(function_2.results, None);
     }
 
     /// A type the ABI cannot measure - `u256` is one, so are `Unknown`, `Never` and a dynamically
@@ -491,18 +526,12 @@ end
         assert_eq!(function_2.results, None);
     }
 
-    /// The caller's arguments are not reported as the callee's.
-    ///
     /// ```text
-    /// fn function_1(a: Felt) { function_2(7) }
+    /// fn function_1(a: Felt) { function_2(7) }   // `a` before and on the frame_start marker
     /// fn function_2(b: Felt) { .. }
-    ///
-    /// a   recorded before function_2 was entered   -> skipped
-    /// b   recorded inside function_2              -> kept
     /// ```
     ///
-    /// The variable tracker holds both while `function_2` runs, and reports them by name, so `a`
-    /// comes first.
+    /// Caller variables recorded up to and including `enter_clk` are not the callee's arguments.
     #[test]
     fn the_callers_arguments_are_not_reported_as_the_callees() {
         use miden_assembly_syntax::ast::DebugVarLocation;
@@ -541,8 +570,7 @@ end
             )
             .expect("failed to assemble test program");
 
-        // `a` is function_1's parameter, `b` is function_2's; both are the first parameter of
-        // their procedure, and each is attached to an operation of its own body.
+        // `a` goes on `push.111` (before `enter_clk`) and on the marker's `emit` (at `enter_clk`).
         let debug_info = package.debug_info().unwrap().expect("assembled package has debug info");
         let mut builder = PackageDebugInfoBuilder::from(alloc::boxed::Box::new(debug_info));
         let a_idx = builder.add_string(Arc::from("a"));
@@ -551,17 +579,30 @@ end
         let node_count = builder.debug_info().nodes().len() as u32;
         for source_node in (0..node_count).map(DebugSourceNodeId::from) {
             let node = &builder.debug_info()[source_node];
-            let vars: Vec<(u32, _)> = (node.op_start..node.op_end)
+            let op_names: Vec<(u32, Arc<str>)> = (node.op_start..node.op_end)
                 .filter_map(|op_idx| {
                     let asm_op = node.asm_op_for_operation(op_idx)?;
-                    let name = match &*builder.debug_info()[asm_op.op_name_idx] {
-                        "push.111" => a_idx,
-                        "push.7" => b_idx,
-                        _ => return None,
-                    };
-                    Some((op_idx, name))
+                    Some((op_idx, builder.debug_info()[asm_op.op_name_idx].clone()))
                 })
                 .collect();
+            let mut vars: Vec<(u32, _)> = op_names
+                .iter()
+                .filter_map(|(op_idx, name)| match &**name {
+                    "push.111" => Some((*op_idx, a_idx)),
+                    "push.7" => Some((*op_idx, b_idx)),
+                    _ => None,
+                })
+                .collect();
+            if let Some(push_111) = op_names.iter().position(|(_, name)| &**name == "push.111") {
+                // `emit.event` is push, `emit`, drop; the frame opens on the `emit`. The first
+                // marker after `push.111` is function_2's frame_start.
+                let group_start = push_111
+                    + op_names[push_111..]
+                        .iter()
+                        .position(|(_, name)| name.contains(" emit "))
+                        .expect("function_1 holds the frame markers");
+                vars.push((op_names[group_start + 1].0, a_idx));
+            }
             for (op_idx, name_idx) in vars {
                 builder[source_node].debug_vars.push(DebugSourceVar {
                     op_idx,
@@ -574,7 +615,7 @@ end
                 added += 1;
             }
         }
-        assert!(added >= 2, "fixture did not attach both variables");
+        assert!(added >= 3, "fixture did not attach all variables");
         package.sections.retain(|section| section.id != SectionId::DEBUG_INFO);
         package.sections.push(miden_mast_package::Section::new(
             SectionId::DEBUG_INFO,
@@ -583,7 +624,7 @@ end
 
         let mut executor =
             Executor::new(Vec::<Felt>::new()).into_debug(Arc::from(package), source_manager);
-        let (trace, error) = collect_call_trace(&mut executor);
+        let (trace, error) = collect_call_trace(&mut executor, None);
 
         assert!(error.is_none(), "execution failed: {error:?}");
         let function_1 = &trace.roots[0];
@@ -625,9 +666,185 @@ end
             .expect("failed to assemble test program");
         let mut executor = Executor::new(Vec::<Felt>::new()).into_debug(package, source_manager);
 
-        let (trace, error) = collect_call_trace(&mut executor);
+        let (trace, error) = collect_call_trace(&mut executor, None);
 
         assert!(error.is_none(), "execution failed: {error:?}");
         assert!(trace.roots.is_empty(), "expected no frames, got {:?}", trace.roots);
+    }
+
+    /// ```text
+    /// fn consume_u64(n: u64)   // stack 16 -> 16
+    /// ```
+    ///
+    /// Padding at the minimum stack depth is not reported as results.
+    #[test]
+    fn an_argument_consumed_at_the_minimum_stack_depth_is_not_a_result() {
+        use miden_assembly_syntax::ast::DebugVarLocation;
+        use miden_core::{Word, serde::Serializable};
+        use miden_debug_types::{ColumnNumber, LineNumber};
+        use miden_mast_package::{
+            SectionId,
+            debug_info::{
+                DebugFileInfo, DebugFunctionInfo, DebugPrimitiveType, DebugSourceNodeId,
+                DebugSourceVar, DebugTypeInfo, PackageDebugInfoBuilder,
+            },
+        };
+
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let mut package = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program(
+                "program",
+                format!(
+                    r#"
+proc consume_u64
+    push.99
+    drop
+    drop
+    drop
+end
+
+proc function_1
+    emit.event("{FRAME_START_EVENT}")
+    exec.consume_u64
+    emit.event("{FRAME_END_EVENT}")
+end
+
+begin
+    emit.event("{FRAME_START_EVENT}")
+    exec.function_1
+    emit.event("{FRAME_END_EVENT}")
+end
+"#
+                ),
+            )
+            .expect("failed to assemble test program");
+
+        // `n: u64` and a signature that returns nothing.
+        let debug_info = package.debug_info().unwrap().expect("assembled package has debug info");
+        let mut builder = PackageDebugInfoBuilder::from(alloc::boxed::Box::new(debug_info));
+        let n_idx = builder.add_string(Arc::from("n"));
+        let u64_type = builder.add_type(DebugTypeInfo::Primitive(DebugPrimitiveType::U64));
+        let name_idx = builder.add_string(Arc::from("::$exec::consume_u64"));
+        let path_idx = builder.add_string(Arc::from("lib.rs"));
+        let file_idx = builder.add_file_info(DebugFileInfo::new(path_idx));
+        let signature = builder.add_type(DebugTypeInfo::Function {
+            return_type_idx: None,
+            param_type_indices: Vec::from([u64_type]),
+        });
+        builder.add_function(
+            DebugFunctionInfo::new(
+                None,
+                name_idx,
+                file_idx,
+                LineNumber::new(1).unwrap(),
+                ColumnNumber::new(1).unwrap(),
+                Word::default(),
+            )
+            .with_type(signature),
+        );
+        let mut added = 0;
+        let node_count = builder.debug_info().nodes().len() as u32;
+        for source_node in (0..node_count).map(DebugSourceNodeId::from) {
+            let node = &builder.debug_info()[source_node];
+            let ops: Vec<u32> = (node.op_start..node.op_end)
+                .filter(|op_idx| {
+                    node.asm_op_for_operation(*op_idx).is_some_and(|asm_op| {
+                        &*builder.debug_info()[asm_op.op_name_idx] == "push.99"
+                    })
+                })
+                .collect();
+            for op_idx in ops {
+                builder[source_node].debug_vars.push(DebugSourceVar {
+                    op_idx,
+                    name_idx: n_idx,
+                    type_id: Some(u64_type),
+                    arg_idx: core::num::NonZeroU32::new(1),
+                    location_idx: None,
+                    value_location: DebugVarLocation::Stack(0),
+                });
+                added += 1;
+            }
+        }
+        assert!(added >= 1, "fixture did not attach the variable");
+        package.sections.retain(|section| section.id != SectionId::DEBUG_INFO);
+        package.sections.push(miden_mast_package::Section::new(
+            SectionId::DEBUG_INFO,
+            builder.build().to_bytes(),
+        ));
+
+        // The `u64` comes from the stack inputs, so the depth stays 16.
+        let mut executor = Executor::new(Vec::from([Felt::from(1u32), Felt::from(2u32)]))
+            .into_debug(Arc::from(package), source_manager);
+        let (trace, error) = collect_call_trace(&mut executor, None);
+
+        assert!(error.is_none(), "execution failed: {error:?}");
+        // Nested, so its width comes from debug info, not the manifest.
+        let consume = &trace.roots[0].children[0];
+        assert_eq!(consume.callee.as_deref(), Some("::$exec::consume_u64"));
+        assert_eq!(consume.args[0].felt_count, Some(2));
+        assert_eq!(consume.results.as_deref(), Some([].as_slice()), "padding reported as results");
+    }
+
+    /// ```text
+    /// fn recurse(n: Felt) { if n != 0 { recurse(n - 1) } }   // dynexec to itself
+    /// ```
+    ///
+    /// A recursive call through `dynexec` is named after its callee.
+    #[test]
+    fn a_recursive_call_through_dynexec_is_named() {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let package = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program(
+                "program",
+                format!(
+                    r#"
+proc recurse
+    dup.0
+    neq.0
+    if.true
+        sub.1
+        emit.event("{FRAME_START_EVENT}")
+        push.100
+        dynexec
+        emit.event("{FRAME_END_EVENT}")
+    else
+        drop
+    end
+end
+
+begin
+    procref.recurse
+    mem_storew_le.100
+    dropw
+    push.2
+    emit.event("{FRAME_START_EVENT}")
+    exec.recurse
+    emit.event("{FRAME_END_EVENT}")
+end
+"#
+                ),
+            )
+            .map(Arc::<Package>::from)
+            .expect("failed to assemble test program");
+        let mut executor = Executor::new(Vec::<Felt>::new()).into_debug(package, source_manager);
+
+        let (trace, error) = collect_call_trace(&mut executor, None);
+
+        assert!(error.is_none(), "execution failed: {error:?}");
+        assert_eq!(trace.roots.len(), 1, "expected one root, got {:?}", trace.roots);
+        let mut frame = &trace.roots[0];
+        for depth in 0..3 {
+            assert_eq!(
+                frame.callee.as_deref(),
+                Some("::$exec::recurse"),
+                "frame at depth {depth} is not named"
+            );
+            assert!(frame.exit_clk.is_some(), "frame at depth {depth} did not return");
+            if depth < 2 {
+                assert_eq!(frame.children.len(), 1, "frame at depth {depth}");
+                frame = &frame.children[0];
+            }
+        }
+        assert!(frame.children.is_empty());
     }
 }

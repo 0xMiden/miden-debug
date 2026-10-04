@@ -8,7 +8,10 @@ use miden_assembly_syntax::ast::types::{
     CallConv, FunctionType, MIDEN_CORE_TYPES, Type, TypedError, TypedProcInfo, WitScalarCodec,
 };
 use miden_core::Felt;
-use miden_mast_package::Package;
+use miden_mast_package::{
+    Package,
+    debug_info::{DebugPrimitiveType, DebugTypeInfo, PackageDebugInfo, recover_type_at},
+};
 
 /// Typed ABI metadata for a package entrypoint.
 ///
@@ -76,6 +79,40 @@ pub fn format_value(
 
 pub(crate) fn value_felt_count(ty: &Type) -> Option<usize> {
     value_decoder(ty)?.output_felt_count().ok()?
+}
+
+/// Number of felts the named function returns, or `None` if the function or its return type is
+/// unknown. Uses `value_felt_count`, same as arguments.
+pub(crate) fn return_felt_count(info: &PackageDebugInfo, name: &str) -> Option<usize> {
+    // MASM procedures often have no debug info. `None` means "result unknown", not an error
+    let is_named = |idx| info.get_string(idx).as_deref() == Some(name);
+    // The assembler adds an untyped entry per procedure, so skip entries without a type.
+    let typed = || {
+        info.functions()
+            .iter()
+            .filter_map(|func| Some((func, func.type_idx.into_option()?)))
+    };
+    let (_, type_idx) = typed().find(|(func, _)| is_named(func.name_idx)).or_else(|| {
+        typed().find(|(func, _)| func.linkage_name_idx.into_option().is_some_and(is_named))
+    })?;
+    let DebugTypeInfo::Function {
+        return_type_idx, ..
+    } = info.get_type(type_idx)?
+    else {
+        return None;
+    };
+    // No return value: no return type, or `Void`.
+    let Some(return_type_idx) = return_type_idx else {
+        return Some(0);
+    };
+    if matches!(
+        info.get_type(*return_type_idx)?,
+        DebugTypeInfo::Primitive(DebugPrimitiveType::Void)
+    ) {
+        return Some(0);
+    }
+    let (ty, _) = recover_type_at(*return_type_idx, info, &mut Default::default())?;
+    value_felt_count(&ty)
 }
 
 fn value_decoder(ty: &Type) -> Option<TypedProcedure> {

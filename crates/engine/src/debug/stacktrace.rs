@@ -25,6 +25,10 @@ pub enum ControlFlowOp {
     Join,
     Split,
     End,
+    /// Entry to a `call`/`syscall` node — a call boundary into a new procedure.
+    Call,
+    /// Entry to a `dynexec`/`dyncall` node — a dynamic call boundary into a new procedure.
+    Dyn,
 }
 
 pub struct StepInfo<'a> {
@@ -287,7 +291,7 @@ impl CallStack {
             Some(ControlFlowOp::End) => {
                 self.block_stack.pop();
             }
-            Some(ControlFlowOp::Respan) | None => {}
+            Some(ControlFlowOp::Respan | ControlFlowOp::Call | ControlFlowOp::Dyn) | None => {}
         }
 
         if !is_frame_end {

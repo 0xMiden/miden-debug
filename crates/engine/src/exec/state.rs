@@ -58,6 +58,10 @@ pub struct DebugExecutor {
     pub callstack: CallStack,
     /// The most recent live procedure name observed from assembly operation metadata.
     pub current_proc: Option<Arc<str>>,
+    /// Felts `current_proc` returns, from debug info; `None` means unknown.
+    pub current_return_felts: Option<usize>,
+    /// Control-flow kind of this step; ex. `Call`/`Dyn` enter a new procedure.
+    pub current_control: Option<ControlFlowOp>,
     /// Debug variable tracker for source-level variable inspection
     pub debug_vars: DebugVarTracker,
     /// Number of debug variable location records observed during the most recent step.
@@ -167,6 +171,8 @@ pub(crate) fn extract_current_op(ctx: &ResumeContext) -> CurrentCycleInfo {
                     MastNode::Block(_) => Some(ControlFlowOp::Span),
                     MastNode::Join(_) => Some(ControlFlowOp::Join),
                     MastNode::Split(_) => Some(ControlFlowOp::Split),
+                    MastNode::Call(_) => Some(ControlFlowOp::Call),
+                    MastNode::Dyn(_) => Some(ControlFlowOp::Dyn),
                     _ => None,
                 };
                 return CurrentCycleInfo {
@@ -323,6 +329,8 @@ impl DebugExecutor {
                 self.resume_ctx = Some(new_ctx);
                 self.cycle += 1;
 
+                self.current_control = control_flow_kind;
+
                 // Query processor state
                 let state = self.processor.state();
                 let ctx = state.ctx();
@@ -344,7 +352,14 @@ impl DebugExecutor {
                     )
                 });
                 if let Some(asmop) = self.current_asmop.as_ref() {
-                    self.current_proc = Some(asmop.context_name().clone());
+                    let name = asmop.context_name().clone();
+                    // Look up the return width only when the procedure changes, not on every cycle.
+                    if self.current_proc.as_deref() != Some(name.as_ref()) {
+                        self.current_return_felts = debug_info
+                            .as_deref()
+                            .and_then(|di| crate::debug::return_felt_count(di, name.as_ref()));
+                    }
+                    self.current_proc = Some(name);
                 }
 
                 if let Some(op) = op {

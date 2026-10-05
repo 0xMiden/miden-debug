@@ -170,37 +170,44 @@ jobs:
         run: rustup component add llvm-tools-preview
       - name: Run Rust coverage
         run: cargo make coverage
-      - name: Record pull request for coverage comment
-        if: ${{ github.event_name == 'pull_request' && always() }}
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-        run: printf '%s\n' "$PR_NUMBER" "$PR_HEAD_SHA" "$PR_HEAD_REPO" > coverage-pr-context.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ always() }}
         with:
           name: rust-coverage
-          path: |
-            rust-coverage.xml
-            coverage-pr-context.txt
+          path: rust-coverage.xml
           if-no-files-found: warn
 
-  coverage-comment:
-    name: append coverage report to pull request
+  coverage-report:
+    name: coverage report
+    # Runs apart from the `coverage` job so the pull request code never executes with a
+    # write token.
     needs: [coverage]
-    if: ${{ github.event_name == 'pull_request' && needs.coverage.result == 'success' }}
-    # A called workflow can only *downgrade* the calling job's token, so this
-    # grant is the ceiling for every job in `coverage-comment.yml`.
+    runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Read the base branch report stored as an artifact
       actions: read
-      issues: write
+      # Comment on the pull request
       pull-requests: write
-    uses: ./.github/workflows/coverage-comment.yml
-    with:
-      ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      run_id: ${{ github.run_id }}
+    steps:
+      # octocov maps the report to the sources checked out at the same path as in the
+      # `coverage` job
+      - *checkout
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: rust-coverage
+      # On pull requests comments the coverage changes (see `.octocov.yml`), on `next` stores
+      # the report they are compared against
+      - uses: k1LoW/octocov-action@a167dc0dee441b7ffc45e1b862ab55ec0d87f278 # v1.5.2
+        id: octocov
+        # octocov exits with an error when the coverage is below `coverage.acceptable`, which
+        # should only warn
+        continue-on-error: true
+        with:
+          version: v0.83.1
+      - name: Warn about octocov failure
+        if: ${{ steps.octocov.outcome == 'failure' }}
+        run: echo "::warning title=Coverage::octocov failed, the coverage is below the acceptable threshold or the report could not be published. See the octocov step log."
 
   check_release:
     name: release checks

@@ -312,8 +312,6 @@ args = [
     "--cobertura",
     "--output-path",
     "rust-coverage.xml",
-    "--fail-under-lines",
-    "75",
     "${@}",
 ]
 dependencies = ["cargo-llvm-cov"]

@@ -103,7 +103,6 @@ fn function_breakpoint_waits_for_entry_variables() {
         &mut cycle,
         &mut current_asmop,
         &ContinueBreakpoints {
-            source: &[],
             function: &function,
             source_path_prefixes: &[],
         },

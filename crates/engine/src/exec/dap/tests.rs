@@ -56,7 +56,7 @@ fn function_breakpoint_waits_for_entry_variables() {
         Some(processor.get_initial_resume_context_for_package(Arc::from(package)).unwrap());
     let mut cycle = 0;
     let mut current_asmop = None;
-    let mut debug_state = DapDebugVarState::new();
+    let mut debug_state = DapDebugState::new();
     let function = [StoredFunctionBreakpoint {
         procedure_pattern: procedure_pattern("entrypoint").unwrap(),
         source_pattern: crate::glob::Glob::new("entrypoint").unwrap().compile_matcher(),
@@ -68,7 +68,6 @@ fn function_breakpoint_waits_for_entry_variables() {
         &mut cycle,
         &mut current_asmop,
         &ContinueBreakpoints {
-            source: &[],
             function: &function,
             source_path_prefixes: &[],
         },

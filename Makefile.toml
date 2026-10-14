@@ -18,7 +18,7 @@ BACKTRACE_DEFAULT = { source = "${CARGO_MAKE_CI}", mapping = { "true" = "1", "fa
 RUST_BACKTRACE = { value = "${BACKTRACE_DEFAULT}", condition = { env_not_set = [
     "RUST_BACKTRACE",
 ] } }
-RUSTFMT_TOOLCHAIN = { value = "nightly", condition = { env_not_set = ["RUSTFMT_TOOLCHAIN"] } }
+NIGHTLY_TOOLCHAIN = { value = "nightly", condition = { env_not_set = ["NIGHTLY_TOOLCHAIN"] } }
 LOCAL_BIN_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin"
 LOCAL_INSTALL_DIR = "${LOCAL_BIN_DIR}/${CARGO_MAKE_RUST_TARGET_TRIPLE}"
 
@@ -153,7 +153,7 @@ dependencies = ["format-rust"]
 description = "Runs cargo fmt to check appropriate code format."
 category = "Test"
 command = "cargo"
-toolchain = "${RUSTFMT_TOOLCHAIN}"
+toolchain = "${NIGHTLY_TOOLCHAIN}"
 args = ["fmt", "--", "--check"]
 dependencies = ["install-rustfmt"]
 
@@ -161,7 +161,7 @@ dependencies = ["install-rustfmt"]
 category = "Development"
 description = "Formats source code (Rust)"
 command = "cargo"
-toolchain = "${RUSTFMT_TOOLCHAIN}"
+toolchain = "${NIGHTLY_TOOLCHAIN}"
 args = ["fmt"]
 dependencies = ["install-rustfmt"]
 
@@ -351,7 +351,7 @@ install_crate = { crate_name = "litcheck", min_version = "0.4.6", test_arg = "--
 [tasks.miden-debug]
 category = "Build"
 description = "Builds miden-debug with default features"
-toolchain = "nightly"
+toolchain = "${NIGHTLY_TOOLCHAIN}"
 command = "cargo"
 args = [
     "-Z",
@@ -369,7 +369,7 @@ args = [
 [tasks.miden-debug-python]
 category = "Build"
 description = "Builds miden-debug with Python scripting for lit tests"
-toolchain = "nightly"
+toolchain = "${NIGHTLY_TOOLCHAIN}"
 command = "cargo"
 args = [
     "-Z",
@@ -388,7 +388,7 @@ args = [
 private = true
 category = "Build"
 description = "Builds private package builders used by lit tests"
-toolchain = "nightly"
+toolchain = "${NIGHTLY_TOOLCHAIN}"
 command = "cargo"
 args = [
     "-Z",

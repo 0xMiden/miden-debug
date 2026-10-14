@@ -20,6 +20,8 @@ env:
   # Set the new value when the cache grows too much and we hit the runner's disk space limit
   # via https://github.com/rust-lang/docs.rs/pull/2433
   RUST_CACHE_KEY: rust-cache-20251006
+  # Needed until p3-* crates compile under nightly again
+  NIGHTLY_TOOLCHAIN: nightly-2026-10-09
 
 permissions:
   contents: read
@@ -38,6 +40,7 @@ jobs:
         name: Install Rust
         run: |
           rustup update --no-self-update
+          rustup toolchain install "${NIGHTLY_TOOLCHAIN}" --profile minimal --component rustfmt
           rustc --version
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2.9.2
@@ -83,8 +86,6 @@ jobs:
     needs: [lint]
     # But run this check even if the lint check failed
     if: ${{ always() }}
-    env:
-      RUSTFMT_TOOLCHAIN: nightly-2026-10-09
     steps:
       - *checkout
       - *install-rust
@@ -97,8 +98,6 @@ jobs:
           # But do not save this cache, just use it
           save-if: false
       - *install-cargo-make
-      - name: Install nightly toolchain
-        run: rustup toolchain install "${RUSTFMT_TOOLCHAIN}" --profile minimal --component rustfmt
       - name: Check Formatting
         run: |
           cargo make check-format

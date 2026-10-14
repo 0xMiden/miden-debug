@@ -40,9 +40,9 @@ use super::{
 };
 use crate::{
     debug::{
-        DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, format_value,
-        inline_frames_for_operation, procedure_matches, procedure_pattern,
-        resolve_typed_variable_values, resolve_variable_values,
+        DebugVarSnapshot, DebugVarTracker, FormatType, LogicalFrameKind, ReadMemoryExpr,
+        RecoveredCallStack, format_value, inline_frames_for_operation, procedure_matches,
+        procedure_pattern, resolve_typed_variable_values, resolve_variable_values,
     },
     exec::state::CurrentCycleInfo,
     normalize_source_path,
@@ -185,6 +185,7 @@ struct DapHostWrapper<'a, H> {
     inner: &'a mut H,
     call_depth: usize,
     frames: Vec<DapCallFrame>,
+    recovered: RecoveredCallStack,
     /// When set, the advice mutations produced by each `on_event` invocation of the inner host
     /// are recorded here, in execution order, so they can be replayed later (e.g. transaction
     /// debugging with event replay).
@@ -204,6 +205,7 @@ impl<'a, H> DapHostWrapper<'a, H> {
             inner,
             call_depth: 0,
             frames: Vec::new(),
+            recovered: RecoveredCallStack::default(),
             event_recorder,
             forest_recorder,
         }
@@ -523,6 +525,27 @@ fn presented_frames<H: Host>(
     current_asmop: Option<&AssemblyOp>,
     cycle: usize,
 ) -> Vec<DapPresentedFrame> {
+    if !host.recovered.is_empty() {
+        return host
+            .recovered
+            .logical_frames("")
+            .into_iter()
+            .rev()
+            .map(|frame| {
+                let (source_path, line, column) = frame
+                    .assembly_location()
+                    .and_then(|location| resolve_location_with_column(location, host))
+                    .map_or((None, 0, 0), |(path, line, column)| (Some(path), line, column));
+                DapPresentedFrame {
+                    name: Arc::from(frame.display_name()),
+                    source_path,
+                    line,
+                    column,
+                    inline: frame.kind() == LogicalFrameKind::Inline,
+                }
+            })
+            .collect();
+    }
     if host.frames.is_empty() {
         let (name, source_path, line, column) = match current_asmop {
             Some(asmop) => {
@@ -1371,6 +1394,11 @@ impl DapExecutor {
                 } = extract_current_op(ctx);
                 current_asmop =
                     extract_asm_op(current_debug_info.as_deref(), source_node_id, op_idx);
+                wrapper.recovered.update(
+                    ctx,
+                    source_node_id.map(|id| (id, op_idx.unwrap_or_default() as u32)),
+                    current_asmop.as_ref(),
+                );
                 current_inline_frames = inline_frames_for_operation(
                     current_debug_info.as_deref().zip(source_node_id).map(
                         |(debug_info, source_node_id)| {
@@ -2300,6 +2328,12 @@ fn advance_one<H: Host>(
         }
         None => (None, vec![]),
     };
+    let source_asmop = extract_asm_op(debug_info.as_deref(), source_node_id, op_idx);
+    host.recovered.update(
+        &ctx,
+        source_node_id.map(|id| (id, op_idx.unwrap_or_default() as u32)),
+        source_asmop.as_ref(),
+    );
     let pre_step_stack = processor.state().get_stack_state();
     let result = if let Some(debug_info) = debug_info.as_ref() {
         poll_immediately(processor.step_with_package_debug_info(host, ctx, debug_info))

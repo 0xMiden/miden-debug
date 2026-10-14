@@ -12,11 +12,10 @@ testExecutionTime:
 diff:
   datastores:
     - artifact://${GITHUB_REPOSITORY}
+# The separate publishers post the captured summary with their write tokens.
 comment:
-  # The workflow token of a pull request from a fork is read-only, so it cannot comment.
-  if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == env.GITHUB_REPOSITORY
-  updatePrevious: true
-# Unlike the comment, the job summary is also available to pull requests from forks.
+  if: false
+# Capture this native report for both the job summary and the coverage comment artifact.
 summary:
   if: true
 # Store the report of the default branch as the baseline for pull requests.

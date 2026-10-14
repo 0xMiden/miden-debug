@@ -18,6 +18,7 @@ BACKTRACE_DEFAULT = { source = "${CARGO_MAKE_CI}", mapping = { "true" = "1", "fa
 RUST_BACKTRACE = { value = "${BACKTRACE_DEFAULT}", condition = { env_not_set = [
     "RUST_BACKTRACE",
 ] } }
+RUSTFMT_TOOLCHAIN = { value = "nightly", condition = { env_not_set = ["RUSTFMT_TOOLCHAIN"] } }
 LOCAL_BIN_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin"
 LOCAL_INSTALL_DIR = "${LOCAL_BIN_DIR}/${CARGO_MAKE_RUST_TARGET_TRIPLE}"
 
@@ -152,7 +153,7 @@ dependencies = ["format-rust"]
 description = "Runs cargo fmt to check appropriate code format."
 category = "Test"
 command = "cargo"
-toolchain = "nightly"
+toolchain = "${RUSTFMT_TOOLCHAIN}"
 args = ["fmt", "--", "--check"]
 dependencies = ["install-rustfmt"]
 
@@ -160,7 +161,7 @@ dependencies = ["install-rustfmt"]
 category = "Development"
 description = "Formats source code (Rust)"
 command = "cargo"
-toolchain = "nightly"
+toolchain = "${RUSTFMT_TOOLCHAIN}"
 args = ["fmt"]
 dependencies = ["install-rustfmt"]
 

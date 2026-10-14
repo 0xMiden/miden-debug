@@ -35,3 +35,29 @@ fn stack_frame_dummy_supports_arc_str_name() {
 
     let _: StackFrame = fake::Faker.fake();
 }
+
+#[cfg(feature = "integration_testing")]
+#[test]
+fn source_dummy_generates_leaf_sources() {
+    use fake::Fake as _;
+    use rand::{SeedableRng as _, rngs::StdRng};
+
+    let mut rng = StdRng::seed_from_u64(0);
+    for _ in 0..64 {
+        let source: Source = fake::Faker.fake_with_rng(&mut rng);
+        assert!(source.sources.is_none());
+    }
+}
+
+#[cfg(feature = "integration_testing")]
+#[test]
+fn exception_details_dummy_generates_leaf_exceptions() {
+    use fake::Fake as _;
+    use rand::{SeedableRng as _, rngs::StdRng};
+
+    let mut rng = StdRng::seed_from_u64(0);
+    for _ in 0..64 {
+        let details: ExceptionDetails = fake::Faker.fake_with_rng(&mut rng);
+        assert!(details.inner_exception.is_none());
+    }
+}

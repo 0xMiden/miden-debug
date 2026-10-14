@@ -12,6 +12,10 @@ on:
       - "**.md"
       - "**.txt"
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   # Set the new value when the cache grows too much and we hit the runner's disk space limit
   # via https://github.com/rust-lang/docs.rs/pull/2433
@@ -26,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - &checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -36,7 +40,7 @@ jobs:
           rustup update --no-self-update
           rustc --version
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           # Use a common cache for the basic compilation/formatter/clippy checks
           shared-key: ${{ github.workflow }}-shared
@@ -59,13 +63,13 @@ jobs:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           shared-key: ${{ github.workflow }}-shared-feature-combinations
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: ${{ github.ref == 'refs/heads/next' }}
       - *install-cargo-make
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@v2.87.22
         with:
           tool: cargo-hack@0.6.44
       - name: Check feature combinations
@@ -79,11 +83,13 @@ jobs:
     needs: [lint]
     # But run this check even if the lint check failed
     if: ${{ always() }}
+    env:
+      RUSTFMT_TOOLCHAIN: nightly-2026-10-09
     steps:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           # Use a common cache for the basic compilation/formatter/clippy checks
           shared-key: ${{ github.workflow }}-shared
@@ -92,7 +98,7 @@ jobs:
           save-if: false
       - *install-cargo-make
       - name: Install nightly toolchain
-        run: rustup toolchain install nightly --profile minimal --component rustfmt
+        run: rustup toolchain install "${RUSTFMT_TOOLCHAIN}" --profile minimal --component rustfmt
       - name: Check Formatting
         run: |
           cargo make check-format
@@ -104,7 +110,7 @@ jobs:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           # NOTE: We use a different cache for the tests, so they can be run in parallel, but we
           # also share the cache for the tests for efficiency
@@ -112,7 +118,7 @@ jobs:
           prefix-key: ${{ env.RUST_CACHE_KEY }}
           save-if: ${{ github.ref == 'refs/heads/next' }}
       - *install-cargo-make
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@v2.87.22
         with:
           tool: cargo-nextest@0.9
       - name: Check
@@ -133,7 +139,7 @@ jobs:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           # Dedicated cache for the lit job
           shared-key: ${{ github.workflow }}-shared-lit-tests
@@ -160,7 +166,7 @@ jobs:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           shared-key: ${{ github.workflow }}-shared-coverage
           prefix-key: ${{ env.RUST_CACHE_KEY }}
@@ -170,7 +176,7 @@ jobs:
         run: rustup component add llvm-tools-preview
       - name: Run Rust coverage
         run: cargo make coverage
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@v7.0.1
         if: ${{ always() }}
         with:
           name: rust-coverage
@@ -186,17 +192,16 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Read the base branch report stored as an artifact
-      actions: read
+      actions: read # Read the base branch report stored as an artifact
     steps:
       # octocov maps the report to the sources checked out at the same path as in the
       # `coverage` job
       - *checkout
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@v8.0.1
         with:
           name: rust-coverage
       # Install the same CLI used by octocov-action, then capture its native summary.
-      - uses: k1LoW/gh-setup@5fb38d34ea857e5a942b6fe10f1723e55055f6c0 # v1.11.9
+      - uses: k1LoW/gh-setup@v1.11.9
         with:
           repo: github.com/k1LoW/octocov
           version: v0.83.1
@@ -213,13 +218,13 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         # A JavaScript action provides the runtime credentials Octocov needs for
         # baseline and coverage-viewer artifacts, just like octocov-action.
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        uses: actions/github-script@v9.0.0
         with:
           script: await exec.exec('bash', ['.github/scripts/coverage-report.sh']);
       - name: Warn about octocov failure
         if: ${{ steps.octocov.outcome == 'failure' }}
         run: echo "::warning title=Coverage::octocov failed, the coverage is below the acceptable threshold or the report could not be published. See the octocov step log."
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@v7.0.1
         if: ${{ always() && github.event_name == 'pull_request' && steps.octocov.outputs.has_report == 'true' }}
         with:
           name: coverage-comment
@@ -227,6 +232,7 @@ jobs:
           if-no-files-found: error
 
   coverage-comment:
+    name: attach coverage report
     needs: [coverage-report]
     # Forks and Dependabot have read-only tokens; the scheduled publisher handles them.
     if: >-
@@ -236,14 +242,15 @@ jobs:
       github.event.pull_request.user.login != 'dependabot[bot]'
     permissions:
       contents: read
-      actions: read
-      issues: write
-      pull-requests: write
-    uses: ./.github/workflows/coverage-comment.yml
+      actions: read # Read report artifact
+      issues: write # Needed by GitHub to write comment to PR
+      pull-requests: write # Write comment to PR
+    uses: $/.github/workflows/coverage-comment.yml
     with:
       run_id: ${{ github.run_id }}
 
   coverage-publisher-tests:
+    name: run tests for coverage reporting scripts
     runs-on: ubuntu-latest
     steps:
       - *checkout
@@ -257,7 +264,7 @@ jobs:
       - *checkout
       - *install-rust
       - name: Cache Cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@v2.9.2
         with:
           # NOTE: We use a different cache for the these release checks
           shared-key: ${{ github.workflow }}-shared-release-checks

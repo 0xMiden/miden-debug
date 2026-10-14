@@ -5,6 +5,7 @@ mod native_ptr;
 mod stacktrace;
 mod variables;
 
+#[cfg(feature = "dap")]
 pub(crate) use self::breakpoint::{procedure_matches, procedure_pattern};
 #[cfg(feature = "std")]
 pub use self::stacktrace::{resolve_location_from_filesystem, resolve_source_path};
@@ -15,7 +16,7 @@ pub use self::{
     native_ptr::NativePtr,
     stacktrace::{
         CallFrame, CallStack, ControlFlowOp, CurrentFrame, InlineCallFrame, LogicalFrameKind,
-        LogicalStackFrame, OpDetail, ResolvedLocation, StackTrace, StepInfo,
+        LogicalStackFrame, OpDetail, RecoveredCallStack, ResolvedLocation, StackTrace, StepInfo,
         inline_frames_for_operation, is_internal_source_uri, resolve_source_file_for_location,
     },
     variables::{

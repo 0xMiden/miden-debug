@@ -311,6 +311,14 @@ impl DebugExecutor {
             .unwrap_or_default();
         let pre_step_stack = self.processor.state().get_stack_state();
 
+        let source_asmop =
+            asmop.zip(debug_info.as_deref()).and_then(|(op, info)| op.to_assembly_op(info));
+        self.callstack.observe_source_context(
+            &resume_ctx,
+            debug_node_id.map(|id| (id, op_idx.unwrap_or_default() as u32)),
+            source_asmop.as_ref(),
+        );
+
         // Execute one step
         let step_result = if let Some(debug_info) = debug_info.as_deref() {
             self.processor
@@ -335,14 +343,7 @@ impl DebugExecutor {
 
                 // Track operation
                 self.current_op = op;
-                self.current_asmop = asmop.zip(debug_info.as_deref()).map(|(asmop, di)| {
-                    AssemblyOp::new(
-                        asmop.location_idx.into_option().and_then(|loc| di.get_location(loc)),
-                        di[asmop.context_name_idx].clone(),
-                        asmop.num_cycles,
-                        di[asmop.op_name_idx].clone(),
-                    )
-                });
+                self.current_asmop = source_asmop;
                 if let Some(asmop) = self.current_asmop.as_ref() {
                     self.current_proc = Some(asmop.context_name().clone());
                 }

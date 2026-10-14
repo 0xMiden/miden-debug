@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Changed
+
+- Debugger and DAP stack traces use Miden VM's recovered call frames, preserving caller locations and source inline contexts across nested calls and package boundaries. Inferred frames are labeled separately from source-level inline frames.
+
+### Migration and breaking changes
+
+- Switch to published Miden VM v0.36.1 crates. Rust integrations exchanging VM, package, or debug-info types with the debugger must use matching v0.36.1 dependencies.
+
 ## [0.18.0]
 
 ### Migration and breaking changes

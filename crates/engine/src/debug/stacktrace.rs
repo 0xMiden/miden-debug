@@ -18,6 +18,9 @@ use miden_utils_sync::RwLock;
 
 use crate::Event;
 
+mod recovered;
+pub use recovered::RecoveredCallStack;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ControlFlowOp {
     Span,
@@ -73,7 +76,8 @@ pub struct LogicalStackFrame {
     name: Arc<str>,
     kind: LogicalFrameKind,
     location: Option<LogicalFrameLocation>,
-    physical_index: usize,
+    physical_index: Option<usize>,
+    origin: Option<miden_processor::DebugFrameOrigin>,
 }
 
 impl LogicalStackFrame {
@@ -85,11 +89,28 @@ impl LogicalStackFrame {
         self.kind
     }
 
-    pub fn physical_index(&self) -> usize {
+    pub fn physical_index(&self) -> Option<usize> {
         self.physical_index
     }
 
+    pub fn origin(&self) -> Option<miden_processor::DebugFrameOrigin> {
+        self.origin
+    }
+
+    pub fn assembly_location(&self) -> Option<&Location> {
+        match self.location.as_ref()? {
+            LogicalFrameLocation::Assembly(location) => Some(location),
+            LogicalFrameLocation::Resolved(_) => None,
+        }
+    }
+
     pub fn display_name(&self) -> String {
+        if self
+            .origin
+            .is_some_and(|origin| origin != miden_processor::DebugFrameOrigin::Source)
+        {
+            return format!("[inferred] {}", self.name);
+        }
         match self.kind {
             LogicalFrameKind::Physical => self.name.to_string(),
             LogicalFrameKind::Inline => format!("[inlined] {}", self.name),
@@ -152,6 +173,7 @@ pub struct CallStack {
     contexts: BTreeSet<Arc<str>>,
     frames: Vec<CallFrame>,
     block_stack: Vec<Option<SpanContext>>,
+    recovered: RecoveredCallStack,
 }
 impl CallStack {
     pub fn new(events: Arc<RwLock<BTreeMap<RowIndex, Event>>>) -> Self {
@@ -160,6 +182,7 @@ impl CallStack {
             contexts: BTreeSet::default(),
             frames: vec![],
             block_stack: vec![],
+            recovered: RecoveredCallStack::default(),
         }
     }
 
@@ -171,6 +194,7 @@ impl CallStack {
             contexts: BTreeSet::default(),
             frames,
             block_stack: vec![],
+            recovered: RecoveredCallStack::default(),
         }
     }
 
@@ -194,7 +218,19 @@ impl CallStack {
         self.frames.as_slice()
     }
 
+    pub fn observe_source_context(
+        &mut self,
+        context: &miden_processor::ResumeContext,
+        current: Option<(DebugSourceNodeId, u32)>,
+        asmop: Option<&AssemblyOp>,
+    ) {
+        self.recovered.update(context, current, asmop);
+    }
+
     pub fn logical_frames(&self, strip_prefix: &str) -> Vec<LogicalStackFrame> {
+        if !self.recovered.is_empty() {
+            return self.recovered.logical_frames(strip_prefix);
+        }
         let mut logical = Vec::new();
         for (physical_index, frame) in self.frames.iter().enumerate() {
             let current_location = frame.last_logical_location();
@@ -207,7 +243,8 @@ impl CallStack {
                 name: frame.procedure(strip_prefix).unwrap_or_else(|| Arc::from("<unknown>")),
                 kind: LogicalFrameKind::Physical,
                 location,
-                physical_index,
+                physical_index: Some(physical_index),
+                origin: None,
             });
 
             for inline_index in (0..frame.inline_frames.len()).rev() {
@@ -223,7 +260,8 @@ impl CallStack {
                     name: Arc::from(inline.display_name().into_boxed_str()),
                     kind: LogicalFrameKind::Inline,
                     location,
-                    physical_index,
+                    physical_index: Some(physical_index),
+                    origin: None,
                 });
             }
         }
@@ -777,11 +815,11 @@ impl fmt::Display for StackTrace<'_> {
                 write!(f, " in <unavailable>")?;
             }
             if is_top {
-                let physical_frame = &self.callstack.frames[frame.physical_index()];
-                // Print op context
-                let context_size = physical_frame.context.len();
+                let context = self.callstack.current_frame().map(CallFrame::recent);
+                // A failure can have recovered source frames before any physical frame exists.
+                let context_size = context.map_or(0, VecDeque::len);
                 writeln!(f, ":\n\nLast {context_size} Instructions (of current frame):")?;
-                for (i, op) in physical_frame.context.iter().enumerate() {
+                for (i, op) in context.into_iter().flatten().enumerate() {
                     let is_last = i + 1 == context_size;
                     if let Some(callee) = op.callee("") {
                         write!(f, " |   exec.{callee}")?;

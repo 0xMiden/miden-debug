@@ -387,3 +387,40 @@ fn dap_propagates_asmop_columns_through_frame_presentation() {
 
     fs::remove_dir_all(path.parent().unwrap()).ok();
 }
+
+#[test]
+fn dap_recovers_exec_callers_without_duplicate_inline_frames() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program(
+            "program",
+            "proc inner push.7 drop end proc outer exec.inner push.8 drop end begin exec.outer \
+             push.9 drop end",
+        )
+        .unwrap();
+    let mut processor = FastProcessor::new(StackInputs::default());
+    let mut host = DebuggerHost::new(source_manager);
+    let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+    let mut context = processor.get_initial_resume_context_for_package(Arc::from(package)).unwrap();
+    let mut cycle = 0;
+    let mut asmop = None;
+    let mut variables = DapDebugVarState::new();
+    let mut inner_cycles = 0;
+    while let Some(next) =
+        advance_one(&mut processor, &mut wrapper, context, &mut cycle, &mut asmop, &mut variables)
+            .unwrap()
+    {
+        if asmop.as_ref().is_some_and(|op| op.context_name().ends_with("::inner")) {
+            let frames = presented_frames(&wrapper, asmop.as_ref(), cycle);
+            let names = frames.iter().map(|frame| frame.name.as_ref()).collect::<Vec<_>>();
+            assert_eq!(
+                names,
+                ["[inferred] $exec::inner", "[inferred] $exec::outer", "$exec::$main"]
+            );
+            assert!(frames.iter().all(|frame| !frame.inline));
+            inner_cycles += 1;
+        }
+        context = next;
+    }
+    assert!(inner_cycles >= 2);
+}

@@ -21,6 +21,7 @@ RUST_BACKTRACE = { value = "${BACKTRACE_DEFAULT}", condition = { env_not_set = [
 RUSTFMT_TOOLCHAIN = { value = "nightly", condition = { env_not_set = ["RUSTFMT_TOOLCHAIN"] } }
 LOCAL_BIN_DIR = "${CARGO_MAKE_WORKSPACE_WORKING_DIRECTORY}/bin"
 LOCAL_INSTALL_DIR = "${LOCAL_BIN_DIR}/${CARGO_MAKE_RUST_TARGET_TRIPLE}"
+MIDEN_DEBUG_BUILD_TOOLCHAIN = "nightly-2026-09-01"
 
 # Workaround for https://github.com/0xMiden/miden-vm/issues/2025
 RUST_MIN_STACK = 16777216
@@ -348,10 +349,24 @@ category = "Test"
 description = "Set up the litcheck utility (provides `lit` and `filecheck`)"
 install_crate = { crate_name = "litcheck", min_version = "0.4.6", test_arg = "--help" }
 
+[tasks.install-build-toolchain]
+category = "Tools"
+description = "Installs the pinned nightly used to build lit executables"
+command = "rustup"
+args = [
+    "toolchain",
+    "install",
+    "${MIDEN_DEBUG_BUILD_TOOLCHAIN}",
+    "--profile",
+    "minimal",
+    "--no-self-update",
+]
+
 [tasks.miden-debug]
 category = "Build"
 description = "Builds miden-debug with default features"
-toolchain = "nightly"
+dependencies = ["install-build-toolchain"]
+toolchain = "${MIDEN_DEBUG_BUILD_TOOLCHAIN}"
 command = "cargo"
 args = [
     "-Z",
@@ -369,7 +384,8 @@ args = [
 [tasks.miden-debug-python]
 category = "Build"
 description = "Builds miden-debug with Python scripting for lit tests"
-toolchain = "nightly"
+dependencies = ["install-build-toolchain"]
+toolchain = "${MIDEN_DEBUG_BUILD_TOOLCHAIN}"
 command = "cargo"
 args = [
     "-Z",
@@ -388,7 +404,8 @@ args = [
 private = true
 category = "Build"
 description = "Builds private package builders used by lit tests"
-toolchain = "nightly"
+dependencies = ["install-build-toolchain"]
+toolchain = "${MIDEN_DEBUG_BUILD_TOOLCHAIN}"
 command = "cargo"
 args = [
     "-Z",

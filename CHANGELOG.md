@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- Keep DAP source breakpoints pending until dynamically loaded package debug information is available, then verify them with stable breakpoint IDs. Source-line validation also reads matching local files when the execution host does not provide source text.
+
 ## [0.18.0]
 
 ### Migration and breaking changes

@@ -1,4 +1,5 @@
 use std::{
+    fs,
     io::{BufRead, Read, Write},
     net::Shutdown,
     thread,
@@ -17,6 +18,7 @@ struct Session {
     writer: BufWriter<std::net::TcpStream>,
     server: Option<thread::JoinHandle<Result<ExecutionOutput, ExecutionError>>>,
     sequence: i64,
+    breakpoint_events: Vec<Value>,
 }
 
 impl Session {
@@ -42,6 +44,15 @@ impl Session {
         source_manager: Arc<DefaultSourceManager>,
         config: DapConfig,
     ) -> Self {
+        Self::start_with_packages(package, source_manager, config, Vec::new())
+    }
+
+    fn start_with_packages(
+        package: Arc<Package>,
+        source_manager: Arc<DefaultSourceManager>,
+        config: DapConfig,
+        dependencies: Vec<Arc<Package>>,
+    ) -> Self {
         let listener = DapExecutor::bind_listener("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let mut executor = DapExecutor::new(
@@ -54,6 +65,9 @@ impl Session {
         executor.forest_recorder = Some(MastForestRecorder::new());
         let server = thread::spawn(move || {
             let mut host = DebuggerHost::new(source_manager);
+            for dependency in dependencies {
+                host.load_package(dependency);
+            }
             executor.execute_on_listener(package, &mut host, listener)
         });
         let stream = std::net::TcpStream::connect(address).unwrap();
@@ -64,6 +78,7 @@ impl Session {
             writer: BufWriter::new(stream),
             server: Some(server),
             sequence: 0,
+            breakpoint_events: Vec::new(),
         }
     }
 
@@ -84,7 +99,11 @@ impl Session {
         }
         let mut bytes = vec![0; length.unwrap()];
         self.reader.read_exact(&mut bytes).unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+        let message: Value = serde_json::from_slice(&bytes).unwrap();
+        if message["event"] == "breakpoint" {
+            self.breakpoint_events.push(message["body"].clone());
+        }
+        message
     }
 
     fn request(&mut self, command: &str, arguments: Value) -> Value {
@@ -137,6 +156,157 @@ impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.writer.get_ref().shutdown(Shutdown::Both);
     }
+}
+
+fn session_with_dynamic_source(path: &std::path::Path) -> Session {
+    use miden_assembly_syntax::ast::{ModuleKind, Path as AssemblyPath};
+
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let module = Module::parser(Some(ModuleKind::Library))
+        .parse_file(Some(AssemblyPath::new("fixture::lazy")), path, source_manager.clone())
+        .unwrap();
+    let library: Arc<Package> = Assembler::new(source_manager.clone())
+        .assemble_library("lazy", module, None::<&str>)
+        .unwrap()
+        .into();
+    let mut assembler = Assembler::new(source_manager);
+    assembler
+        .link_package(library.clone(), miden_assembly::Linkage::Dynamic)
+        .unwrap();
+    let package: Arc<Package> = assembler
+        .assemble_program("root", "use fixture::lazy\nbegin exec.lazy::run drop end")
+        .unwrap()
+        .into();
+    Session::start_with_packages(
+        package,
+        Arc::new(DefaultSourceManager::default()),
+        DapConfig::new("127.0.0.1:0"),
+        vec![library],
+    )
+}
+
+#[test]
+fn source_breakpoint_is_verified_when_a_dynamic_package_loads() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("lazy.masm");
+    fs::write(&path, "pub proc run\n\n    push.7\n    push.5\n    add\nend\n").unwrap();
+    let path = path.canonicalize().unwrap();
+    let mut session = session_with_dynamic_source(&path);
+    session.handshake("launch");
+    let response = session.request(
+        "setBreakpoints",
+        json!({
+            "source": {"path": path}, "breakpoints": [{"line": 2}]
+        }),
+    );
+    let breakpoint = &response["body"]["breakpoints"][0];
+    assert_eq!(breakpoint["verified"], false);
+    assert!(breakpoint["message"].as_str().unwrap().contains("Pending"));
+    let id = breakpoint["id"].clone();
+    session.request("continue", json!({"threadId": 1}));
+    let (stop, _) = session.stop();
+    assert_eq!(stop["body"]["reason"], "breakpoint", "{stop:?}");
+    session.request("threads", json!({}));
+    assert_eq!(session.breakpoint_events.len(), 1);
+    let update = &session.breakpoint_events[0];
+    assert_eq!(update["reason"], "changed");
+    assert_eq!(update["breakpoint"]["id"], id);
+    assert_eq!(update["breakpoint"]["verified"], true);
+    assert_eq!(update["breakpoint"]["line"], 3);
+    let values = session.request("variables", json!({"variablesReference": SCOPE_STACK}));
+    assert_eq!(values["body"]["variables"][0]["value"], "7");
+    let response = session.request(
+        "setBreakpoints",
+        json!({
+            "source": {"path": path}, "breakpoints": [{"line": 4}]
+        }),
+    );
+    assert_eq!(response["body"]["breakpoints"][0]["verified"], true);
+    session.request("restart", json!({}));
+    session.stop();
+    session.request("continue", json!({"threadId": 1}));
+    assert_eq!(session.stop().0["body"]["reason"], "breakpoint");
+    session.request("threads", json!({}));
+    assert_eq!(session.breakpoint_events.len(), 1);
+    session.disconnect();
+}
+
+#[test]
+fn removed_pending_source_breakpoints_do_not_stop_in_loaded_packages() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("lazy.masm");
+    fs::write(&path, "pub proc run\n    push.7\nend\n").unwrap();
+    let path = path.canonicalize().unwrap();
+    let mut session = session_with_dynamic_source(&path);
+    session.handshake("attach");
+    session.request(
+        "setBreakpoints",
+        json!({"source": {"path": path}, "breakpoints": [{"line": 2}]}),
+    );
+    session.request("setBreakpoints", json!({"source": {"path": path}, "breakpoints": []}));
+    session.request("continue", json!({"threadId": 1}));
+    assert_eq!(session.stop().0["event"], "terminated");
+    session.request("threads", json!({}));
+    assert!(session.breakpoint_events.is_empty());
+    session.disconnect();
+}
+
+#[test]
+fn instruction_stepping_verifies_pending_source_breakpoints_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("lazy.masm");
+    fs::write(&path, "pub proc run\n    push.7\nend\n").unwrap();
+    let path = path.canonicalize().unwrap();
+    let mut session = session_with_dynamic_source(&path);
+    session.handshake("launch");
+    let response = session.request(
+        "setBreakpoints",
+        json!({
+            "source": {"path": path}, "breakpoints": [{"line": 2}]
+        }),
+    );
+    assert_eq!(response["body"]["breakpoints"][0]["verified"], false);
+    for _ in 0..20 {
+        session.request("stepIn", json!({"threadId": 1, "granularity": "instruction"}));
+        let (event, _) = session.stop();
+        session.request("threads", json!({}));
+        if event["event"] == "terminated" {
+            break;
+        }
+    }
+    assert_eq!(session.breakpoint_events.len(), 1);
+    assert_eq!(session.breakpoint_events[0]["breakpoint"]["verified"], true);
+    let response = session.request(
+        "setBreakpoints",
+        json!({
+            "source": {"path": path}, "breakpoints": [{"line": 2}, {"line": 0}]
+        }),
+    );
+    assert_eq!(response["body"]["breakpoints"][0]["verified"], true);
+    assert_eq!(response["body"]["breakpoints"][1]["verified"], false);
+    session.disconnect();
+}
+
+#[test]
+fn pending_breakpoint_hits_a_single_operation_dynamic_procedure() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("lazy.masm");
+    fs::write(&path, "pub proc run\n    add\nend\n").unwrap();
+    let path = path.canonicalize().unwrap();
+    let mut session = session_with_dynamic_source(&path);
+    session.handshake("launch");
+    let response = session.request(
+        "setBreakpoints",
+        json!({
+            "source": {"path": path}, "breakpoints": [{"line": 2}]
+        }),
+    );
+    assert_eq!(response["body"]["breakpoints"][0]["verified"], false);
+    session.request("continue", json!({"threadId": 1}));
+    let (stop, _) = session.stop();
+    assert_eq!(stop["body"]["reason"], "breakpoint", "{stop:?}");
+    assert_eq!(session.breakpoint_events.len(), 1);
+    session.disconnect();
 }
 
 #[test]

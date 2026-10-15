@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+- [BREAKING] Migrate to the upstream VM 0.36 debug-info v4 format and compact inline-call ranges. Rebuild packages produced by VM 0.35 or use their original toolchain. Private lit fixture builders now emit ranges and use checked encoding.
+
 ## [0.18.0]
 
 ### Migration and breaking changes

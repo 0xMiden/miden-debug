@@ -110,6 +110,7 @@ impl LogicalStackFrame {
 ///
 /// Rows owned by the current package come first. Contexts inherited across dynamic/external
 /// package boundaries follow in the VM-provided innermost-to-outermost order.
+/// Procedure-definition rows are reserved for call-frame recovery, not source-level inlining.
 pub fn inline_frames_for_operation<'a>(
     current: Option<(&PackageDebugInfo, DebugSourceNodeId, u32)>,
     inherited: impl IntoIterator<Item = &'a SourceInlineCallContext>,
@@ -135,6 +136,9 @@ fn append_inline_frames<'a>(
 ) {
     frames.extend(rows.into_iter().filter_map(|row| {
         let function = debug_info.get_function(row.callee_idx)?;
+        if function.mast_root != Default::default() {
+            return None;
+        }
         let name = debug_info.get_string(function.name_idx)?;
         let call_site = debug_info.get_location(row.loc_idx)?;
         Some(InlineCallFrame { name, call_site })

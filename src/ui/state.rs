@@ -133,6 +133,7 @@ impl RemoteState {
 
         let debug_vars = DebugVarTracker::new(Rc::new(RefCell::new(Default::default())));
         let executor = DebugExecutor {
+            frame_resolver: miden_processor::DebugCallFrameResolver::new(),
             processor: FastProcessor::new(StackInputs::default()),
             host: DebuggerHost::new(source_manager.clone()),
             resume_ctx: None,

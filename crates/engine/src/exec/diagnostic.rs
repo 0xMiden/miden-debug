@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use miden_core::{Word, events::EventId, program::Program};
+use miden_core::{Word, program::Program};
 use miden_processor::{
     BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, Felt,
     FutureMaybeSend, Host, LoadedMastForest, ProcessorState, StackInputs,
@@ -12,15 +12,13 @@ use miden_processor::{
 // DIAGNOSTIC HOST WRAPPER
 // ================================================================================================
 
-/// A host wrapper that intercepts trace events to track call frames and processor state,
-/// while delegating all other operations to the inner host.
+/// A host wrapper that captures processor state from trace events while delegating all operations
+/// to the inner host.
 ///
 /// This enables capturing diagnostic information during transaction execution (or any program
 /// execution) without modifying the inner host.
 struct DiagnosticHostWrapper<'a, H: Host> {
     inner: &'a mut H,
-    /// Call depth tracked from FrameStart/FrameEnd trace events.
-    call_depth: usize,
     /// Stack state captured at the last trace or event callback.
     last_stack_state: Vec<Felt>,
     /// Clock cycle at the last trace or event callback.
@@ -31,7 +29,6 @@ impl<'a, H: Host> DiagnosticHostWrapper<'a, H> {
     fn new(inner: &'a mut H) -> Self {
         Self {
             inner,
-            call_depth: 0,
             last_stack_state: Vec::new(),
             last_cycle: RowIndex::from(0u32),
         }
@@ -43,7 +40,6 @@ impl<'a, H: Host> DiagnosticHostWrapper<'a, H> {
         eprintln!("\n=== Transaction Execution Failed ===");
         eprintln!("Error: {err}");
         eprintln!("Last known cycle: {}", self.last_cycle);
-        eprintln!("Call depth at failure: {}", self.call_depth);
 
         if !self.last_stack_state.is_empty() {
             let stack_display: Vec<_> =
@@ -92,12 +88,6 @@ impl<H: Host> Host for DiagnosticHostWrapper<'_, H> {
         process: &ProcessorState<'_>,
     ) -> impl FutureMaybeSend<Result<Vec<AdviceMutation>, EventError>> {
         self.capture_state(process);
-        let event_id = EventId::from_felt(process.get_stack_item(0));
-        match crate::Event::from(event_id) {
-            crate::Event::FrameStart => self.call_depth += 1,
-            crate::Event::FrameEnd => self.call_depth = self.call_depth.saturating_sub(1),
-            _ => (),
-        }
         self.inner.on_event(process)
     }
 }
@@ -109,7 +99,6 @@ impl<H: Host> Host for DiagnosticHostWrapper<'_, H> {
 ///
 /// When execution fails, it captures and reports rich diagnostic information including:
 /// - The clock cycle at failure
-/// - The call depth (from trace events)
 /// - The last known operand stack state
 ///
 /// This executor is intended for use with [`TransactionExecutor`] to provide better error

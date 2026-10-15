@@ -7,6 +7,15 @@ in tests, etc.
 
 See the [documentation](https://github.com/0xMiden/compiler/tree/next/docs/external/src/guides/debugger.md) for more details on the `miden debug` command, and how to use the debugger.
 
+## Call frames and VM compatibility
+
+This branch uses upstream VM 0.36 main, pinned through the inline-frame resolver fixes.
+Packages use debug-info version 4; rebuild older packages or use their producing toolchain.
+The debugger recovers procedure frames from existing package metadata and VM continuations.
+Frames marked `[inferred]` are best-effort, not guaranteed source identities. Source-level
+inline frames remain separate from procedure calls; legacy frame events are accepted but
+do not control the backtrace.
+
 ## Engine features
 
 `miden-debug-engine` uses `#![no_std]` and `alloc`. Without default features, it provides

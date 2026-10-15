@@ -145,6 +145,8 @@ impl RemoteState {
             current_context: ContextId::root(),
             callstack: snapshot.callstack,
             current_proc: None,
+            current_return_felts: None,
+            current_control: None,
             debug_vars,
             last_debug_var_count: 0,
             recent: VecDeque::new(),

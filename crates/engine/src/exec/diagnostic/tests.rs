@@ -53,7 +53,6 @@ fn diagnostics_delegate_events_capture_state_and_preserve_execution_results() {
     .unwrap();
     let output = ready(processor.execute(&package.unwrap_program(), &mut wrapper)).unwrap();
     assert_eq!(output.stack[0], Felt::from(7u32));
-    assert_eq!(wrapper.call_depth, 0);
     assert!(wrapper.last_cycle > RowIndex::from(0u32));
     assert!(!wrapper.last_stack_state.is_empty());
     wrapper.report_diagnostics(&ExecutionError::Internal("test failure"));

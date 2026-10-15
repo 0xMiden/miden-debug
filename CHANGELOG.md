@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+- [BREAKING] Recover call frames from the VM's cached `DebugCallFrameResolver` instead of frame events. Keep invocation identities distinct across loop iterations, label inferred frames, and separate source inlining from ordinary `exec` boundaries. Legacy frame events remain accepted as no-ops.
+- Migrate to upstream VM 0.36 debug-info v4 and emit compact inline ranges in lit fixtures. Rust users of `inline_frames_for_operation` now pass shared debug-info handles; `CallStack::new` no longer accepts an event map.
+
 ## [0.18.0]
 
 ### Migration and breaking changes

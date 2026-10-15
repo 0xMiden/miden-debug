@@ -44,6 +44,7 @@ fn logical_frames_place_innermost_inline_frame_on_top() {
     let outer_start = "physical call\n".len() as u32;
     frame.inline_frames = vec![
         InlineCallFrame {
+            identity: None,
             name: Arc::from("crate::inner"),
             call_site: Location::new(
                 uri.clone(),
@@ -52,6 +53,7 @@ fn logical_frames_place_innermost_inline_frame_on_top() {
             ),
         },
         InlineCallFrame {
+            identity: None,
             name: Arc::from("crate::outer"),
             call_site: Location::new(
                 uri.clone(),
@@ -73,7 +75,7 @@ fn logical_frames_place_innermost_inline_frame_on_top() {
     );
     frame.push(Operation::Add, 1, Some(&asmop));
 
-    let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+    let mut callstack = CallStack::new();
     callstack.frames.push(frame);
     let source_manager = DefaultSourceManager::default();
     // Frame ordering does not depend on the std-only filesystem fallback.
@@ -94,12 +96,148 @@ fn logical_frames_place_innermost_inline_frame_on_top() {
 }
 
 #[test]
+fn compact_inline_ranges_preserve_interiors_gaps_and_frame_order() {
+    use miden_core::serde::Deserializable;
+    use miden_mast_package::debug_info::PackageDebugInfoBuilder;
+
+    let package = miden_assembly::Assembler::new(Arc::new(DefaultSourceManager::default()))
+        .assemble_program("ranges", "begin push.1.2.3.4 dropw push.5.6.7.8 dropw end")
+        .unwrap();
+    let info = package.debug_info().unwrap().unwrap();
+    let (source_index, node) = info
+        .nodes()
+        .iter()
+        .enumerate()
+        .find(|(_, node)| node.op_end - node.op_start >= 14)
+        .unwrap();
+    let source = DebugSourceNodeId::from(u32::try_from(source_index).unwrap());
+    let start = node.op_start;
+    let location = node.asm_ops[0].location_idx.into_option().unwrap();
+    let definition = info.functions()[0];
+    let mut builder = PackageDebugInfoBuilder::from(Box::new(info));
+    let mut inner = definition;
+    inner.name_idx = builder.add_string("source::inner");
+    let inner = builder.add_function(inner);
+    let mut outer = definition;
+    outer.name_idx = builder.add_string("source::outer");
+    let outer = builder.add_function(outer);
+    builder[source].inline_calls = vec![
+        DebugSourceInlineCall {
+            op_idx: start + 2,
+            op_end: start + 5,
+            callee_idx: inner,
+            loc_idx: location,
+        },
+        DebugSourceInlineCall {
+            op_idx: start,
+            op_end: start + 10,
+            callee_idx: outer,
+            loc_idx: location,
+        },
+        DebugSourceInlineCall {
+            op_idx: start + 12,
+            op_end: start + 14,
+            callee_idx: inner,
+            loc_idx: location,
+        },
+    ];
+    let bytes = builder.build().to_bytes_with_standard_limits().unwrap();
+    let info = Arc::new(PackageDebugInfo::read_from_bytes(&bytes).unwrap());
+    assert_eq!(info[source].inline_calls.len(), 3);
+    for (offset, expected) in [
+        (0, vec!["source::outer"]),
+        (2, vec!["source::inner", "source::outer"]),
+        (4, vec!["source::inner", "source::outer"]),
+        (5, vec!["source::outer"]),
+        (9, vec!["source::outer"]),
+        (10, vec![]),
+        (11, vec![]),
+        (12, vec!["source::inner"]),
+        (14, vec![]),
+    ] {
+        let frames = inline_frames_for_operation(Some((&info, source, start + offset)), []);
+        let names = frames.iter().map(|frame| frame.name.as_ref()).collect::<Vec<_>>();
+        assert_eq!(names, expected, "operation {offset}");
+    }
+}
+
+#[test]
+fn repeated_calls_at_one_site_create_distinct_debugger_frames() {
+    use crate::exec::Executor;
+
+    for invocation in ["call.inner", "exec.inner"] {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let source = format!(
+            "proc inner push.7 drop end begin push.2 dup neq.0 while.true {invocation} sub.1 dup \
+             neq.0 end drop end"
+        );
+        let package = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program("activations", source)
+            .map(Arc::from)
+            .unwrap();
+        let mut executor = Executor::new(Vec::new()).into_debug(package, source_manager);
+        let mut activations = Vec::new();
+        let mut inside = false;
+        while !executor.stopped {
+            executor.step().unwrap();
+            let current =
+                executor.callstack.frames().iter().find(|frame| {
+                    frame.procedure("").is_some_and(|name| name.ends_with("::inner"))
+                });
+            if let Some(current) = current
+                && !inside
+            {
+                activations.push(current.debug_frame.clone().unwrap());
+            }
+            inside = current.is_some();
+        }
+        assert_eq!(activations.len(), 2, "{invocation}");
+        assert!(!activations[0].is_same_frame(&activations[1]), "{invocation}");
+    }
+}
+
+#[test]
+fn exec_in_a_loop_does_not_repeat_the_recovered_procedure_as_an_inline_frame() {
+    use crate::exec::Executor;
+
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program(
+            "loop-frames",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/lit/call_frames_loop.masm"
+            )),
+        )
+        .map(Arc::from)
+        .unwrap();
+    let mut executor =
+        Executor::new(vec![miden_core::Felt::from(5u32)]).into_debug(package, source_manager);
+    let mut stops = 0;
+    while !executor.stopped {
+        executor.step().unwrap();
+        if !executor.current_asmop.as_ref().is_some_and(|op| op.op().as_ref() == "mul") {
+            continue;
+        }
+        let frames = executor.callstack.logical_frames("");
+        assert_eq!(
+            frames.iter().filter(|frame| frame.name().ends_with("::worker")).count(),
+            1,
+            "{frames:?}"
+        );
+        stops += 1;
+    }
+    assert_eq!(stops, 2);
+}
+
+#[test]
 fn control_cycles_replace_and_clear_inline_frames() {
     let inline = InlineCallFrame {
+        identity: None,
         name: Arc::from("crate::inline"),
         call_site: Location::new(Uri::new("test.masm"), ByteIndex::new(0), ByteIndex::new(1)),
     };
-    let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+    let mut callstack = CallStack::new();
 
     callstack.next(&StepInfo {
         op: None,
@@ -107,6 +245,7 @@ fn control_cycles_replace_and_clear_inline_frames() {
         asmop: None,
         clk: RowIndex::from(0u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: std::slice::from_ref(&inline),
     });
 
@@ -121,6 +260,7 @@ fn control_cycles_replace_and_clear_inline_frames() {
         asmop: None,
         clk: RowIndex::from(1u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: &[],
     });
 
@@ -131,7 +271,7 @@ fn control_cycles_replace_and_clear_inline_frames() {
 
 #[test]
 fn logical_physical_frame_tracks_exec_procedure_changes() {
-    let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+    let mut callstack = CallStack::new();
     let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
     callstack.next(&StepInfo {
         op: Some(Operation::Add),
@@ -139,6 +279,7 @@ fn logical_physical_frame_tracks_exec_procedure_changes() {
         asmop: Some(&main),
         clk: RowIndex::from(0u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: &[],
     });
 
@@ -147,6 +288,7 @@ fn logical_physical_frame_tracks_exec_procedure_changes() {
     assert_eq!(logical[0].display_name(), "program::main");
 
     let inline = InlineCallFrame {
+        identity: None,
         name: Arc::from("source::inline"),
         call_site: Location::new(Uri::new("test.masm"), ByteIndex::new(0), ByteIndex::new(1)),
     };
@@ -157,6 +299,7 @@ fn logical_physical_frame_tracks_exec_procedure_changes() {
         asmop: Some(&exec),
         clk: RowIndex::from(1u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: std::slice::from_ref(&inline),
     });
 
@@ -170,7 +313,7 @@ fn logical_physical_frame_tracks_exec_procedure_changes() {
 
 #[test]
 fn control_cycle_tracks_exec_procedure_change_before_first_operation() {
-    let mut callstack = CallStack::new(Arc::new(RwLock::new(BTreeMap::new())));
+    let mut callstack = CallStack::new();
     let main = AssemblyOp::new(None, "program::main".to_string(), 1, "add".to_string());
     callstack.next(&StepInfo {
         op: Some(Operation::Add),
@@ -178,6 +321,7 @@ fn control_cycle_tracks_exec_procedure_change_before_first_operation() {
         asmop: Some(&main),
         clk: RowIndex::from(0u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: &[],
     });
 
@@ -188,6 +332,7 @@ fn control_cycle_tracks_exec_procedure_change_before_first_operation() {
         asmop: Some(&exec),
         clk: RowIndex::from(1u32),
         ctx: ContextId::root(),
+        call_frames: None,
         inline_frames: &[],
     });
 
@@ -251,6 +396,7 @@ impl InlineCallFrame {
         Self {
             name: name.into(),
             call_site,
+            identity: None,
         }
     }
 }

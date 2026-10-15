@@ -96,44 +96,6 @@ fn records_event_mutations_and_replays_them() {
     assert_eq!(replayed_result, recorded_result);
 }
 
-/// Replayed builtin events still reach their handlers so debugger state remains available.
-#[test]
-fn replay_invokes_builtin_event_handlers() {
-    use miden_assembly::DefaultSourceManager;
-
-    let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
-    let program = miden_assembly::Assembler::new(source_manager.clone())
-        .assemble_program(
-            "program",
-            format!(
-                r#"
-begin
-    emit.event("{FRAME_START_EVENT}")
-    emit.event("{FRAME_START_EVENT}")
-end
-"#
-            ),
-        )
-        .map(Arc::<Package>::from)
-        .expect("failed to assemble test program");
-
-    let event_replay = VecDeque::from([Vec::new(), Vec::new()]);
-    let mut debug_executor = Executor::new(Vec::new()).into_debug_with_replay(
-        program,
-        source_manager,
-        Vec::new(),
-        event_replay,
-    );
-    while !debug_executor.stopped {
-        debug_executor.step().expect("replay step failed");
-    }
-
-    assert!(
-        debug_executor.callstack.frames().len() >= 2,
-        "expected replayed frame-start events to update the debugger call stack"
-    );
-}
-
 /// A recorded execution serialized into a [ReplaySnapshot](crate::exec::ReplaySnapshot) and
 /// read back from bytes replays to the same result — the offline record→replay path, end to
 /// end, exactly what `miden-debug --replay <snapshot>` drives.
@@ -236,4 +198,41 @@ fn replays_from_a_serialized_snapshot() {
         .expect("invalid replay result");
     assert_eq!(replayed_result, recorded_result);
     assert_eq!(replayed_result, 208);
+}
+
+#[test]
+fn replay_ignores_legacy_frame_events_for_callstack_tracking() {
+    use miden_assembly::DefaultSourceManager;
+
+    let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
+    let program = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program(
+            "program",
+            format!(
+                r#"
+begin
+emit.event("{FRAME_START_EVENT}")
+emit.event("{FRAME_START_EVENT}")
+end
+"#
+            ),
+        )
+        .map(Arc::<Package>::from)
+        .expect("failed to assemble test program");
+
+    let event_replay = VecDeque::from([Vec::new(), Vec::new()]);
+    let mut debug_executor = Executor::new(Vec::new()).into_debug_with_replay(
+        program,
+        source_manager,
+        Vec::new(),
+        event_replay,
+    );
+    while !debug_executor.stopped {
+        debug_executor.step().expect("replay step failed");
+    }
+
+    assert!(
+        debug_executor.callstack.frames().len() <= 1,
+        "legacy frame events must not create debugger call frames"
+    );
 }

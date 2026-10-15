@@ -7,6 +7,13 @@ in tests, etc.
 
 See the [documentation](https://github.com/0xMiden/compiler/tree/next/docs/external/src/guides/debugger.md) for more details on the `miden debug` command, and how to use the debugger.
 
+## VM 0.36 migration
+
+This branch updates package decoding and inline-range fixtures to upstream VM 0.36 main.
+Packages use debug-info version 4; rebuild older packages or use their producing toolchain.
+Use the companion `feat/vm-036-call-frames` branch for the complete stack-trace migration:
+ordinary `exec` boundaries now appear in inline metadata and require the new frame consumer.
+
 ## Engine features
 
 `miden-debug-engine` uses `#![no_std]` and `alloc`. Without default features, it provides

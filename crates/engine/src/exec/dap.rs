@@ -23,7 +23,7 @@ use miden_core::{Word, operations::AssemblyOp};
 use miden_debug_types::{Location, Uri};
 use miden_mast_package::{
     MastForest, Package,
-    debug_info::{DebugFileIdx, DebugSourceAsmOp, DebugSourceNodeId, PackageDebugInfo},
+    debug_info::{DebugFileIdx, PackageDebugInfo},
 };
 use miden_processor::{
     BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend,
@@ -35,16 +35,14 @@ use miden_processor::{
 
 use super::{
     EventMutationRecorder, MastForestRecorder, ReplaySnapshot, ReplaySnapshotRecorder,
-    ReplaySnapshotWrite,
-    state::{extract_current_op, should_wait_for_entry_variables},
+    ReplaySnapshotWrite, source::SourceContext, state::should_wait_for_entry_variables,
 };
 use crate::{
     debug::{
         DebugVarSnapshot, DebugVarTracker, FormatType, LogicalFrameKind, ReadMemoryExpr,
-        RecoveredCallStack, format_value, inline_frames_for_operation, procedure_matches,
-        procedure_pattern, resolve_typed_variable_values, resolve_variable_values,
+        RecoveredCallStack, format_value, procedure_matches, procedure_pattern,
+        resolve_typed_variable_values, resolve_variable_values,
     },
-    exec::state::CurrentCycleInfo,
     normalize_source_path,
 };
 
@@ -179,8 +177,8 @@ struct DapPresentedFrame {
     inline: bool,
 }
 
-/// A host wrapper that intercepts trace events to track the call stack for DAP stack traces,
-/// while delegating all other operations to the inner host.
+/// Tracks recovered frames and event-based fallback frames while forwarding host operations.
+/// Event handling also records advice mutations and loaded forests for execution replay.
 struct DapHostWrapper<'a, H> {
     inner: &'a mut H,
     call_depth: usize,
@@ -225,53 +223,6 @@ impl<H: Host> BaseHost for DapHostWrapper<'_, H> {
         event_id: miden_core::events::EventId,
     ) -> Option<&miden_core::events::EventName> {
         self.inner.resolve_event(event_id)
-    }
-}
-
-#[cfg(false)]
-impl<S: ?Sized + miden_assembly::SourceManager> SyncHost
-    for DapHostWrapper<'_, super::DebuggerHost<S>>
-{
-    fn get_mast_forest(&self, node_digest: &Word) -> Option<LoadedMastForest> {
-        // Record every forest the inner host resolves, so a replay session can load the same
-        // code for `call`/`dyncall` targets. The recorder deduplicates.
-        let forest_recorder = self.forest_recorder.clone();
-        let forest = SyncHost::get_mast_forest(&*self.inner, node_digest);
-        if let (Some(recorder), Some(forest)) = (&forest_recorder, &forest) {
-            recorder.record(forest.clone());
-        }
-        forest
-    }
-
-    fn on_event(
-        &mut self,
-        process: &ProcessorState<'_>,
-    ) -> Result<Vec<AdviceMutation>, EventError> {
-        use miden_core::events::EventId;
-        match crate::Event::from(EventId::from_felt(process.get_stack_item(0))) {
-            crate::Event::FrameStart => {
-                self.call_depth += 1;
-                self.frames.push(DapCallFrame {
-                    name: Arc::default(),
-                    source_path: None,
-                    line: 0,
-                    column: 0,
-                });
-            }
-            crate::Event::FrameEnd => {
-                self.call_depth = self.call_depth.saturating_sub(1);
-                self.frames.pop();
-            }
-            _ => (),
-        }
-        // Every invocation is recorded, including empty mutation sets: event replay pops one
-        // entry per event, so the log must stay aligned with the event stream.
-        let recorder = self.event_recorder.clone();
-        let result = SyncHost::on_event(self.inner, process);
-        if let (Some(recorder), Ok(mutations)) = (&recorder, &result) {
-            recorder.record(crate::exec::clone_advice_mutations(mutations));
-        }
-        result
     }
 }
 
@@ -525,7 +476,7 @@ fn presented_frames<H: Host>(
     current_asmop: Option<&AssemblyOp>,
     cycle: usize,
 ) -> Vec<DapPresentedFrame> {
-    if !host.recovered.is_empty() {
+    if host.recovered.has_current_frame() {
         return host
             .recovered
             .logical_frames("")
@@ -1386,27 +1337,11 @@ impl DapExecutor {
 
             // Extract initial asmop and populate the root frame.
             if let Some(ctx) = resume_ctx.as_ref() {
-                current_debug_info = ctx.debug_info();
-                let CurrentCycleInfo {
-                    source_node_id,
-                    op_idx,
-                    ..
-                } = extract_current_op(ctx);
-                current_asmop =
-                    extract_asm_op(current_debug_info.as_deref(), source_node_id, op_idx);
-                wrapper.recovered.update(
-                    ctx,
-                    source_node_id.map(|id| (id, op_idx.unwrap_or_default() as u32)),
-                    current_asmop.as_ref(),
-                );
-                current_inline_frames = inline_frames_for_operation(
-                    current_debug_info.as_deref().zip(source_node_id).map(
-                        |(debug_info, source_node_id)| {
-                            (debug_info, source_node_id, op_idx.unwrap_or_default() as u32)
-                        },
-                    ),
-                    ctx.inherited_inline_call_contexts(),
-                );
+                let source = SourceContext::new(ctx);
+                current_debug_info = source.debug_info().cloned();
+                current_asmop = source.asmop();
+                wrapper.recovered.update(ctx, source.source_operation(), current_asmop.as_ref());
+                current_inline_frames = source.inline_frames().to_vec();
             }
             update_top_frame_with_debug(
                 &mut wrapper,
@@ -2302,40 +2237,13 @@ fn advance_one<H: Host>(
     current_asmop: &mut Option<AssemblyOp>,
     debug_state: &mut DapDebugVarState,
 ) -> Result<Option<ResumeContext>, ExecutionError> {
-    let CurrentCycleInfo {
-        source_node_id,
-        op_idx,
-        ..
-    } = extract_current_op(&ctx);
-    let debug_info = ctx.debug_info();
-    let inline_frames = inline_frames_for_operation(
-        debug_info.as_deref().zip(source_node_id).map(|(debug_info, source_node_id)| {
-            (debug_info, source_node_id, op_idx.unwrap_or_default() as u32)
-        }),
-        ctx.inherited_inline_call_contexts(),
-    );
-    let executed_source_node = source_node_id.zip(debug_info.as_deref()).map(|(id, di)| &di[id]);
-    let (executed_asmop, debug_var_infos) = match executed_source_node.zip(op_idx) {
-        Some((source_node, op_idx)) => {
-            let op_idx = op_idx as u32;
-            let debug_info = debug_info.as_deref().unwrap();
-            let asm_op = source_node
-                .asm_op_for_operation(op_idx)
-                .and_then(|asm_op| asm_op.to_assembly_op(debug_info));
-            let debug_var_infos =
-                source_node.debug_infos_for_operation(op_idx, debug_info).collect::<Vec<_>>();
-            (asm_op, debug_var_infos)
-        }
-        None => (None, vec![]),
-    };
-    let source_asmop = extract_asm_op(debug_info.as_deref(), source_node_id, op_idx);
-    host.recovered.update(
-        &ctx,
-        source_node_id.map(|id| (id, op_idx.unwrap_or_default() as u32)),
-        source_asmop.as_ref(),
-    );
+    let source = SourceContext::new(&ctx);
+    let executed_asmop = source.executed_asmop();
+    let debug_var_infos = source.debug_vars();
+    let source_asmop = source.asmop();
+    host.recovered.update(&ctx, source.source_operation(), source_asmop.as_ref());
     let pre_step_stack = processor.state().get_stack_state();
-    let result = if let Some(debug_info) = debug_info.as_ref() {
+    let result = if let Some(debug_info) = source.debug_info() {
         poll_immediately(processor.step_with_package_debug_info(host, ctx, debug_info))
     } else {
         poll_immediately(processor.step(host, ctx))
@@ -2345,7 +2253,7 @@ fn advance_one<H: Host>(
             *cycle += 1;
             record_debug_vars(debug_state, *cycle, debug_var_infos, &pre_step_stack);
             *current_asmop = executed_asmop;
-            update_top_frame_with_debug(host, current_asmop.as_ref(), &inline_frames);
+            update_top_frame_with_debug(host, current_asmop.as_ref(), source.inline_frames());
             Ok(Some(new_ctx))
         }
         Ok(None) => {
@@ -2355,30 +2263,6 @@ fn advance_one<H: Host>(
         }
         Err(e) => Err(e),
     }
-}
-
-fn extract_debug_asm_op(
-    debug_info: Option<&PackageDebugInfo>,
-    source_node_id: Option<DebugSourceNodeId>,
-    op_idx: Option<usize>,
-) -> Option<&DebugSourceAsmOp> {
-    let debug_info = debug_info?;
-    let source_node_id = source_node_id?;
-    let source_node = &debug_info[source_node_id];
-    match op_idx {
-        Some(op_idx) => source_node.asm_op_for_operation(op_idx as u32),
-        None => source_node.asm_op_for_operation(0),
-    }
-}
-
-fn extract_asm_op(
-    debug_info: Option<&PackageDebugInfo>,
-    source_node_id: Option<DebugSourceNodeId>,
-    op_idx: Option<usize>,
-) -> Option<AssemblyOp> {
-    let debug_asm_op = extract_debug_asm_op(debug_info, source_node_id, op_idx)?;
-    let debug_info = debug_info?;
-    debug_asm_op.to_assembly_op(debug_info)
 }
 
 fn is_next_source_line(
@@ -2537,7 +2421,7 @@ fn step_next_line<H: Host>(
     }
 }
 
-/// Step out: advance until call depth decreases.
+/// Step out: advance until the captured invocation returns.
 fn step_out<H: Host>(
     processor: &mut FastProcessor,
     host: &mut DapHostWrapper<'_, H>,
@@ -2546,7 +2430,7 @@ fn step_out<H: Host>(
     current_asmop: &mut Option<AssemblyOp>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
-    let target_depth = host.call_depth.saturating_sub(1);
+    let target = host.recovered.return_target(host.call_depth);
 
     loop {
         let ctx = match resume_ctx.take() {
@@ -2558,7 +2442,13 @@ fn step_out<H: Host>(
             Ok(Some(new_ctx)) => {
                 *resume_ctx = Some(new_ctx);
 
-                if host.call_depth <= target_depth {
+                // A recovered return can first appear on a control cycle. Stop at the
+                // caller's next assembly operation so source stepping has a usable location.
+                if target.has_returned(&host.recovered, host.call_depth)
+                    && (!target.is_recovered()
+                        || !host.recovered.has_current_frame()
+                        || current_asmop.is_some())
+                {
                     update_top_frame(host, current_asmop.as_ref());
                     return StepResult::Stepped;
                 }

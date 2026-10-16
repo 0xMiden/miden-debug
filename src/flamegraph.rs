@@ -38,7 +38,9 @@ pub enum FlamegraphOutput {
 }
 
 impl FlamegraphProfile {
-    /// Execute `executor` to completion, sampling its call stack for every VM cycle.
+    /// Execute `executor` to completion, sampling its logical source stack for every VM cycle.
+    /// Inferred and inline frames retain their labels; frame events provide the fallback when
+    /// source metadata is unavailable.
     pub fn collect(executor: &mut DebugExecutor) -> Result<Self, ExecutionError> {
         let mut profile = Self::default();
 
@@ -51,7 +53,9 @@ impl FlamegraphProfile {
             match executor.step() {
                 Ok(_) if executor.cycle > previous_cycle => {
                     let cycle_delta = executor.cycle - previous_cycle;
-                    profile.record_call_stack(executor.callstack.frames(), cycle_delta);
+                    let frames = executor.callstack.logical_frames("");
+                    profile
+                        .record_stack(frames.iter().map(|frame| frame.display_name()), cycle_delta);
                 }
                 Ok(_) => {
                     if executor.stopped {

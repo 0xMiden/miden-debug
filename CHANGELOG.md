@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - Debugger and DAP stack traces use Miden VM's recovered call frames, preserving caller locations and source inline contexts across nested calls and package boundaries. Inferred frames are labeled separately from source-level inline frames.
+- Flamegraphs sample recovered source stacks, including labeled inferred and inline frames, with event-frame fallback when source metadata is unavailable.
 
 ### Fixed
 

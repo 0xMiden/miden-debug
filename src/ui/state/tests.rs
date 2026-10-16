@@ -270,11 +270,103 @@ fn successful_reload_epilogue_resets_stack_selection() {
     state.breakpoints_hit.push(Breakpoint::default());
     state.stopped = false;
     state.executor_mut().stopped = true;
+    state.create_breakpoint(BreakpointType::Finish);
+    assert!(!state.finish_targets.is_empty());
 
     state.finish_reload();
 
     assert!(!state.executor().stopped);
     assert_eq!(state.selected_stack_frame, 0);
     assert!(state.breakpoints_hit.is_empty());
+    assert!(state.finish_targets.is_empty());
     assert!(state.stopped);
+}
+
+#[test]
+fn finish_keeps_its_invocation_when_another_breakpoint_interrupts_it() {
+    let mut state = state_inside_inner_for_finish();
+    state.create_breakpoint(BreakpointType::Finish);
+    state.create_breakpoint(BreakpointType::Step);
+    state.run_until_stopped();
+    assert!(state.current_procedure().unwrap().ends_with("::inner"));
+    state.run_until_stopped();
+    assert!(!state.executor().stopped);
+    assert!(state.current_procedure().unwrap().ends_with("::outer"));
+    assert_eq!(state.logical_stack_frames().len(), 2);
+}
+
+fn state_inside_inner_for_finish() -> State {
+    let mut state = state_with_variables(
+        "proc inner push.7 drop push.6 drop end proc outer exec.inner push.8 drop end begin \
+         exec.outer push.9 drop end",
+    );
+    while !state.executor().stopped {
+        state.executor_mut().step().unwrap();
+        if state
+            .executor()
+            .current_asmop
+            .as_ref()
+            .is_some_and(|op| op.op().as_ref() == "push.7")
+        {
+            break;
+        }
+    }
+    assert!(!state.executor().stopped);
+    state
+}
+
+#[test]
+fn duplicate_finish_breakpoints_are_consumed_together() {
+    let mut state = state_inside_inner_for_finish();
+    state.create_breakpoint(BreakpointType::Finish);
+    state.create_breakpoint(BreakpointType::Step);
+    state.run_until_stopped();
+    assert!(state.current_procedure().unwrap().ends_with("::inner"));
+
+    state.create_breakpoint(BreakpointType::Finish);
+    state.run_until_stopped();
+    assert!(!state.executor().stopped);
+    assert!(state.current_procedure().unwrap().ends_with("::outer"));
+    assert!(state.breakpoints.is_empty(), "neither finish breakpoint may remain orphaned");
+    assert!(state.finish_targets.is_empty());
+    assert_eq!(state.breakpoints_hit.len(), 2);
+    assert!(state.breakpoints_hit.iter().all(|bp| bp.ty == BreakpointType::Finish));
+}
+
+#[test]
+fn deleted_finish_target_does_not_survive_breakpoint_id_reuse() {
+    let mut state = state_inside_inner_for_finish();
+    state.create_breakpoint(BreakpointType::Finish);
+    let deleted = state.breakpoints.last().unwrap().clone();
+    state.create_breakpoint(BreakpointType::Step);
+    state.run_until_stopped();
+    assert!(state.current_procedure().unwrap().ends_with("::inner"));
+
+    state.breakpoints.retain(|bp| bp.id != deleted.id);
+    state.next_breakpoint_id = deleted.id;
+    state.create_breakpoint(BreakpointType::Finish);
+    let replacement = state.breakpoints.last().unwrap().clone();
+    assert_eq!(replacement.id, deleted.id);
+    assert_ne!(replacement.creation_cycle, deleted.creation_cycle);
+
+    state.run_until_stopped();
+    assert!(!state.executor().stopped);
+    assert!(state.current_procedure().unwrap().ends_with("::outer"));
+    assert_eq!(state.breakpoints_hit, [replacement]);
+    assert!(state.breakpoints.is_empty());
+    assert!(state.finish_targets.is_empty(), "deleted targets must be pruned on resume");
+}
+
+#[test]
+fn deleting_an_interrupted_finish_allows_execution_to_complete() {
+    let mut state = state_inside_inner_for_finish();
+    state.create_breakpoint(BreakpointType::Finish);
+    state.create_breakpoint(BreakpointType::Step);
+    state.run_until_stopped();
+    state.breakpoints.clear();
+
+    state.run_until_stopped();
+    assert!(state.executor().stopped);
+    assert!(state.breakpoints_hit.is_empty());
+    assert!(state.finish_targets.is_empty());
 }

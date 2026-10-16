@@ -7,6 +7,7 @@ use super::*;
 pub struct RecoveredCallStack {
     resolver: DebugCallFrameResolver,
     frames: Vec<RecoveredFrame>,
+    current_frame_recovered: bool,
 }
 
 struct RecoveredFrame {
@@ -15,7 +16,49 @@ struct RecoveredFrame {
     inline_frames: Vec<InlineCallFrame>,
 }
 
+/// An invocation to finish, captured before execution resumes.
+///
+/// Source identity distinguishes recursive invocations. Event depth is used only when no
+/// invocation can be recovered at the point where the target is captured.
+#[derive(Clone)]
+pub struct ReturnTarget {
+    invocation: Option<DebugCallFrame>,
+    event_depth: usize,
+}
+
+impl ReturnTarget {
+    pub fn is_recovered(&self) -> bool {
+        self.invocation.is_some()
+    }
+
+    pub fn has_returned(&self, stack: &RecoveredCallStack, event_depth: usize) -> bool {
+        match self.invocation.as_ref() {
+            Some(invocation) => {
+                !stack.frames.iter().any(|frame| frame.identity.is_same_frame(invocation))
+            }
+            None => event_depth < self.event_depth,
+        }
+    }
+}
+
 impl RecoveredCallStack {
+    pub fn return_target(&self, event_depth: usize) -> ReturnTarget {
+        ReturnTarget {
+            invocation: self
+                .frames
+                .last()
+                .filter(|_| self.current_frame_recovered)
+                .map(|frame| frame.identity.clone()),
+            event_depth,
+        }
+    }
+
+    /// Whether the innermost recovered frame belongs to the active package. A stripped callee
+    /// may leave recovered ancestors visible without providing a frame for the current invocation.
+    pub fn has_current_frame(&self) -> bool {
+        self.current_frame_recovered
+    }
+
     pub fn is_empty(&self) -> bool {
         self.frames.is_empty()
     }
@@ -48,6 +91,11 @@ impl RecoveredCallStack {
         }
 
         let debug_info = context.debug_info();
+        self.current_frame_recovered = self
+            .frames
+            .last()
+            .zip(debug_info.as_deref())
+            .is_some_and(|(frame, info)| core::ptr::eq(frame.identity.debug_info(), info));
         let mut rows = Vec::new();
         if let Some((info, (source, operation))) = debug_info.as_deref().zip(current) {
             rows.extend(info.inline_calls_for_operation(source, operation).map(|row| (info, row)));

@@ -19,7 +19,7 @@ use miden_utils_sync::RwLock;
 use crate::Event;
 
 mod recovered;
-pub use recovered::RecoveredCallStack;
+pub use recovered::{RecoveredCallStack, ReturnTarget};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ControlFlowOp {
@@ -218,6 +218,19 @@ impl CallStack {
         self.frames.as_slice()
     }
 
+    /// Capture the current invocation for return stepping, with event fallback when needed.
+    pub fn return_target(&self) -> ReturnTarget {
+        self.recovered.return_target(self.frames.len())
+    }
+
+    pub fn has_returned(&self, target: &ReturnTarget) -> bool {
+        target.has_returned(&self.recovered, self.frames.len())
+    }
+
+    pub fn has_recovered_current_frame(&self) -> bool {
+        self.recovered.has_current_frame()
+    }
+
     pub fn observe_source_context(
         &mut self,
         context: &miden_processor::ResumeContext,
@@ -228,7 +241,7 @@ impl CallStack {
     }
 
     pub fn logical_frames(&self, strip_prefix: &str) -> Vec<LogicalStackFrame> {
-        if !self.recovered.is_empty() {
+        if self.recovered.has_current_frame() {
             return self.recovered.logical_frames(strip_prefix);
         }
         let mut logical = Vec::new();

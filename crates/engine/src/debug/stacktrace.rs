@@ -19,7 +19,7 @@ use miden_utils_sync::RwLock;
 use crate::Event;
 
 mod recovered;
-pub use recovered::{RecoveredCallStack, ReturnTarget};
+pub use recovered::{InvocationId, RecoveredCallStack, ReturnTarget};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ControlFlowOp {
@@ -78,9 +78,15 @@ pub struct LogicalStackFrame {
     location: Option<LogicalFrameLocation>,
     physical_index: Option<usize>,
     origin: Option<miden_processor::DebugFrameOrigin>,
+    invocation: Option<InvocationId>,
 }
 
 impl LogicalStackFrame {
+    /// Physical source invocations have local ownership; inline and event-only rows do not.
+    pub fn invocation_id(&self) -> Option<InvocationId> {
+        self.invocation
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -227,6 +233,14 @@ impl CallStack {
         target.has_returned(&self.recovered, self.frames.len())
     }
 
+    pub fn current_invocation(&self) -> Option<InvocationId> {
+        self.recovered.current_invocation()
+    }
+
+    pub fn invocation_ids(&self) -> impl Iterator<Item = InvocationId> + '_ {
+        self.recovered.invocation_ids()
+    }
+
     pub fn has_recovered_current_frame(&self) -> bool {
         self.recovered.has_current_frame()
     }
@@ -258,6 +272,7 @@ impl CallStack {
                 location,
                 physical_index: Some(physical_index),
                 origin: None,
+                invocation: None,
             });
 
             for inline_index in (0..frame.inline_frames.len()).rev() {
@@ -275,6 +290,7 @@ impl CallStack {
                     location,
                     physical_index: Some(physical_index),
                     origin: None,
+                    invocation: None,
                 });
             }
         }

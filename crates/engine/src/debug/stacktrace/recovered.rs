@@ -8,9 +8,15 @@ pub struct RecoveredCallStack {
     resolver: DebugCallFrameResolver,
     frames: Vec<RecoveredFrame>,
     current_frame_recovered: bool,
+    next_invocation: u64,
 }
 
+/// Session-local identity of a recovered invocation, independent of stack position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InvocationId(pub(crate) u64);
+
 struct RecoveredFrame {
+    invocation: InvocationId,
     identity: DebugCallFrame,
     location: Option<Location>,
     inline_frames: Vec<InlineCallFrame>,
@@ -42,6 +48,17 @@ impl ReturnTarget {
 }
 
 impl RecoveredCallStack {
+    pub fn current_invocation(&self) -> Option<InvocationId> {
+        self.frames
+            .last()
+            .filter(|_| self.current_frame_recovered)
+            .map(|frame| frame.invocation)
+    }
+
+    pub fn invocation_ids(&self) -> impl Iterator<Item = InvocationId> + '_ {
+        self.frames.iter().map(|frame| frame.invocation)
+    }
+
     pub fn return_target(&self, event_depth: usize) -> ReturnTarget {
         ReturnTarget {
             invocation: self
@@ -83,7 +100,11 @@ impl RecoveredCallStack {
                 frame.identity = identity;
                 continue;
             }
+            let invocation = InvocationId(self.next_invocation);
+            self.next_invocation =
+                self.next_invocation.checked_add(1).expect("invocation identity exhausted");
             self.frames.push(RecoveredFrame {
+                invocation,
                 identity,
                 location: None,
                 inline_frames: Vec::new(),
@@ -163,6 +184,7 @@ impl RecoveredCallStack {
                 location,
                 physical_index: None,
                 origin: Some(frame.identity.origin()),
+                invocation: Some(frame.invocation),
             });
             for index in (0..frame.inline_frames.len()).rev() {
                 let inline = &frame.inline_frames[index];
@@ -177,6 +199,7 @@ impl RecoveredCallStack {
                     location: location.map(LogicalFrameLocation::Assembly),
                     physical_index: None,
                     origin: None,
+                    invocation: None,
                 });
             }
         }

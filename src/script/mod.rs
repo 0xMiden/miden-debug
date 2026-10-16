@@ -9,11 +9,11 @@ mod api;
 #[cfg(feature = "python")]
 pub mod python;
 
-#[cfg(all(test, feature = "python"))]
-pub(crate) use self::api::test_debugger;
 pub use self::api::{
     ScriptBreakpoint, ScriptDebugger, ScriptExecutionContext, ScriptFrame, ScriptSourceLocation,
     ScriptValue,
 };
+#[cfg(all(test, feature = "python"))]
+pub(crate) use self::api::{invocation_debugger, test_debugger};
 #[cfg(feature = "python")]
 pub use self::python::PythonScriptSession;

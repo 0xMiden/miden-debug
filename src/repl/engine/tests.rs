@@ -35,7 +35,7 @@ fn inspection_commands_report_initial_and_completed_state() {
     assert!(execute(&mut engine, "bt").contains("Backtrace ("));
     assert!(execute(&mut engine, "list").contains("Recent instructions:"));
     assert!(execute(&mut engine, "frame 0").contains("in "));
-    assert_eq!(engine.selected_frame, 0);
+    assert_eq!(engine.state.selected_stack_frame(), 0);
 
     assert!(execute(&mut engine, "continue").contains("Program terminated successfully"));
     assert!(engine.state().executor().stopped);
@@ -72,7 +72,7 @@ fn resume_commands_and_reload_reset_execution() {
         execute(&mut engine, "reload");
         assert_eq!(engine.state().executor().cycle, 0);
         assert!(!engine.state().executor().stopped);
-        assert_eq!(engine.selected_frame, 0);
+        assert_eq!(engine.state.selected_stack_frame(), 0);
     }
 }
 

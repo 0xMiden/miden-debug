@@ -161,12 +161,20 @@ impl DebugExecutor {
             ..
         } = source.cycle;
         let debug_var_infos = source.debug_vars();
-        let pre_step_stack = self.processor.state().get_stack_state();
         let source_asmop = source.asmop();
         self.callstack.observe_source_context(
             &resume_ctx,
             source.source_operation(),
             source_asmop.as_ref(),
+        );
+
+        let debug_var_count = debug_var_infos.len();
+        self.debug_vars.observe_execution(
+            self.callstack.invocation_ids(),
+            self.callstack.current_invocation(),
+            &self.processor,
+            RowIndex::from((self.cycle + 1) as u32),
+            debug_var_infos,
         );
 
         // Execute one step
@@ -217,20 +225,13 @@ impl DebugExecutor {
                 };
                 let exited = self.callstack.next(&step_info);
 
-                // Record and process debug variable events
-                let debug_var_count = debug_var_infos.len();
-                self.debug_vars.record_events_with_stack(
-                    RowIndex::from(self.cycle as u32),
-                    debug_var_infos,
-                    &pre_step_stack,
-                );
-                self.debug_vars.update_to_cycle(RowIndex::from(self.cycle as u32));
                 self.last_debug_var_count = debug_var_count;
 
                 Ok(exited)
             }
             Ok(None) => {
-                // Program completed
+                // Program completed: no invocation remains available for inspection.
+                self.debug_vars.reset();
                 self.stopped = true;
                 self.last_debug_var_count = 0;
                 let state = self.processor.state();

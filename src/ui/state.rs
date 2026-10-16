@@ -21,8 +21,8 @@ use miden_processor::{
 use crate::{
     config::DebuggerConfig,
     debug::{
-        Breakpoint, BreakpointType, OperationMatcher, ReadMemoryExpr, ResolvedLocation,
-        TypedProcedure, format_value, resolve_typed_variable_values, resolve_variable_value,
+        Breakpoint, BreakpointType, InvocationId, OperationMatcher, ReadMemoryExpr,
+        ResolvedLocation, TypedProcedure,
     },
     exec::{DebugExecutor, ExecutionConfig, Executor},
 };
@@ -94,7 +94,7 @@ struct LocalState {
 
 #[cfg(feature = "dap")]
 struct RemoteState {
-    client: crate::exec::DapClient,
+    client: std::cell::RefCell<crate::exec::DapClient>,
     executor: DebugExecutor,
     addr: String,
     /// Tracks which source files have had breakpoints synced to the DAP server,
@@ -117,6 +117,42 @@ struct RemoteSnapshot {
 
 #[cfg(feature = "dap")]
 impl RemoteState {
+    fn variables(
+        &self,
+        index: Option<usize>,
+        show_all: bool,
+    ) -> Result<Vec<DebugVariableValue>, String> {
+        let mut client = self.client.borrow_mut();
+        let frames = client.stack_trace()?;
+        let frame = match index {
+            Some(index) => frames.get(index),
+            None => frames.iter().find(|frame| frame.presentation_hint.is_none()),
+        };
+        let Some(frame) = frame else {
+            return Ok(Vec::new());
+        };
+        Ok(client
+            .frame_variables(frame.id, show_all)?
+            .into_iter()
+            .map(|variable| DebugVariableValue {
+                name: variable.name,
+                value: variable.raw.and_then(|value| Felt::new(value).ok()),
+                display_value: Some(variable.value),
+                location: String::new(),
+                source: None,
+            })
+            .collect())
+    }
+
+    fn format_variables(&self, index: usize, show_all: bool) -> Result<String, String> {
+        let mut client = self.client.borrow_mut();
+        let frames = client.stack_trace()?;
+        let Some(frame) = frames.get(index) else {
+            return Ok("No debug variables tracked".into());
+        };
+        client.evaluate_in_frame(if show_all { "vars all" } else { "vars" }, frame.id)
+    }
+
     fn from_client(
         addr: &str,
         mut client: crate::exec::DapClient,
@@ -155,7 +191,7 @@ impl RemoteState {
         };
 
         Ok(Self {
-            client,
+            client: std::cell::RefCell::new(client),
             executor,
             addr: addr.to_string(),
             synced_bp_files: std::collections::BTreeSet::new(),
@@ -163,7 +199,7 @@ impl RemoteState {
     }
 
     fn read_memory(&mut self, expr: &ReadMemoryExpr) -> Result<String, String> {
-        self.client.read_memory(expr)
+        self.client.get_mut().read_memory(expr)
     }
 
     fn sync_breakpoints(&mut self, breakpoints: &[Breakpoint]) {
@@ -195,16 +231,16 @@ impl RemoteState {
             .cloned()
             .collect();
         for file in &stale_files {
-            let _ = self.client.set_breakpoints(file, &[]);
+            let _ = self.client.get_mut().set_breakpoints(file, &[]);
         }
 
         // Send breakpoints for each file.
         for (file, lines) in &by_file {
-            let _ = self.client.set_breakpoints(file, lines);
+            let _ = self.client.get_mut().set_breakpoints(file, lines);
         }
 
         // Send function/pattern breakpoints (replaces the full set each time).
-        let _ = self.client.set_function_breakpoints(&func_names);
+        let _ = self.client.get_mut().set_function_breakpoints(&func_names);
 
         // Update tracked set.
         self.synced_bp_files = by_file.into_keys().collect();
@@ -221,13 +257,13 @@ impl RemoteState {
         let has_finish = breakpoints.iter().any(|bp| matches!(bp.ty, BreakpointType::Finish));
 
         if has_step {
-            self.client.step_in()
+            self.client.get_mut().step_in()
         } else if has_next {
-            self.client.step_over()
+            self.client.get_mut().step_over()
         } else if has_finish {
-            self.client.step_out()
+            self.client.get_mut().step_out()
         } else {
-            self.client.continue_()
+            self.client.get_mut().continue_()
         }
     }
 
@@ -254,7 +290,7 @@ impl RemoteState {
         let ui_state = new_client.handshake().map_err(Report::msg)?;
         let snapshot = convert_ui_state(&ui_state, source_manager);
 
-        self.client = new_client;
+        self.client = std::cell::RefCell::new(new_client);
         self.executor.current_stack = snapshot.current_stack;
         self.executor.callstack = snapshot.callstack;
         self.executor.cycle = snapshot.cycle;
@@ -341,7 +377,7 @@ impl State {
                 let SessionState::Remote(remote) = &mut self.session else {
                     return Err(Report::msg("no remote debug session"));
                 };
-                let result = remote.client.restart_phase2().map_err(Report::msg)?;
+                let result = remote.client.get_mut().restart_phase2().map_err(Report::msg)?;
                 match result {
                     crate::exec::DapStopReason::Restarting => {
                         remote.reconnect(&source_manager)?;
@@ -710,6 +746,19 @@ impl State {
 
     pub fn selected_stack_frame(&self) -> usize {
         self.selected_stack_frame
+    }
+
+    pub fn select_stack_frame(&mut self, index: usize) -> Result<(), String> {
+        let count = self.logical_stack_frames().len();
+        if index >= count {
+            return Err(format!("invalid frame index {index}; backtrace has {count} frames"));
+        }
+        self.selected_stack_frame = index;
+        Ok(())
+    }
+
+    pub fn reset_stack_selection(&mut self) {
+        self.selected_stack_frame = 0;
     }
 
     pub fn select_older_stack_frame(&mut self) {
@@ -1103,118 +1152,95 @@ impl State {
         Ok(output)
     }
 
-    /// Collect the current debug variables as structured records.
-    ///
-    /// Successful completion has no live variables. Failed execution retains the last variable
-    /// state for inspection.
-    ///
-    /// When `show_all` is false, compiler-generated locals (named `local0`, `local1`, etc.)
-    /// are hidden. Use `show_all` = true (`:vars all`) to include them.
+    /// Variables of the executing invocation, independently of the selected display frame.
+    /// Successful completion has no live variables; failures retain inspectable state.
     pub fn current_variables(&self, show_all: bool) -> Vec<DebugVariableValue> {
         if self.execution_completed() {
             return Vec::new();
         }
-
-        let executor = self.executor();
-        let debug_vars = &executor.debug_vars;
-
-        let stack = executor.current_stack.clone();
-        let context = executor.current_context;
-
-        // Use live processor state, not the pre-recorded trace, for current-cycle values.
-        let read_mem = |addr: u32| -> Option<Felt> {
-            executor
-                .processor
-                .memory()
-                .read_element(context, Felt::new(addr as u64).expect("value exceeds field modulus"))
-                .ok()
-        };
-
-        let current_source = if show_all {
-            None
-        } else {
-            self.current_display_location()
-        };
-        let source_path_prefixes = self.source_path_prefixes();
-
-        let mut variables = Vec::new();
-
-        for var_snapshot in debug_vars.current_variables() {
-            let name = var_snapshot.info.name();
-
-            if !show_all && is_compiler_generated_name(name) {
-                continue;
-            }
-
-            if let (Some(current), Some(var_loc)) =
-                (current_source.as_ref(), var_snapshot.info.location())
-                && let Some(var_loc) = self.resolve_op_location(var_loc)
-                && !source_var_location_is_visible(
-                    var_loc.source_file.uri().as_str(),
-                    var_loc.line,
-                    current.source_file.uri().as_str(),
-                    current.line,
-                    &source_path_prefixes,
-                )
-            {
-                continue;
-            }
-
-            let location = var_snapshot.info.value_location();
-            let resolve_local = |offset: i16| {
-                // Read FMP from live memory, then compute address as FMP + offset
-                let fmp_addr = miden_core::FMP_ADDR.as_canonical_u64() as u32;
-                let fmp = read_mem(fmp_addr)?;
-                let addr = (fmp.as_canonical_u64() as i64 + offset as i64) as u32;
-                read_mem(addr)
-            };
-
-            let display_value = var_snapshot.info.ty().and_then(|ty| {
-                format_value(ty, |count| {
-                    debug_vars
-                        .captured_values(name)
-                        .filter(|values| values.len() == count)
-                        .map(<[Felt]>::to_vec)
-                        .or_else(|| {
-                            resolve_typed_variable_values(
-                                location,
-                                ty,
-                                count,
-                                &stack,
-                                read_mem,
-                                resolve_local,
-                            )
-                        })
-                })
-            });
-
-            let value = debug_vars
-                .captured_values(name)
-                .and_then(|values| values.first().copied())
-                .or_else(|| resolve_variable_value(location, &stack, read_mem, resolve_local));
-
-            let source = var_snapshot.info.location().and_then(|loc| {
-                let loc = self.resolve_op_location(loc)?;
-                Some(DebugVariableSource {
-                    path: loc.source_file.uri().as_str().to_string(),
-                    line: loc.line,
-                    column: loc.col,
-                })
-            });
-
-            variables.push(DebugVariableValue {
-                name: name.to_string(),
-                value,
-                display_value,
-                location: location.to_string(),
-                source,
-            });
+        #[cfg(feature = "dap")]
+        if let SessionState::Remote(remote) = &self.session {
+            return remote.variables(None, show_all).unwrap_or_default();
         }
-
-        variables
+        let Some(invocation) = self.executor().debug_vars.current_invocation() else {
+            return Vec::new();
+        };
+        let location = self.current_display_location();
+        self.invocation_variables(invocation, location.as_ref(), show_all)
     }
 
-    /// Format the current debug variables as a string for display.
+    /// Variables owned by the physical invocation at a top-first logical stack index.
+    /// Inline and unrecovered frames have no separately inspectable locals in this pass.
+    pub fn variables_for_frame(&self, index: usize, show_all: bool) -> Vec<DebugVariableValue> {
+        if self.execution_completed() {
+            return Vec::new();
+        }
+        #[cfg(feature = "dap")]
+        if let SessionState::Remote(remote) = &self.session {
+            return remote.variables(Some(index), show_all).unwrap_or_default();
+        }
+        let frames = self.logical_stack_frames();
+        let Some(frame) = frames.iter().rev().nth(index) else {
+            return Vec::new();
+        };
+        let Some(invocation) = frame.invocation_id() else {
+            return Vec::new();
+        };
+        let location = frame.resolved(&*self.source_manager);
+        self.invocation_variables(invocation, location.as_ref(), show_all)
+    }
+
+    fn invocation_variables(
+        &self,
+        invocation: InvocationId,
+        source_location: Option<&ResolvedLocation>,
+        show_all: bool,
+    ) -> Vec<DebugVariableValue> {
+        let executor = self.executor();
+        let tracker = &executor.debug_vars;
+        let source_path_prefixes = self.source_path_prefixes();
+        tracker
+            .variables_for(invocation)
+            .filter_map(|snapshot| {
+                let name = snapshot.info.name();
+                if !show_all && is_compiler_generated_name(name) {
+                    return None;
+                }
+                if !show_all
+                    && let (Some(current), Some(var_loc)) =
+                        (source_location, snapshot.info.location())
+                    && let Some(var_loc) = self.resolve_op_location(var_loc)
+                    && !source_var_location_is_visible(
+                        var_loc.source_file.uri().as_str(),
+                        var_loc.line,
+                        current.source_file.uri().as_str(),
+                        current.line,
+                        &source_path_prefixes,
+                    )
+                {
+                    return None;
+                }
+                let resolved = tracker.resolve(invocation, name, &executor.processor)?;
+                let source = snapshot.info.location().and_then(|loc| {
+                    let loc = self.resolve_op_location(loc)?;
+                    Some(DebugVariableSource {
+                        path: loc.source_file.uri().as_str().to_string(),
+                        line: loc.line,
+                        column: loc.col,
+                    })
+                });
+                Some(DebugVariableValue {
+                    name: name.to_string(),
+                    value: resolved.raw,
+                    display_value: Some(resolved.value),
+                    location: snapshot.info.value_location().to_string(),
+                    source,
+                })
+            })
+            .collect()
+    }
+
+    /// Format the selected frame's variables for display.
     ///
     /// When `show_all` is false, compiler-generated locals (named `local0`, `local1`, etc.)
     /// are hidden. Use `show_all` = true (`:vars all`) to include them.
@@ -1225,11 +1251,25 @@ impl State {
             return "Program has terminated; no live variables".to_string();
         }
 
-        if !self.executor().debug_vars.has_variables() {
+        let frames = self.logical_stack_frames();
+        if frames
+            .iter()
+            .rev()
+            .nth(self.selected_stack_frame)
+            .is_some_and(|frame| frame.kind() == crate::debug::LogicalFrameKind::Inline)
+        {
+            return "Locals are unavailable for inline frames".to_string();
+        }
+        #[cfg(feature = "dap")]
+        if let SessionState::Remote(remote) = &self.session {
+            return remote
+                .format_variables(self.selected_stack_frame, show_all)
+                .unwrap_or_else(|err| format!("Unable to inspect locals: {err}"));
+        }
+        if self.variables_for_frame(self.selected_stack_frame, true).is_empty() {
             return "No debug variables tracked".to_string();
         }
-
-        let variables = self.current_variables(show_all);
+        let variables = self.variables_for_frame(self.selected_stack_frame, show_all);
         if variables.is_empty() {
             "No source-level variables (use ':vars all' to show compiler locals)".to_string()
         } else {

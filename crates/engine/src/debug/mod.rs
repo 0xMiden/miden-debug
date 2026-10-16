@@ -15,13 +15,13 @@ pub use self::{
     memory::{FormatType, MemoryMode, ReadMemoryExpr},
     native_ptr::NativePtr,
     stacktrace::{
-        CallFrame, CallStack, ControlFlowOp, CurrentFrame, InlineCallFrame, LogicalFrameKind,
-        LogicalStackFrame, OpDetail, RecoveredCallStack, ResolvedLocation, ReturnTarget,
-        StackTrace, StepInfo, inline_frames_for_operation, is_internal_source_uri,
+        CallFrame, CallStack, ControlFlowOp, CurrentFrame, InlineCallFrame, InvocationId,
+        LogicalFrameKind, LogicalStackFrame, OpDetail, RecoveredCallStack, ResolvedLocation,
+        ReturnTarget, StackTrace, StepInfo, inline_frames_for_operation, is_internal_source_uri,
         resolve_source_file_for_location,
     },
     variables::{
-        DebugVarSnapshot, DebugVarTracker, resolve_typed_variable_values, resolve_variable_value,
-        resolve_variable_values, snapshot_transient_debug_values,
+        DebugVarSnapshot, DebugVarTracker, ResolvedDebugVariable, resolve_typed_variable_values,
+        resolve_variable_value, resolve_variable_values, snapshot_transient_debug_values,
     },
 };

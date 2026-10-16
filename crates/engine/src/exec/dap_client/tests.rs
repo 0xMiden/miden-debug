@@ -141,12 +141,20 @@ fn queries_and_breakpoints_round_trip_remote_payloads() {
     connection.send(&[response("stackTrace", json!({"stackFrames": [{"id": 0, "name": "main", "line": 4, "column": 1}], "totalFrames": 1}))]);
     assert_eq!(connection.client.stack_trace().unwrap()[0].name.as_ref(), "main");
     assert_eq!(connection.request()["command"], "stackTrace");
+    connection.send(&[response("scopes", json!({"scopes": [{"name": "Local Variables", "variablesReference": 41, "expensive": false}]}))]);
+    assert_eq!(connection.client.scopes(7).unwrap()[0].variables_reference, 41);
+    assert_eq!(connection.request()["arguments"]["frameId"], 7);
+    connection.send(&[response("evaluate", json!({"result": "9", "variablesReference": 0}))]);
+    assert_eq!(connection.client.evaluate_in_frame("x", 7).unwrap(), "9");
+    let request = connection.request();
+    assert_eq!(request["arguments"]["frameId"], 7);
+    assert_eq!(request["arguments"]["expression"], "x");
     connection.send(&[response(
         "variables",
         json!({"variables": [{"name": "input", "value": "5", "variablesReference": 0}]}),
     )]);
-    assert_eq!(connection.client.variables(SCOPE_STACK).unwrap()[0].value, "5");
-    assert_eq!(connection.request()["arguments"]["variablesReference"], SCOPE_STACK);
+    assert_eq!(connection.client.variables(41).unwrap()[0].value, "5");
+    assert_eq!(connection.request()["arguments"]["variablesReference"], 41);
     connection.send(&[response("evaluate", json!({"result": "42", "variablesReference": 0}))]);
     assert_eq!(connection.client.read_memory(&"0 -t u32".parse().unwrap()).unwrap(), "42");
     assert!(
@@ -239,5 +247,48 @@ fn retry_connects_to_available_listener_and_reports_invalid_address() {
             .err()
             .unwrap()
             .contains("failed to reconnect")
+    );
+}
+
+#[test]
+fn bundled_variables_preserve_raw_values_and_requested_frame() {
+    let mut connection = Connection::new();
+    for show_all in [false, true] {
+        let variables = json!([
+            {"name": "boolean", "value": "true", "raw": 1},
+            {"name": "signed", "value": "-1i32", "raw": 4294967295u64},
+            {"name": "array", "value": "[8, 7]", "raw": 8},
+            {"name": "missing", "value": "<unavailable>", "raw": null}
+        ])
+        .to_string();
+        connection
+            .send(&[response("evaluate", json!({"result": variables, "variablesReference": 0}))]);
+        let values = connection.client.frame_variables(42, show_all).unwrap();
+        assert_eq!(
+            values.iter().map(|value| value.raw).collect::<Vec<_>>(),
+            [Some(1), Some(4294967295), Some(8), None]
+        );
+        assert_eq!(values[1].value, "-1i32");
+        let request = connection.request();
+        assert_eq!(request["arguments"]["frameId"], 42);
+        assert_eq!(
+            request["arguments"]["expression"],
+            if show_all {
+                "__miden_variables all"
+            } else {
+                "__miden_variables"
+            }
+        );
+    }
+    connection.send(&[response(
+        "evaluate",
+        json!({"result": "not a snapshot", "variablesReference": 0}),
+    )]);
+    assert!(
+        connection
+            .client
+            .frame_variables(42, false)
+            .unwrap_err()
+            .contains("invalid DAP variable snapshot")
     );
 }

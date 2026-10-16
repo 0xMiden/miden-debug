@@ -107,6 +107,8 @@ fn load_package_from_bytes(
     }
 }
 
+#[cfg(all(test, any(feature = "script", feature = "dap")))]
+pub(crate) use tests::invocation_test_package;
 #[cfg(test)]
 pub(crate) use tests::test_package_input;
 

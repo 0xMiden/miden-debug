@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Locals are tracked per live physical invocation, including recursive calls and suspended callers. REPL/TUI frame selection, DAP scopes and evaluation, and Python frame snapshots inspect the owning invocation's values. Inline-frame and lexical-scope locals remain deferred.
+- Rust scripting integrations can inspect individual logical frames with `ScriptDebugger::frame_at`; the existing `frame` API continues to inspect the executing invocation.
+
 ### Changed
 
 - Debugger and DAP stack traces use Miden VM's recovered call frames, preserving caller locations and source inline contexts across nested calls and package boundaries. Inferred frames are labeled separately from source-level inline frames.
@@ -19,6 +24,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Migration and breaking changes
 
 - Switch to published Miden VM v0.36.1 crates. Rust integrations exchanging VM, package, or debug-info types with the debugger must use matching v0.36.1 dependencies.
+- Temporarily patch the VM crates to the sibling `../miden-vm` checkout for invocation recovery through generated locals instructions and merged blocks. The patch can be removed once that fix is published.
+- DAP scope references are now allocated per stopped frame and expire on resume. Rust clients must use `DapClient::scopes(frame_id)` instead of the removed `SCOPE_STACK` and `SCOPE_MEMORY` constants; `evaluate_in_frame` supports explicit frame selection.
 
 ## [0.18.0]
 

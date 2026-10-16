@@ -12,6 +12,7 @@ mod executor;
 mod host;
 mod query;
 mod snapshot;
+pub(crate) mod source;
 mod state;
 mod trace;
 

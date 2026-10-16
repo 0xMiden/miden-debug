@@ -16,6 +16,11 @@ programs retain raw-felt argument handling.
 Typed frame-base and expression locations are read from packed byte-addressed memory before being
 lifted into that canonical representation, including values that cross Miden element boundaries.
 
+Backtraces use the VM's cached call-frame resolver to retain callers across plain `exec`,
+`call`, and dynamic boundaries. Frames recovered by inference are labeled `[inferred]`;
+source inline frames remain labeled `[inlined]`. The trace-event stack continues to drive
+execution control and profiling, and provides a fallback when source metadata is absent.
+
 Variable tests inspect values at a live breakpoint. After successful termination, `vars`,
 `vars all`, and `locals` report that there are no live variables, and Python variable queries
 return an empty dictionary. Completed program results remain available separately.

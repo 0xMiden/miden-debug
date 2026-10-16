@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Changed
+
+- Debugger and DAP stack traces use Miden VM's recovered call frames, preserving caller locations and source inline contexts across nested calls and package boundaries. Inferred frames are labeled separately from source-level inline frames.
+- Flamegraphs sample recovered source stacks, including labeled inferred and inline frames, with event-frame fallback when source metadata is unavailable.
+
+### Fixed
+
+- Local `finish` and DAP step-out follow recovered invocation identities, including recursive and uninstrumented calls, while retaining frame-event fallback for stripped packages. Pending local return breakpoints remain associated with their original invocation when another breakpoint interrupts execution.
+- Stack traces retain event frames when a source-aware caller enters a stripped callee.
+
+### Migration and breaking changes
+
+- Switch to published Miden VM v0.36.1 crates. Rust integrations exchanging VM, package, or debug-info types with the debugger must use matching v0.36.1 dependencies.
+
 ## [0.18.0]
 
 ### Migration and breaking changes

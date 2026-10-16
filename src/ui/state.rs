@@ -1,7 +1,7 @@
 use std::{
     borrow::ToOwned,
     boxed::Box,
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     string::{String, ToString},
     sync::Arc,
@@ -10,7 +10,7 @@ use std::{
 
 use miden_assembly::{DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::diagnostics::Report;
-use miden_debug_engine::{DebugQuery, normalize_source_path};
+use miden_debug_engine::{DebugQuery, ReturnTarget, normalize_source_path};
 use miden_debug_types::{Location, SourceManagerExt, SourceSpan};
 use miden_mast_package::Package;
 use miden_processor::{
@@ -54,6 +54,7 @@ pub struct State {
     pub next_breakpoint_id: u8,
     pub stopped: bool,
     pub debug_mode: DebugMode,
+    finish_targets: BTreeMap<(u8, usize), ReturnTarget>,
     selected_stack_frame: usize,
     session: SessionState,
 }
@@ -277,6 +278,7 @@ impl State {
             next_breakpoint_id: 0,
             stopped: true,
             debug_mode,
+            finish_targets: BTreeMap::new(),
             selected_stack_frame: 0,
             session: SessionState::Local(Box::new(local)),
         }
@@ -381,6 +383,7 @@ impl State {
     }
 
     fn finish_reload(&mut self) {
+        self.finish_targets.clear();
         self.executor_mut().stopped = false;
         self.selected_stack_frame = 0;
         self.breakpoints_hit.clear();
@@ -389,6 +392,13 @@ impl State {
 
     /// Resume local execution until the VM terminates, errors, or a breakpoint is hit.
     pub fn run_until_stopped(&mut self) {
+        // Breakpoints can be deleted between resumes. Keep invocation ownership tied to the
+        // original breakpoint, including its creation cycle when an identifier is reused.
+        self.finish_targets.retain(|&(id, cycle), _| {
+            self.breakpoints.iter().any(|bp| {
+                bp.id == id && bp.creation_cycle == cycle && bp.ty == BreakpointType::Finish
+            })
+        });
         let start_cycle = self.executor().cycle;
         let start_asmop = self.executor().current_asmop.clone();
         let start_proc = self.current_procedure();
@@ -411,12 +421,8 @@ impl State {
                 break true;
             }
 
-            let mut consume_most_recent_finish = false;
             match self.executor_mut().step() {
-                Ok(Some(exited)) if exited.should_break_on_exit() => {
-                    consume_most_recent_finish = true;
-                }
-                Ok(_) => {}
+                Ok(_) => (),
                 Err(err) => {
                     self.set_execution_failed(err);
                     break true;
@@ -446,6 +452,20 @@ impl State {
             };
 
             breakpoints.retain_mut(|bp| {
+                if bp.ty == BreakpointType::Finish {
+                    let key = (bp.id, bp.creation_cycle);
+                    if self
+                        .finish_targets
+                        .get(&key)
+                        .is_some_and(|target| self.executor().has_returned(target))
+                    {
+                        self.finish_targets.remove(&key);
+                        self.breakpoints_hit.push(core::mem::take(bp));
+                        return false;
+                    }
+                    return true;
+                }
+
                 if let Some(n) = bp.cycles_to_skip(current_cycle) {
                     if cycles_stepped > 0 && n == 0 {
                         let retained = !bp.is_one_shot();
@@ -586,19 +606,6 @@ impl State {
                 true
             });
 
-            if consume_most_recent_finish
-                && let Some(id) = breakpoints.iter().rev().find_map(|bp| {
-                    if matches!(bp.ty, BreakpointType::Finish) {
-                        Some(bp.id)
-                    } else {
-                        None
-                    }
-                })
-            {
-                breakpoints.retain(|bp| bp.id != id);
-                break true;
-            }
-
             if !self.breakpoints_hit.is_empty() {
                 break true;
             }
@@ -617,10 +624,9 @@ impl State {
         let id = self.next_breakpoint_id();
         let creation_cycle = self.executor().cycle;
         log::trace!("created breakpoint with id {id} at cycle {creation_cycle}");
-        if matches!(ty, BreakpointType::Finish)
-            && let Some(frame) = self.executor_mut().callstack.current_frame_mut()
-        {
-            frame.break_on_exit();
+        if matches!(ty, BreakpointType::Finish) && matches!(self.session, SessionState::Local(_)) {
+            let target = self.executor().callstack.return_target();
+            self.finish_targets.insert((id, creation_cycle), target);
         }
         self.breakpoints.push(Breakpoint {
             id,
@@ -1347,6 +1353,7 @@ impl State {
             next_breakpoint_id: 0,
             stopped: true,
             debug_mode: DebugMode::Remote,
+            finish_targets: BTreeMap::new(),
             selected_stack_frame: 0,
             session: SessionState::Remote(Box::new(remote)),
         })

@@ -49,7 +49,8 @@ pub struct CallTraceRecorder {
 
 struct OpenFrame {
     record: CallFrameRecord,
-    caller: Vec<LogicalStackFrame>,
+    /// Source context while selecting the callee; cleared once selected or unrecoverable.
+    caller: Option<Vec<LogicalStackFrame>>,
     /// Felts the callee returns; `None` means unknown.
     output_felt_count: Option<usize>,
     argument_owner: Option<InvocationId>,
@@ -72,7 +73,7 @@ impl CallTraceRecorder {
                 results: None,
                 children: Vec::new(),
             },
-            caller,
+            caller: (!caller.is_empty()).then_some(caller),
             output_felt_count: None,
             argument_owner: None,
             args_sealed: false,
@@ -81,9 +82,15 @@ impl CallTraceRecorder {
 
     /// Whether source context is still needed to select the innermost callee.
     pub fn needs_callee(&self) -> bool {
-        self.open
-            .last()
-            .is_some_and(|frame| frame.record.callee.is_none() && !frame.caller.is_empty())
+        self.open.last().is_some_and(|frame| frame.caller.is_some())
+    }
+
+    /// Stop selecting a callee after entering code whose source invocation is unknown.
+    /// Later recovered descendants cannot identify the missing invocation.
+    pub fn stop_callee_search(&mut self) {
+        if let Some(frame) = self.open.last_mut() {
+            frame.caller = None;
+        }
     }
 
     /// The first new logical callee beneath the caller observed at the start marker.
@@ -92,19 +99,15 @@ impl CallTraceRecorder {
         &self,
         frames: &'a [LogicalStackFrame],
     ) -> Option<&'a LogicalStackFrame> {
-        let frame = self.open.last()?;
-        if frame.record.callee.is_some() || frame.caller.is_empty() {
-            return None;
-        }
-        if !frame
-            .caller
+        let caller = self.open.last()?.caller.as_ref()?;
+        if !caller
             .iter()
             .zip(frames)
             .all(|(caller, current)| caller.is_same_source_frame(current))
         {
             return None;
         }
-        frames.get(frame.caller.len())
+        frames.get(caller.len())
     }
 
     /// Freeze the selected callee's name, result width, and argument ownership together.
@@ -117,6 +120,7 @@ impl CallTraceRecorder {
         if let Some(frame) = self.open.last_mut()
             && frame.record.callee.is_none()
         {
+            frame.caller = None;
             frame.record.callee = Some(String::from(name));
             frame.output_felt_count = output_felt_count;
             frame.argument_owner = argument_owner;

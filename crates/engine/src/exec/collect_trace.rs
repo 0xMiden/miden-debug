@@ -96,6 +96,10 @@ fn observe_callee(recorder: &mut CallTraceRecorder, executor: &DebugExecutor) {
     if !recorder.needs_callee() {
         return;
     }
+    if !executor.callstack.has_recovered_current_frame() {
+        recorder.stop_callee_search();
+        return;
+    }
     let frames = executor.callstack.logical_frames("");
     if let Some(callee) = recorder.pending_callee(&frames)
         && let Some((info, function)) = callee.debug_info().zip(callee.function())

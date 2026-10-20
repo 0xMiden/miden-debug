@@ -1,4 +1,4 @@
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 
 use miden_debug_types::DefaultSourceManager;
 use miden_mast_package::Package;
@@ -1005,4 +1005,94 @@ end
     let wrapper = &replay.trace.roots[0];
     assert_eq!(wrapper.callee.as_deref(), Some("::$exec::wrapper"));
     assert!(wrapper.args.is_empty(), "wrapper inherited leaf arguments: {:?}", wrapper.args);
+}
+
+#[test]
+fn a_stripped_wrapper_does_not_inherit_its_unmarked_callees_identity() {
+    use miden_assembly::{Assembler, Linkage};
+    use miden_processor::LoadedMastForest;
+
+    for (stripped, stripped_leaf) in [(false, false), (true, false), (false, true)] {
+        let manager = Arc::new(DefaultSourceManager::default());
+        let mut leaf = Assembler::new(manager.clone())
+            .assemble_library(
+                "leaf",
+                "namespace leaf::math\npub proc leaf() -> felt\npush.42\nend",
+                None::<String>,
+            )
+            .unwrap();
+        if stripped_leaf {
+            leaf.strip_debug_info().unwrap();
+        }
+        let leaf: Arc<Package> = leaf.into();
+        let mut wrapper = Assembler::new(manager.clone())
+            .with_package(leaf.clone(), Linkage::Dynamic)
+            .unwrap()
+            .assemble_library(
+                "wrapper",
+                "namespace wrapper::math\nuse leaf::math\npub proc wrapper() -> [felt; \
+                 2]\nexec.math::leaf\npush.7\nend",
+                None::<String>,
+            )
+            .unwrap();
+        if stripped {
+            wrapper.strip_debug_info().unwrap();
+        }
+        let wrapper: Arc<Package> = wrapper.into();
+        let package = Assembler::new(manager)
+            .with_package(wrapper.clone(), Linkage::Dynamic)
+            .unwrap()
+            .assemble_program(
+                "program",
+                r#"
+use wrapper::math
+proc sibling() -> felt
+push.9
+end
+begin
+emit.event("readonly::miden_debug::frame_start")
+exec.math::wrapper
+emit.event("readonly::miden_debug::frame_end")
+drop drop
+emit.event("readonly::miden_debug::frame_start")
+exec.sibling
+emit.event("readonly::miden_debug::frame_end")
+drop
+end
+"#,
+            )
+            .unwrap();
+        let mast_forests = [leaf, wrapper]
+            .into_iter()
+            .map(|package| {
+                LoadedMastForest::with_package_debug_info(
+                    package.mast_forest().clone(),
+                    package.debug_info(),
+                )
+            })
+            .collect();
+        let replay = super::replay_call_trace(super::ReplaySnapshot {
+            package: Arc::from(package),
+            stack_inputs: Default::default(),
+            advice_inputs: Default::default(),
+            options: Default::default(),
+            event_log: Vec::new(),
+            mast_forests,
+        });
+        assert!(replay.error.is_none(), "{:?}", replay.error);
+        assert_eq!(replay.trace.roots.len(), 2);
+        let wrapper = &replay.trace.roots[0];
+        if stripped {
+            assert_eq!(wrapper.callee, None, "a descendant cannot identify the stripped wrapper");
+            assert_eq!(wrapper.results, None);
+        } else {
+            assert_eq!(wrapper.callee.as_deref(), Some("::wrapper::math::wrapper"));
+            assert_eq!(wrapper.results.as_deref(), Some([7, 42].as_slice()));
+        }
+        assert!(wrapper.exit_clk.is_some());
+        assert!(wrapper.children.is_empty());
+        let sibling = &replay.trace.roots[1];
+        assert_eq!(sibling.callee.as_deref(), Some("::$exec::sibling"));
+        assert_eq!(sibling.results.as_deref(), Some([9].as_slice()));
+    }
 }

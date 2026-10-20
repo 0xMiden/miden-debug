@@ -140,6 +140,15 @@ impl DebugExecutor {
     ///
     /// Returns the call frame exited this cycle, if any
     pub fn step(&mut self) -> Result<Option<CallFrame>, ExecutionError> {
+        self.step_with_observer(|_, _| {})
+    }
+
+    /// Observe the current source context, recovered frames, and declarations before a cycle.
+    /// The observer also runs when that cycle fails, but never after execution has stopped.
+    pub(crate) fn step_with_observer(
+        &mut self,
+        observe: impl FnOnce(&Self, &SourceContext),
+    ) -> Result<Option<CallFrame>, ExecutionError> {
         if self.stopped {
             self.last_debug_var_count = 0;
             return Ok(None);
@@ -176,6 +185,7 @@ impl DebugExecutor {
             RowIndex::from((self.cycle + 1) as u32),
             debug_var_infos,
         );
+        observe(self, &source);
 
         // Execute one step
         let step_result = if let Some(debug_info) = source.debug_info() {

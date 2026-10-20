@@ -30,13 +30,14 @@ use miden_processor::{
     BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend,
     Host, LoadedMastForest, ProcessorState, ResumeContext, StackInputs, StackOutputs,
     advice::{AdviceInputs, AdviceMutation},
-    event::EventError,
+    event::{EventError, TraceError},
     trace::RowIndex,
 };
 
 use super::{
-    EventMutationRecorder, MastForestRecorder, ReplaySnapshot, ReplaySnapshotRecorder,
-    ReplaySnapshotWrite, source::SourceContext, state::should_wait_for_entry_variables,
+    EventMutationRecorder, MastForestRecorder, RecordingHost, ReplaySnapshot,
+    ReplaySnapshotRecorder, ReplaySnapshotWrite, source::SourceContext,
+    state::should_wait_for_entry_variables,
 };
 use crate::{
     debug::{
@@ -181,17 +182,10 @@ struct DapPresentedFrame {
 /// Tracks recovered frames and event-based fallback frames while forwarding host operations.
 /// Event handling also records advice mutations and loaded forests for execution replay.
 struct DapHostWrapper<'a, H> {
-    inner: &'a mut H,
+    inner: RecordingHost<'a, H>,
     call_depth: usize,
     frames: Vec<DapCallFrame>,
     recovered: RecoveredCallStack,
-    /// When set, the advice mutations produced by each `on_event` invocation of the inner host
-    /// are recorded here, in execution order, so they can be replayed later (e.g. transaction
-    /// debugging with event replay).
-    event_recorder: Option<EventMutationRecorder>,
-    /// When set, the MAST forests the inner host resolves are recorded here, so a replay session
-    /// can load the same code for `call`/`dyncall` targets.
-    forest_recorder: Option<MastForestRecorder>,
 }
 
 impl<'a, H> DapHostWrapper<'a, H> {
@@ -201,12 +195,10 @@ impl<'a, H> DapHostWrapper<'a, H> {
         forest_recorder: Option<MastForestRecorder>,
     ) -> Self {
         Self {
-            inner,
+            inner: RecordingHost::new(inner, event_recorder, forest_recorder),
             call_depth: 0,
             frames: Vec::new(),
             recovered: RecoveredCallStack::default(),
-            event_recorder,
-            forest_recorder,
         }
     }
 }
@@ -225,6 +217,13 @@ impl<H: Host> BaseHost for DapHostWrapper<'_, H> {
     ) -> Option<&miden_core::events::EventName> {
         self.inner.resolve_event(event_id)
     }
+
+    fn resolve_trace(
+        &self,
+        trace_id: miden_core::events::EventId,
+    ) -> Option<&miden_core::events::EventName> {
+        self.inner.resolve_trace(trace_id)
+    }
 }
 
 impl<H: Host> Host for DapHostWrapper<'_, H> {
@@ -232,17 +231,7 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
         &self,
         node_digest: &Word,
     ) -> impl FutureMaybeSend<Option<LoadedMastForest>> {
-        // Record every forest the inner host resolves, so a replay session can load the same
-        // code for `call`/`dyncall` targets. The recorder deduplicates.
-        let forest_recorder = self.forest_recorder.clone();
-        let fut = self.inner.get_mast_forest(node_digest);
-        async move {
-            let forest = fut.await;
-            if let (Some(recorder), Some(forest)) = (&forest_recorder, &forest) {
-                recorder.record(forest.clone());
-            }
-            forest
-        }
+        self.inner.get_mast_forest(node_digest)
     }
 
     fn on_event(
@@ -267,17 +256,14 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
             }
             _ => (),
         }
-        // Every invocation is recorded, including empty mutation sets: event replay pops one
-        // entry per event, so the log must stay aligned with the event stream.
-        let recorder = self.event_recorder.clone();
-        let fut = self.inner.on_event(process);
-        async move {
-            let result = fut.await;
-            if let (Some(recorder), Ok(mutations)) = (&recorder, &result) {
-                recorder.record(crate::exec::clone_advice_mutations(mutations));
-            }
-            result
-        }
+        self.inner.on_event(process)
+    }
+
+    fn on_trace(
+        &mut self,
+        process: &ProcessorState<'_>,
+    ) -> impl FutureMaybeSend<Result<(), TraceError>> {
+        self.inner.on_trace(process)
     }
 }
 

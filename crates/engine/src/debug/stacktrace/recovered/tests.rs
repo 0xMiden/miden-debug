@@ -75,6 +75,7 @@ fn caller_source_inline_frames_survive_calls_and_clear_on_return() {
         );
         let call_site = call_site.unwrap();
         let mut suspended_locations = None;
+        let mut suspended_frames = None;
         let mut target_cycles = 0;
         let mut returned = false;
         run(package, source_manager, &[], |asmop, frames| {
@@ -90,6 +91,7 @@ fn caller_source_inline_frames_survive_calls_and_clear_on_return() {
                         .map(|frame| frame.assembly_location().cloned())
                         .collect::<Vec<_>>(),
                 );
+                suspended_frames = Some(frames.to_vec());
             }
             if asmop.context_name().ends_with("::target") {
                 assert_eq!(names, ["$exec::$main", "source::caller", "$exec::target"]);
@@ -102,6 +104,14 @@ fn caller_source_inline_frames_survive_calls_and_clear_on_return() {
                     "suspended caller locations must survive {invocation}"
                 );
                 assert_eq!(frames[2].assembly_location(), asmop.location());
+                for (caller, suspended) in frames.iter().zip(suspended_frames.as_ref().unwrap()) {
+                    assert!(caller.is_same_source_frame(suspended));
+                }
+                for frame in frames {
+                    let info = frame.debug_info().expect("recovered frame retains its package");
+                    let function = frame.function().expect("recovered frame retains its function");
+                    assert_eq!(info[function.name_idx].trim_start_matches("::"), frame.name());
+                }
                 target_cycles += 1;
             }
             if asmop.op().as_ref() == "push.9" {

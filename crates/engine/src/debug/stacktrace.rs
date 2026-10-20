@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 
 use miden_core::operations::AssemblyOp;
 use miden_debug_types::{Location, SourceFile, SourceManager, SourceSpan, Uri};
-use miden_mast_package::debug_info::{DebugSourceInlineCall, DebugSourceNodeId, PackageDebugInfo};
+use miden_mast_package::debug_info::{
+    DebugFunctionIdx, DebugFunctionInfo, DebugSourceInlineCall, DebugSourceNodeId, PackageDebugInfo,
+};
 use miden_processor::{ContextId, SourceInlineCallContext, operation::Operation, trace::RowIndex};
 use miden_utils_sync::RwLock;
 
@@ -79,9 +81,67 @@ pub struct LogicalStackFrame {
     physical_index: Option<usize>,
     origin: Option<miden_processor::DebugFrameOrigin>,
     invocation: Option<InvocationId>,
+    source: Option<LogicalFrameSource>,
+}
+
+#[derive(Debug, Clone)]
+enum LogicalFrameSource {
+    Physical(miden_processor::DebugCallFrame),
+    Inline {
+        owner: InvocationId,
+        info: Arc<PackageDebugInfo>,
+        function_idx: DebugFunctionIdx,
+        call_site: Location,
+    },
 }
 
 impl LogicalStackFrame {
+    /// Compare source invocations independently of presentation names and current locations.
+    pub(crate) fn is_same_source_frame(&self, other: &Self) -> bool {
+        match (&self.source, &other.source) {
+            (
+                Some(LogicalFrameSource::Physical(left)),
+                Some(LogicalFrameSource::Physical(right)),
+            ) => left.is_same_frame(right),
+            (
+                Some(LogicalFrameSource::Inline {
+                    owner: left_owner,
+                    info: left_info,
+                    function_idx: left_function,
+                    call_site: left_site,
+                }),
+                Some(LogicalFrameSource::Inline {
+                    owner: right_owner,
+                    info: right_info,
+                    function_idx: right_function,
+                    call_site: right_site,
+                }),
+            ) => {
+                left_owner == right_owner
+                    && Arc::ptr_eq(left_info, right_info)
+                    && left_function == right_function
+                    && left_site == right_site
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn debug_info(&self) -> Option<&PackageDebugInfo> {
+        match self.source.as_ref()? {
+            LogicalFrameSource::Physical(frame) => Some(frame.debug_info()),
+            LogicalFrameSource::Inline { info, .. } => Some(info),
+        }
+    }
+
+    pub(crate) fn function(&self) -> Option<&DebugFunctionInfo> {
+        match self.source.as_ref()? {
+            LogicalFrameSource::Physical(frame) => Some(frame.function()),
+            LogicalFrameSource::Inline {
+                info, function_idx, ..
+            } => info.get_function(*function_idx),
+        }
+    }
+
     /// Physical source invocations have local ownership; inline and event-only rows do not.
     pub fn invocation_id(&self) -> Option<InvocationId> {
         self.invocation
@@ -180,7 +240,15 @@ pub struct CallStack {
     frames: Vec<CallFrame>,
     block_stack: Vec<Option<SpanContext>>,
     recovered: RecoveredCallStack,
+    frame_transition: Option<FrameTransition>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameTransition {
+    Entered,
+    Exited,
+}
+
 impl CallStack {
     pub fn new(events: Arc<RwLock<BTreeMap<RowIndex, Event>>>) -> Self {
         Self {
@@ -189,6 +257,7 @@ impl CallStack {
             frames: vec![],
             block_stack: vec![],
             recovered: RecoveredCallStack::default(),
+            frame_transition: None,
         }
     }
 
@@ -201,6 +270,7 @@ impl CallStack {
             frames,
             block_stack: vec![],
             recovered: RecoveredCallStack::default(),
+            frame_transition: None,
         }
     }
 
@@ -273,6 +343,7 @@ impl CallStack {
                 physical_index: Some(physical_index),
                 origin: None,
                 invocation: None,
+                source: None,
             });
 
             for inline_index in (0..frame.inline_frames.len()).rev() {
@@ -291,10 +362,17 @@ impl CallStack {
                     physical_index: Some(physical_index),
                     origin: None,
                     invocation: None,
+                    source: None,
                 });
             }
         }
         logical
+    }
+
+    /// Takes the frame event handled by the most recent [`Self::next`], clearing it so a later
+    /// cycle does not read it as its own.
+    pub fn take_frame_transition(&mut self) -> Option<FrameTransition> {
+        self.frame_transition.take()
     }
 
     /// Updates the call stack from `info`
@@ -313,6 +391,11 @@ impl CallStack {
         log::trace!("handling {:?}/{:?} at cycle {}: {:?}", info.control, info.op, info.clk, event);
         let is_frame_start = event.as_ref().is_some_and(|event| event.is_frame_start());
         let is_frame_end = event.as_ref().is_some_and(|event| event.is_frame_end());
+        self.frame_transition = match (is_frame_start, is_frame_end) {
+            (true, _) => Some(FrameTransition::Entered),
+            (_, true) => Some(FrameTransition::Exited),
+            _ => None,
+        };
         let popped_frame = self.handle_event(event, procedure.clone(), info.op, info.asmop);
 
         match info.control {

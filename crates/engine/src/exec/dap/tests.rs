@@ -14,6 +14,41 @@ use crate::exec::{DebuggerHost, EventMutationRecorder};
 struct PushSeven;
 
 #[test]
+fn trace_handler_errors_preserve_the_registered_name_through_dap() {
+    use miden_processor::{DefaultHost, event::TraceError};
+
+    let package = miden_assembly::Assembler::new(Arc::new(DefaultSourceManager::default()))
+        .assemble_program("program", "begin trace.event(\"test::reject\") end")
+        .unwrap();
+    let name = EventName::new("test::reject");
+    let mut host = DefaultHost::default();
+    host.register_trace_handler(
+        name.clone(),
+        Arc::new(|_: &ProcessorState<'_>| -> Result<(), TraceError> {
+            Err(std::io::Error::other("trace rejected").into())
+        }),
+    )
+    .unwrap();
+    let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+    let error = poll_immediately(
+        FastProcessor::new(StackInputs::default()).execute(&package.unwrap_program(), &mut wrapper),
+    )
+    .expect_err("the trace handler must reject execution");
+    let ExecutionError::EventError {
+        event_id,
+        event_name,
+        error,
+        ..
+    } = error
+    else {
+        panic!("unexpected execution error: {error:?}");
+    };
+    assert_eq!(event_id, name.to_event_id());
+    assert_eq!(event_name, Some(name));
+    assert_eq!(error.to_string(), "trace rejected");
+}
+
+#[test]
 fn function_breakpoint_waits_for_entry_variables() {
     use miden_assembly_syntax::{
         Parse,

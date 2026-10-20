@@ -5,7 +5,7 @@ use miden_debug_types::{Location, SourceFile, SourceSpan};
 use miden_processor::{
     BaseHost, FutureMaybeSend, Host, LoadedMastForest, ProcessorState,
     advice::AdviceMutation,
-    event::{EventError, EventId, EventName},
+    event::{EventError, EventId, EventName, TraceError},
 };
 
 use super::{EventMutationRecorder, MastForestRecorder, advice::clone_advice_mutations};
@@ -50,6 +50,10 @@ impl<H: Host> BaseHost for RecordingHost<'_, H> {
     fn resolve_event(&self, event_id: EventId) -> Option<&EventName> {
         self.inner.resolve_event(event_id)
     }
+
+    fn resolve_trace(&self, trace_id: EventId) -> Option<&EventName> {
+        self.inner.resolve_trace(trace_id)
+    }
 }
 
 impl<H: Host> Host for RecordingHost<'_, H> {
@@ -86,4 +90,14 @@ impl<H: Host> Host for RecordingHost<'_, H> {
             result
         }
     }
+
+    fn on_trace(
+        &mut self,
+        process: &ProcessorState<'_>,
+    ) -> impl FutureMaybeSend<Result<(), TraceError>> {
+        self.inner.on_trace(process)
+    }
 }
+
+#[cfg(test)]
+mod tests;

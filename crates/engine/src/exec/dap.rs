@@ -30,7 +30,7 @@ use miden_processor::{
     BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend,
     Host, LoadedMastForest, ProcessorState, ResumeContext, StackInputs, StackOutputs,
     advice::{AdviceInputs, AdviceMutation},
-    event::EventError,
+    event::{EventError, TraceError},
     trace::RowIndex,
 };
 
@@ -217,6 +217,13 @@ impl<H: Host> BaseHost for DapHostWrapper<'_, H> {
     ) -> Option<&miden_core::events::EventName> {
         self.inner.resolve_event(event_id)
     }
+
+    fn resolve_trace(
+        &self,
+        trace_id: miden_core::events::EventId,
+    ) -> Option<&miden_core::events::EventName> {
+        self.inner.resolve_trace(trace_id)
+    }
 }
 
 impl<H: Host> Host for DapHostWrapper<'_, H> {
@@ -250,6 +257,13 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
             _ => (),
         }
         self.inner.on_event(process)
+    }
+
+    fn on_trace(
+        &mut self,
+        process: &ProcessorState<'_>,
+    ) -> impl FutureMaybeSend<Result<(), TraceError>> {
+        self.inner.on_trace(process)
     }
 }
 

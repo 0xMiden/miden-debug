@@ -17,10 +17,10 @@ pub use self::{
     memory::{FormatType, MemoryMode, ReadMemoryExpr},
     native_ptr::NativePtr,
     stacktrace::{
-        CallFrame, CallStack, ControlFlowOp, CurrentFrame, FrameTransition, InlineCallFrame, InvocationId,
-        LogicalFrameKind, LogicalStackFrame, OpDetail, RecoveredCallStack, ResolvedLocation,
-        ReturnTarget, StackTrace, StepInfo, inline_frames_for_operation, is_internal_source_uri,
-        resolve_source_file_for_location,
+        CallFrame, CallStack, ControlFlowOp, CurrentFrame, FrameTransition, InlineCallFrame,
+        InvocationId, LogicalFrameKind, LogicalStackFrame, OpDetail, RecoveredCallStack,
+        ResolvedLocation, ReturnTarget, StackTrace, StepInfo, inline_frames_for_operation,
+        is_internal_source_uri, resolve_source_file_for_location,
     },
     variables::{
         DebugVarSnapshot, DebugVarTracker, ResolvedDebugVariable, resolve_typed_variable_values,

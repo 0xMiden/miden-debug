@@ -15,7 +15,7 @@ pub(crate) use super::source::{CurrentCycleInfo, extract_current_op};
 use super::{DebuggerHost, ExecutionTrace, source::SourceContext};
 use crate::{
     Breakpoint, BreakpointType, OperationMatcher,
-    debug::{CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo},
+    debug::{CallFrame, CallStack, DebugVarTracker, StepInfo},
     profiling::Profiler,
 };
 
@@ -53,10 +53,6 @@ pub struct DebugExecutor {
     pub callstack: CallStack,
     /// The most recent live procedure name observed from assembly operation metadata.
     pub current_proc: Option<Arc<str>>,
-    /// Felts `current_proc` returns, from debug info; `None` means unknown.
-    pub current_return_felts: Option<usize>,
-    /// Control-flow kind of this step; ex. `Call`/`Dyn` enter a new procedure.
-    pub current_control: Option<ControlFlowOp>,
     /// Debug variable tracker for source-level variable inspection
     pub debug_vars: DebugVarTracker,
     /// Number of debug variable location records observed during the most recent step.
@@ -193,8 +189,6 @@ impl DebugExecutor {
                 self.resume_ctx = Some(new_ctx);
                 self.cycle += 1;
 
-                self.current_control = control_flow_kind;
-
                 // Query processor state
                 let state = self.processor.state();
                 let ctx = state.ctx();
@@ -209,14 +203,7 @@ impl DebugExecutor {
                 self.current_op = op;
                 self.current_asmop = source_asmop;
                 if let Some(asmop) = self.current_asmop.as_ref() {
-                    let name = asmop.context_name().clone();
-                    // Look up the return width only when the procedure changes, not on every cycle.
-                    if self.current_proc.as_deref() != Some(name.as_ref()) {
-                        self.current_return_felts = source.debug_info()
-                            .map(Arc::as_ref)
-                            .and_then(|di| crate::debug::return_felt_count(di, name.as_ref()));
-                    }
-                    self.current_proc = Some(name);
+                    self.current_proc = Some(asmop.context_name().clone());
                 }
 
                 if let Some(op) = op {

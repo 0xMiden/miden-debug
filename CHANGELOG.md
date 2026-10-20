@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- `replay_call_trace` builds the call tree of a recorded `ReplaySnapshot` by replaying it and tracking frame-start/frame-end events, exposing each call's arguments and result via `CallTrace` ([#125](https://github.com/0xMiden/miden-debug/issues/125)).
+- `RecordingHost`, extracted from `DapHostWrapper`, wraps a live host to record the advice mutations and MAST forests required for replay.
 - Locals are tracked per live physical invocation, including recursive calls and suspended callers. REPL/TUI frame selection, DAP scopes and evaluation, and Python frame snapshots inspect the owning invocation's values. Inline-frame and lexical-scope locals remain deferred.
 - Rust scripting integrations can inspect individual logical frames with `ScriptDebugger::frame_at`; the existing `frame` API continues to inspect the executing invocation.
 
@@ -54,11 +56,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 
 - Switch to the Miden VM v0.33;
-
-### Added
-
-- `replay_call_trace` builds the call tree of a recorded `ReplaySnapshot` by replaying it and tracking frame-start/frame-end events, exposing each call's arguments and result via `CallTrace` ([#125](https://github.com/0xMiden/miden-debug/issues/125)).
-- `RecordingHost`, extracted from `DapHostWrapper`, wraps a live host to record the advice mutations and MAST forests required for replay.
 
 ### Fixed
 

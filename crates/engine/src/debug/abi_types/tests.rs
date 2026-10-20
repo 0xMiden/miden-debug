@@ -142,11 +142,23 @@ fn return_felt_counts() {
     add_function(&mut builder, "source_fn", Some("linked_fn"), Some(felt));
     let info = builder.build();
 
-    assert_eq!(return_felt_count(&info, "felt_fn"), Some(1));
-    assert_eq!(return_felt_count(&info, "word_fn"), Some(4));
-    assert_eq!(return_felt_count(&info, "void_fn"), Some(0));
-    assert_eq!(return_felt_count(&info, "no_return_fn"), Some(0));
-    assert_eq!(return_felt_count(&info, "source_fn"), Some(1));
-    assert_eq!(return_felt_count(&info, "linked_fn"), Some(1));
-    assert_eq!(return_felt_count(&info, "missing_fn"), None);
+    let count = |name: &str| {
+        info.functions()
+            .iter()
+            .find(|function| {
+                info.get_string(function.name_idx).as_deref() == Some(name)
+                    || function
+                        .linkage_name_idx
+                        .into_option()
+                        .is_some_and(|idx| info.get_string(idx).as_deref() == Some(name))
+            })
+            .and_then(|function| return_felt_count(&info, function))
+    };
+    assert_eq!(count("felt_fn"), Some(1));
+    assert_eq!(count("word_fn"), Some(4));
+    assert_eq!(count("void_fn"), Some(0));
+    assert_eq!(count("no_return_fn"), Some(0));
+    assert_eq!(count("source_fn"), Some(1));
+    assert_eq!(count("linked_fn"), Some(1));
+    assert_eq!(count("missing_fn"), None);
 }

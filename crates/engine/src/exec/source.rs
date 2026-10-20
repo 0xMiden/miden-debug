@@ -146,8 +146,6 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                     MastNode::Block(_) => Some(ControlFlowOp::Span),
                     MastNode::Join(_) => Some(ControlFlowOp::Join),
                     MastNode::Split(_) => Some(ControlFlowOp::Split),
-                    MastNode::Call(_) => Some(ControlFlowOp::Call),
-                    MastNode::Dyn(_) => Some(ControlFlowOp::Dyn),
                     _ => None,
                 };
                 return CurrentCycleInfo {

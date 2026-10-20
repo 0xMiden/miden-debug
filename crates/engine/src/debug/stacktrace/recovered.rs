@@ -19,7 +19,13 @@ struct RecoveredFrame {
     invocation: InvocationId,
     identity: DebugCallFrame,
     location: Option<Location>,
-    inline_frames: Vec<InlineCallFrame>,
+    inline_frames: Vec<RecoveredInlineFrame>,
+}
+
+struct RecoveredInlineFrame {
+    display: InlineCallFrame,
+    info: Arc<PackageDebugInfo>,
+    function_idx: DebugFunctionIdx,
 }
 
 /// An invocation to finish, captured before execution resumes.
@@ -118,11 +124,11 @@ impl RecoveredCallStack {
             .zip(debug_info.as_deref())
             .is_some_and(|(frame, info)| core::ptr::eq(frame.identity.debug_info(), info));
         let mut rows = Vec::new();
-        if let Some((info, (source, operation))) = debug_info.as_deref().zip(current) {
+        if let Some((info, (source, operation))) = debug_info.as_ref().zip(current) {
             rows.extend(info.inline_calls_for_operation(source, operation).map(|row| (info, row)));
         }
         for inherited in context.inherited_inline_call_contexts() {
-            rows.extend(inherited.inline_calls().map(|row| (inherited.debug_info().as_ref(), row)));
+            rows.extend(inherited.inline_calls().map(|row| (inherited.debug_info(), row)));
         }
         rows.reverse();
 
@@ -137,7 +143,7 @@ impl RecoveredCallStack {
             // but their function indices belong to different tables.
             let boundary = next.and_then(|next| {
                 let (info, row) = *rows.get(end.checked_sub(1)?)?;
-                let same_function = if core::ptr::eq(info, next.identity.debug_info()) {
+                let same_function = if core::ptr::eq(info.as_ref(), next.identity.debug_info()) {
                     row.callee_idx == next.identity.function_idx()
                 } else {
                     info.get_function(row.callee_idx)?.mast_root
@@ -151,7 +157,20 @@ impl RecoveredCallStack {
                 let own_end = end - usize::from(boundary.is_some());
                 frame.inline_frames.clear();
                 for (info, row) in rows[start..own_end.max(start)].iter().rev() {
-                    append_inline_frames(&mut frame.inline_frames, info, [*row]);
+                    let Some(function) = info.get_function(row.callee_idx) else {
+                        continue;
+                    };
+                    let Some(name) = info.get_string(function.name_idx) else {
+                        continue;
+                    };
+                    let Some(call_site) = info.get_location(row.loc_idx) else {
+                        continue;
+                    };
+                    frame.inline_frames.push(RecoveredInlineFrame {
+                        display: InlineCallFrame { name, call_site },
+                        info: Arc::clone(info),
+                        function_idx: row.callee_idx,
+                    });
                 }
             }
             if let Some((info, row)) = boundary {
@@ -174,7 +193,7 @@ impl RecoveredCallStack {
             let location = frame
                 .inline_frames
                 .last()
-                .map(|inline| &inline.call_site)
+                .map(|inline| &inline.display.call_site)
                 .or(frame.location.as_ref())
                 .cloned()
                 .map(LogicalFrameLocation::Assembly);
@@ -185,21 +204,28 @@ impl RecoveredCallStack {
                 physical_index: None,
                 origin: Some(frame.identity.origin()),
                 invocation: Some(frame.invocation),
+                source: Some(LogicalFrameSource::Physical(frame.identity.clone())),
             });
             for index in (0..frame.inline_frames.len()).rev() {
                 let inline = &frame.inline_frames[index];
                 let location = if index == 0 {
                     frame.location.clone()
                 } else {
-                    Some(frame.inline_frames[index - 1].call_site.clone())
+                    Some(frame.inline_frames[index - 1].display.call_site.clone())
                 };
                 logical.push(LogicalStackFrame {
-                    name: Arc::from(inline.display_name()),
+                    name: Arc::from(inline.display.display_name()),
                     kind: LogicalFrameKind::Inline,
                     location: location.map(LogicalFrameLocation::Assembly),
                     physical_index: None,
                     origin: None,
                     invocation: None,
+                    source: Some(LogicalFrameSource::Inline {
+                        owner: frame.invocation,
+                        info: Arc::clone(&inline.info),
+                        function_idx: inline.function_idx,
+                        call_site: inline.display.call_site.clone(),
+                    }),
                 });
             }
         }

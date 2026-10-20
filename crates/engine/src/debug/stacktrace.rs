@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 
 use miden_core::operations::AssemblyOp;
 use miden_debug_types::{Location, SourceFile, SourceManager, SourceSpan, Uri};
-use miden_mast_package::debug_info::{DebugSourceInlineCall, DebugSourceNodeId, PackageDebugInfo};
+use miden_mast_package::debug_info::{
+    DebugFunctionIdx, DebugFunctionInfo, DebugSourceInlineCall, DebugSourceNodeId, PackageDebugInfo,
+};
 use miden_processor::{ContextId, SourceInlineCallContext, operation::Operation, trace::RowIndex};
 use miden_utils_sync::RwLock;
 
@@ -28,10 +30,6 @@ pub enum ControlFlowOp {
     Join,
     Split,
     End,
-    /// Entry to a `call`/`syscall` node — a call boundary into a new procedure.
-    Call,
-    /// Entry to a `dynexec`/`dyncall` node — a dynamic call boundary into a new procedure.
-    Dyn,
 }
 
 pub struct StepInfo<'a> {
@@ -83,9 +81,67 @@ pub struct LogicalStackFrame {
     physical_index: Option<usize>,
     origin: Option<miden_processor::DebugFrameOrigin>,
     invocation: Option<InvocationId>,
+    source: Option<LogicalFrameSource>,
+}
+
+#[derive(Debug, Clone)]
+enum LogicalFrameSource {
+    Physical(miden_processor::DebugCallFrame),
+    Inline {
+        owner: InvocationId,
+        info: Arc<PackageDebugInfo>,
+        function_idx: DebugFunctionIdx,
+        call_site: Location,
+    },
 }
 
 impl LogicalStackFrame {
+    /// Compare source invocations independently of presentation names and current locations.
+    pub(crate) fn is_same_source_frame(&self, other: &Self) -> bool {
+        match (&self.source, &other.source) {
+            (
+                Some(LogicalFrameSource::Physical(left)),
+                Some(LogicalFrameSource::Physical(right)),
+            ) => left.is_same_frame(right),
+            (
+                Some(LogicalFrameSource::Inline {
+                    owner: left_owner,
+                    info: left_info,
+                    function_idx: left_function,
+                    call_site: left_site,
+                }),
+                Some(LogicalFrameSource::Inline {
+                    owner: right_owner,
+                    info: right_info,
+                    function_idx: right_function,
+                    call_site: right_site,
+                }),
+            ) => {
+                left_owner == right_owner
+                    && Arc::ptr_eq(left_info, right_info)
+                    && left_function == right_function
+                    && left_site == right_site
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn debug_info(&self) -> Option<&PackageDebugInfo> {
+        match self.source.as_ref()? {
+            LogicalFrameSource::Physical(frame) => Some(frame.debug_info()),
+            LogicalFrameSource::Inline { info, .. } => Some(info),
+        }
+    }
+
+    pub(crate) fn function(&self) -> Option<&DebugFunctionInfo> {
+        match self.source.as_ref()? {
+            LogicalFrameSource::Physical(frame) => Some(frame.function()),
+            LogicalFrameSource::Inline {
+                info, function_idx, ..
+            } => info.get_function(*function_idx),
+        }
+    }
+
     /// Physical source invocations have local ownership; inline and event-only rows do not.
     pub fn invocation_id(&self) -> Option<InvocationId> {
         self.invocation
@@ -287,6 +343,7 @@ impl CallStack {
                 physical_index: Some(physical_index),
                 origin: None,
                 invocation: None,
+                source: None,
             });
 
             for inline_index in (0..frame.inline_frames.len()).rev() {
@@ -305,6 +362,7 @@ impl CallStack {
                     physical_index: Some(physical_index),
                     origin: None,
                     invocation: None,
+                    source: None,
                 });
             }
         }
@@ -358,7 +416,7 @@ impl CallStack {
             Some(ControlFlowOp::End) => {
                 self.block_stack.pop();
             }
-            Some(ControlFlowOp::Respan | ControlFlowOp::Call | ControlFlowOp::Dyn) | None => {}
+            Some(ControlFlowOp::Respan) | None => {}
         }
 
         if !is_frame_end {

@@ -36,7 +36,8 @@ use miden_processor::{
 
 use super::{
     EventMutationRecorder, MastForestRecorder, RecordingHost, ReplaySnapshot,
-    ReplaySnapshotRecorder, ReplaySnapshotWrite, source::SourceContext, state::should_wait_for_entry_variables,
+    ReplaySnapshotRecorder, ReplaySnapshotWrite, source::SourceContext,
+    state::should_wait_for_entry_variables,
 };
 use crate::{
     debug::{

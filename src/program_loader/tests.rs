@@ -44,3 +44,37 @@ pub(crate) fn test_package_input() -> crate::InputFile {
         .expect("test package should assemble");
     crate::InputFile::new("stdin://", Some(package.to_bytes().into_boxed_slice()))
 }
+
+#[cfg(any(feature = "script", feature = "dap"))]
+pub(crate) fn invocation_test_package(
+    ty: Option<miden_assembly_syntax::ast::types::Type>,
+) -> Arc<miden_mast_package::Package> {
+    use miden_assembly::{Assembler, DefaultSourceManager};
+    use miden_assembly_syntax::{
+        Parse,
+        ast::{DebugVarInfo, DebugVarLocation, Instruction, Op},
+    };
+    use miden_debug_types::{SourceSpan, Span};
+    let manager = Arc::new(DefaultSourceManager::default());
+    let mut module = Parse::parse(
+        "proc inner push.22 nop drop push.3 drop end proc outer push.11 nop drop exec.inner \
+         push.4 drop end begin exec.outer push.5 drop end",
+        false,
+        manager.clone(),
+    )
+    .unwrap();
+    for procedure in module.procedures_mut() {
+        for operation in procedure.body_mut().iter_mut() {
+            if let Op::Inst(instruction) = operation
+                && matches!(instruction.inner(), Instruction::Nop)
+            {
+                let mut variable = DebugVarInfo::new("n", DebugVarLocation::Stack(0));
+                if let Some(ty) = &ty {
+                    variable.set_ty(ty.clone(), None);
+                }
+                *instruction = Span::new(SourceSpan::default(), Instruction::DebugVar(variable));
+            }
+        }
+    }
+    Assembler::new(manager).assemble_program("invocations", module).unwrap().into()
+}

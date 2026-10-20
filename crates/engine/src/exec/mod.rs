@@ -12,6 +12,7 @@ mod executor;
 mod host;
 mod query;
 mod snapshot;
+pub(crate) mod source;
 mod state;
 mod trace;
 
@@ -38,6 +39,6 @@ pub use self::{
 #[cfg(feature = "dap")]
 pub use self::{
     dap::{DapConfig, DapExecutor},
-    dap_client::{DapClient, DapStopReason, SCOPE_MEMORY, SCOPE_STACK},
-    dap_types::{DapUiFrame, DapUiState},
+    dap_client::{DapClient, DapStopReason},
+    dap_types::{DapUiFrame, DapUiState, DapVariableValue},
 };

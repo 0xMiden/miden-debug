@@ -136,8 +136,13 @@ vars         # only DWARF-named variables visible at the current line
 vars all     # everything, including compiler temporaries
 ```
 
-Each entry is `name=value` when the storage is materialised, otherwise
-`name=<location-spec>`.
+Variables belong to the selected physical frame. Use `frame`, `up`, or `down`
+to inspect a suspended caller, including a different invocation of the same
+recursive function. Transient stack values are captured at their declarations;
+memory values use the owning invocation's context and retained frame bases.
+Inline frames do not yet expose separate locals or lexical scopes.
+
+Each entry is `name=value`, or `name=<unavailable>` when its storage cannot be read.
 
 After successful termination, `vars`, `vars all`, and `locals` report
 `Program has terminated; no live variables`. Final stack outputs and the typed

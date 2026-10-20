@@ -272,6 +272,9 @@ pub struct Source {
     /// A list of sources that are related to this source. These may be the source
     /// that generated this source.
     #[serde(skip_serializing_if = "Option::is_none")]
+    // Generate leaves by default: unconstrained recursive Dummy generation can overflow the stack.
+    // Fixtures that need related sources can populate this field explicitly.
+    #[cfg_attr(feature = "integration_testing", dummy(expr = "None"))]
     pub sources: Option<Vec<Source>>,
     /// Additional data that a debug adapter might want to loop through the client.
     /// The client should leave the data intact and persist it across sessions. The
@@ -1050,6 +1053,8 @@ pub struct ExceptionDetails {
     pub stack_trace: Option<String>,
     /// Details of the exception contained by this exception, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
+    // Generate leaves by default, as with Source::sources, to bound recursive fixture generation.
+    #[cfg_attr(feature = "integration_testing", dummy(expr = "None"))]
     pub inner_exception: Option<Vec<ExceptionDetails>>,
 }
 

@@ -8,7 +8,6 @@ use std::{
 
 use miden_assembly::{Assembler, DefaultSourceManager, SourceManager};
 use miden_assembly_syntax::Parse;
-use miden_core::serde::Serializable;
 use miden_debug_types::{ColumnNumber, FileLineCol, LineNumber, Uri};
 use miden_mast_package::{
     Package, Section, SectionId,
@@ -200,23 +199,26 @@ fn add_inline_calls(
         })
         .collect::<Result<Vec<_>, io::Error>>()?;
     for (source_node_id, operation_range) in source_nodes {
-        let operation_indices = if operation_range.is_empty() {
-            0..1
-        } else {
-            operation_range
-        };
-        for op_idx in operation_indices {
-            for (callee_idx, call_site_idx) in callees.iter().copied() {
-                debug_info[source_node_id].inline_calls.push(DebugSourceInlineCall {
-                    op_idx,
+        // Inject source-level frames inside the assembler's enclosing exec frames.
+        debug_info[source_node_id].inline_calls.splice(
+            0..0,
+            callees
+                .iter()
+                .copied()
+                .map(|(callee_idx, call_site_idx)| DebugSourceInlineCall {
+                    op_idx: operation_range.start,
+                    op_end: operation_range.end,
                     callee_idx,
                     loc_idx: call_site_idx,
-                });
-            }
-        }
+                }),
+        );
     }
 
-    replace_section(package, SectionId::DEBUG_INFO, debug_info.build().to_bytes());
+    replace_section(
+        package,
+        SectionId::DEBUG_INFO,
+        debug_info.build().to_bytes_with_standard_limits()?,
+    );
     Ok(())
 }
 

@@ -20,12 +20,8 @@ use dap::{
     types,
 };
 
-use super::DapUiState;
+use super::{DapUiState, DapVariableValue};
 use crate::debug::ReadMemoryExpr;
-
-/// Variables reference IDs for scopes (must match the DAP server).
-pub const SCOPE_STACK: i64 = 1;
-pub const SCOPE_MEMORY: i64 = 2;
 
 /// The reason the debuggee stopped after a step/continue command.
 #[derive(Debug)]
@@ -146,6 +142,15 @@ impl DapClient {
         }
     }
 
+    /// Query the scopes belonging to a frame from the current suspension's stack trace.
+    pub fn scopes(&mut self, frame_id: i64) -> Result<Vec<types::Scope>, String> {
+        self.send_request("scopes", serde_json::json!({ "frameId": frame_id }))?;
+        match self.wait_for_response("scopes")?.body {
+            Some(ResponseBody::Scopes(scopes)) => Ok(scopes.scopes),
+            _ => Err("unexpected response to scopes".into()),
+        }
+    }
+
     /// Query variables for a given scope reference.
     pub fn variables(&mut self, variables_reference: i64) -> Result<Vec<types::Variable>, String> {
         self.send_request(
@@ -163,10 +168,24 @@ impl DapClient {
 
     /// Evaluate a custom expression (e.g. "__miden_state").
     pub fn evaluate(&mut self, expression: &str) -> Result<String, String> {
+        self.evaluate_with_frame(expression, None)
+    }
+
+    /// Evaluate an expression in a frame from the current suspension's stack trace.
+    pub fn evaluate_in_frame(&mut self, expression: &str, frame_id: i64) -> Result<String, String> {
+        self.evaluate_with_frame(expression, Some(frame_id))
+    }
+
+    fn evaluate_with_frame(
+        &mut self,
+        expression: &str,
+        frame_id: Option<i64>,
+    ) -> Result<String, String> {
         self.send_request(
             "evaluate",
             serde_json::json!({
-                "expression": expression
+                "expression": expression,
+                "frameId": frame_id
             }),
         )?;
         let resp = self.wait_for_response("evaluate")?;
@@ -174,6 +193,22 @@ impl DapClient {
             Some(ResponseBody::Evaluate(e)) => Ok(e.result),
             _ => Err("unexpected response to evaluate".into()),
         }
+    }
+
+    /// Inspect a frame's locals without losing canonical values to display formatting.
+    pub fn frame_variables(
+        &mut self,
+        frame_id: i64,
+        show_all: bool,
+    ) -> Result<Vec<DapVariableValue>, String> {
+        let expression = if show_all {
+            "__miden_variables all"
+        } else {
+            "__miden_variables"
+        };
+        let snapshot = self.evaluate_in_frame(expression, frame_id)?;
+        serde_json::from_str(&snapshot)
+            .map_err(|error| format!("invalid DAP variable snapshot: {error}"))
     }
 
     /// Read memory from the remote debuggee via the DAP server.

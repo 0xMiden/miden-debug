@@ -123,6 +123,22 @@ impl Session {
         assert_eq!(self.request("configurationDone", json!({}))["success"], true);
     }
 
+    fn current_scopes(&mut self) -> Value {
+        let trace = self.request("stackTrace", json!({"threadId": 1}));
+        let frame = trace["body"]["stackFrames"][0]["id"].clone();
+        self.request("scopes", json!({"frameId": frame}))
+    }
+
+    fn scope_reference(&mut self, name: &str) -> Value {
+        self.current_scopes()["body"]["scopes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|scope| scope["name"] == name)
+            .unwrap()["variablesReference"]
+            .clone()
+    }
+
     fn join(&mut self) -> Result<ExecutionOutput, ExecutionError> {
         self.server.take().unwrap().join().unwrap()
     }
@@ -148,13 +164,14 @@ fn dap_session_inspects_initial_state_and_evaluations() {
     session.handshake("attach");
     let threads = session.request("threads", json!({}));
     assert_eq!(threads["body"]["threads"][0]["name"], "main");
-    let scopes = session.request("scopes", json!({"frameId": 0}));
+    let scopes = session.current_scopes();
     assert_eq!(scopes["body"]["scopes"].as_array().unwrap().len(), 3);
     assert_eq!(scopes["body"]["scopes"][0]["name"], "Local Variables");
-    for reference in [SCOPE_STACK, SCOPE_MEMORY, SCOPE_LOCALS, 99] {
+    for scope in scopes["body"]["scopes"].as_array().unwrap() {
+        let reference = scope["variablesReference"].clone();
         let variables = session.request("variables", json!({"variablesReference": reference}));
         let values = variables["body"]["variables"].as_array().unwrap();
-        if reference == SCOPE_STACK {
+        if scope["name"] == "Operand Stack" {
             assert_eq!(values.len(), 16);
             assert_eq!(values[0]["value"], "0");
         } else {
@@ -215,7 +232,8 @@ fn dap_session_steps_breaks_restarts_and_records_a_snapshot() {
     assert!(snapshot.unwrap()["cycle"].as_u64().unwrap() > 0);
     let trace = session.request("stackTrace", json!({"threadId": 1}));
     assert!(trace["body"]["totalFrames"].as_u64().unwrap() > 0);
-    let memory = session.request("variables", json!({"variablesReference": SCOPE_MEMORY}));
+    let reference = session.scope_reference("Memory");
+    let memory = session.request("variables", json!({"variablesReference": reference}));
     assert!(
         memory["body"]["variables"]
             .as_array()
@@ -285,7 +303,8 @@ fn dap_locals_scope_reports_a_live_debug_variable() {
         );
         let (event, _) = session.stop();
         assert_eq!(event["event"], "stopped");
-        let response = session.request("variables", json!({"variablesReference": SCOPE_LOCALS}));
+        let reference = session.scope_reference("Local Variables");
+        let response = session.request("variables", json!({"variablesReference": reference}));
         variable = response["body"]["variables"]
             .as_array()
             .unwrap()
@@ -330,4 +349,329 @@ fn dap_reports_execution_failure_and_writes_the_failed_snapshot() {
     assert_eq!(session.stop().0["event"], "terminated");
     assert!(session.join().is_err());
     assert!(crate::exec::ReplaySnapshot::read_from_file(&path).is_ok());
+}
+
+fn session_with_stack_local(source: &str, name: &str) -> Session {
+    use miden_assembly_syntax::{
+        Parse,
+        ast::{Instruction, Op},
+        debuginfo::{SourceSpan, Span},
+    };
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let mut module = Parse::parse(source, false, source_manager.clone()).unwrap();
+    for procedure in module.procedures_mut() {
+        for operation in procedure.body_mut().iter_mut() {
+            if let Op::Inst(instruction) = operation
+                && matches!(instruction.inner(), Instruction::Nop)
+            {
+                *instruction = Span::new(
+                    SourceSpan::default(),
+                    Instruction::DebugVar(DebugVarInfo::new(name, DebugVarLocation::Stack(0))),
+                );
+            }
+        }
+    }
+    Session::start_module(*module, source_manager)
+}
+
+fn invocation_locals_session() -> (Session, Value, Value) {
+    invocation_locals_session_with_call("exec.inner")
+}
+
+fn invocation_locals_session_with_call(call: &str) -> (Session, Value, Value) {
+    let source = format!(
+        "proc inner push.9 nop dup drop drop end begin procref.inner mem_storew_le.100 dropw \
+         push.5 nop dup drop drop {call} push.8 drop end"
+    );
+    let mut session = session_with_stack_local(&source, "x");
+    session.handshake("launch");
+    for _ in 0..60 {
+        session.request("stepIn", json!({"threadId": 1}));
+        assert_eq!(session.stop().0["event"], "stopped");
+        if session.request("evaluate", json!({"expression": "x"}))["body"]["result"] == "9" {
+            let trace = session.request("stackTrace", json!({"threadId": 1}));
+            let frames = trace["body"]["stackFrames"].as_array().unwrap();
+            assert_eq!(frames.len(), 2);
+            return (session, frames[0]["id"].clone(), frames[1]["id"].clone());
+        }
+    }
+    panic!("callee variable was never observed");
+}
+
+#[test]
+fn dap_scopes_distinguish_suspended_caller_locals() {
+    let (mut session, callee, caller) = invocation_locals_session();
+    let callee_scopes = session.request("scopes", json!({"frameId": callee}));
+    let caller_scopes = session.request("scopes", json!({"frameId": caller}));
+    let callee_locals = callee_scopes["body"]["scopes"][0]["variablesReference"].clone();
+    let caller_locals = caller_scopes["body"]["scopes"][0]["variablesReference"].clone();
+    assert_ne!(callee_locals, caller_locals);
+    for (reference, expected) in [(callee_locals, "9"), (caller_locals, "5")] {
+        let variables = session.request("variables", json!({"variablesReference": reference}));
+        assert_eq!(variables["body"]["variables"][0]["value"], expected);
+    }
+    session.disconnect();
+}
+
+#[test]
+fn dap_evaluation_selects_the_requested_invocation() {
+    for call in ["exec.inner", "call.inner", "push.100 dynexec", "push.100 dyncall"] {
+        let (mut session, callee, caller) = invocation_locals_session_with_call(call);
+        for (frame, expected) in [(callee, "9"), (caller, "5")] {
+            let result = session.request("evaluate", json!({"expression": "x", "frameId": frame}));
+            assert_eq!(result["body"]["result"], expected);
+            let bundle = session
+                .request("evaluate", json!({"expression": "__miden_variables", "frameId": frame}));
+            let variables: Value =
+                serde_json::from_str(bundle["body"]["result"].as_str().unwrap()).unwrap();
+            assert_eq!(variables[0]["value"], expected);
+            assert_eq!(variables[0]["raw"], expected.parse::<u64>().unwrap());
+        }
+        session.request("stepOut", json!({"threadId": 1}));
+        assert_eq!(session.stop().0["event"], "stopped");
+        assert_eq!(session.request("evaluate", json!({"expression": "x"}))["body"]["result"], "5");
+        assert_eq!(
+            session.request("evaluate", json!({"expression": "vars all"}))["body"]["result"],
+            "x=5"
+        );
+        session.disconnect();
+    }
+}
+
+#[test]
+fn dap_frame_and_scope_handles_expire_on_resume_and_restart() {
+    let (mut session, callee, _) = invocation_locals_session();
+    let scope = session.request("scopes", json!({"frameId": callee}))["body"]["scopes"][0]
+        ["variablesReference"]
+        .clone();
+    session.request("stepIn", json!({"threadId": 1}));
+    assert_eq!(session.stop().0["event"], "stopped");
+    assert_eq!(session.request("scopes", json!({"frameId": callee}))["success"], false);
+    assert_eq!(
+        session.request("variables", json!({"variablesReference": scope}))["success"],
+        false
+    );
+    assert_eq!(
+        session.request("evaluate", json!({"expression": "x", "frameId": callee}))["success"],
+        false
+    );
+    let trace = session.request("stackTrace", json!({"threadId": 1}));
+    let new_frame = trace["body"]["stackFrames"][0]["id"].clone();
+    assert_ne!(new_frame, callee);
+    session.request("restart", json!({}));
+    assert_eq!(session.stop().0["event"], "stopped");
+    session.request("stackTrace", json!({"threadId": 1}));
+    assert_eq!(session.request("scopes", json!({"frameId": new_frame}))["success"], false);
+    session.request("continue", json!({"threadId": 1}));
+    assert_eq!(session.stop().0["event"], "terminated");
+    assert_eq!(session.request("evaluate", json!({"expression": "x"}))["success"], false);
+    assert!(
+        session.current_scopes()["body"]["scopes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|scope| scope["name"] != "Local Variables")
+    );
+    session.disconnect();
+}
+
+#[test]
+fn dap_recursive_invocations_keep_distinct_locals() {
+    let mut session = session_with_stack_local(
+        "proc inner nop dup neq.0 if.true sub.1 push.100 dynexec else push.7 drop end push.8 drop \
+         end begin procref.inner mem_storew_le.100 dropw push.3 push.100 dynexec drop push.9 drop \
+         end",
+        "x",
+    );
+    session.handshake("launch");
+    let mut reached_base = false;
+    for _ in 0..150 {
+        session.request("stepIn", json!({"threadId": 1}));
+        assert_eq!(session.stop().0["event"], "stopped");
+        if session.request("evaluate", json!({"expression": "x"}))["body"]["result"] == "0" {
+            reached_base = true;
+            break;
+        }
+    }
+    assert!(reached_base);
+    let trace = session.request("stackTrace", json!({"threadId": 1}));
+    let frames = trace["body"]["stackFrames"].as_array().unwrap();
+    assert_eq!(frames.len(), 5);
+    for (depth, frame) in frames.iter().take(4).enumerate() {
+        let result =
+            session.request("evaluate", json!({"expression": "x", "frameId": frame["id"]}));
+        assert_eq!(result["body"]["result"], depth.to_string());
+    }
+    for expected in 1..=3 {
+        session.request("stepOut", json!({"threadId": 1}));
+        assert_eq!(session.stop().0["event"], "stopped");
+        assert_eq!(
+            session.request("evaluate", json!({"expression": "x"}))["body"]["result"],
+            expected.to_string()
+        );
+    }
+    session.disconnect();
+}
+
+#[test]
+fn dap_other_locals_scope_preserves_compiler_variables() {
+    let mut session = session_with_stack_local("begin push.5 nop dup drop drop end", "local0");
+    session.handshake("launch");
+    for _ in 0..15 {
+        session.request("stepIn", json!({"threadId": 1}));
+        assert_eq!(session.stop().0["event"], "stopped");
+        if session.request("evaluate", json!({"expression": "vars all"}))["body"]["result"]
+            == "local0=5"
+        {
+            let scopes = session.current_scopes();
+            assert_eq!(scopes["body"]["scopes"][0]["namedVariables"], 0);
+            assert_eq!(scopes["body"]["scopes"][1]["name"], "Other Locals");
+            let visible = session.request("evaluate", json!({"expression": "__miden_variables"}));
+            assert_eq!(visible["body"]["result"], "[]");
+            let all = session.request("evaluate", json!({"expression": "__miden_variables all"}));
+            let all: Value = serde_json::from_str(all["body"]["result"].as_str().unwrap()).unwrap();
+            assert_eq!(all[0], json!({"name": "local0", "value": "5", "raw": 5}));
+            let reference = scopes["body"]["scopes"][1]["variablesReference"].clone();
+            assert_eq!(
+                session.request("variables", json!({"variablesReference": reference}))["body"]
+                    ["variables"][0]["value"],
+                "5"
+            );
+            session.disconnect();
+            return;
+        }
+    }
+    panic!("compiler local was never observed");
+}
+
+#[test]
+fn dap_inline_frames_do_not_claim_invocation_locals() {
+    use miden_assembly_syntax::{
+        Parse,
+        ast::{DebugInlineCallInfo, Instruction, Op},
+        debuginfo::{SourceManager, Span},
+    };
+    let manager = Arc::new(DefaultSourceManager::default());
+    let mut module = Parse::parse(
+        "proc inner push.9 nop dup drop nop push.1 drop drop end begin exec.inner end",
+        false,
+        manager.clone(),
+    )
+    .unwrap();
+    let mut decorated = false;
+    for procedure in module.procedures_mut() {
+        for operation in procedure.body_mut().iter_mut() {
+            if let Op::Inst(instruction) = operation
+                && matches!(instruction.inner(), Instruction::Nop)
+            {
+                let span = instruction.span();
+                let replacement = if decorated {
+                    let location = manager.file_line_col(span).unwrap();
+                    Instruction::DebugInlineCall(DebugInlineCallInfo::new(
+                        "source::inlined",
+                        location.clone(),
+                        location,
+                    ))
+                } else {
+                    decorated = true;
+                    Instruction::DebugVar(DebugVarInfo::new("x", DebugVarLocation::Stack(0)))
+                };
+                *instruction = Span::new(span, replacement);
+            }
+        }
+    }
+    let mut session = Session::start_module(*module, manager);
+    session.handshake("launch");
+    for _ in 0..40 {
+        session.request("stepIn", json!({"threadId": 1}));
+        assert_eq!(session.stop().0["event"], "stopped");
+        let trace = session.request("stackTrace", json!({"threadId": 1}));
+        let frames = trace["body"]["stackFrames"].as_array().unwrap();
+        if let Some(inline) = frames.iter().find(|frame| frame["presentationHint"] == "subtle") {
+            let scopes = session.request("scopes", json!({"frameId": inline["id"]}));
+            assert!(scopes["body"]["scopes"].as_array().unwrap().is_empty());
+            assert_eq!(
+                session.request("evaluate", json!({"expression": "x", "frameId": inline["id"]}))
+                    ["success"],
+                false
+            );
+            assert_eq!(
+                session.request("evaluate", json!({"expression": "x"}))["body"]["result"],
+                "9"
+            );
+            session.disconnect();
+            return;
+        }
+    }
+    panic!("inline frame was never observed");
+}
+
+#[test]
+fn dap_bundled_variables_preserve_typed_display_and_raw_felts() {
+    use miden_assembly_syntax::{
+        Parse,
+        ast::{
+            Instruction, Op,
+            types::{ArrayType, Type},
+        },
+        debuginfo::Span,
+    };
+
+    let manager = Arc::new(DefaultSourceManager::default());
+    let mut module = Parse::parse(
+        "begin push.1 nop drop push.4294967295 nop drop push.7.8 nop drop drop push.9 drop end",
+        false,
+        manager.clone(),
+    )
+    .unwrap();
+    let mut declarations = [
+        ("boolean", Type::I1),
+        ("signed", Type::I32),
+        ("array", Type::Array(Arc::new(ArrayType::new(Type::U32, 2)))),
+    ]
+    .into_iter();
+    for procedure in module.procedures_mut() {
+        for operation in procedure.body_mut().iter_mut() {
+            if let Op::Inst(instruction) = operation
+                && matches!(instruction.inner(), Instruction::Nop)
+            {
+                let (name, ty) = declarations.next().unwrap();
+                let mut variable = DebugVarInfo::new(name, DebugVarLocation::Stack(0));
+                variable.set_ty(ty, None);
+                *instruction = Span::new(instruction.span(), Instruction::DebugVar(variable));
+            }
+        }
+    }
+    let mut session = Session::start_module(*module, manager);
+    session.handshake("launch");
+    for _ in 0..40 {
+        session.request("stepIn", json!({"threadId": 1}));
+        assert_eq!(session.stop().0["event"], "stopped");
+        if session.request("evaluate", json!({"expression": "array"}))["success"] == true {
+            let trace = session.request("stackTrace", json!({"threadId": 1}));
+            let frame = trace["body"]["stackFrames"][0]["id"].clone();
+            let response = session
+                .request("evaluate", json!({"expression": "__miden_variables", "frameId": frame}));
+            assert_eq!(response["success"], true);
+            let variables: Value =
+                serde_json::from_str(response["body"]["result"].as_str().unwrap()).unwrap();
+            for (name, value, raw) in [
+                ("boolean", "true", 1u64),
+                ("signed", "-1i32", 4_294_967_295),
+                ("array", "[8, 7]", 8),
+            ] {
+                let variable = variables
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|variable| variable["name"] == name)
+                    .unwrap();
+                assert_eq!(variable["value"], value);
+                assert_eq!(variable["raw"], raw);
+            }
+            session.disconnect();
+            return;
+        }
+    }
+    panic!("typed declarations were never observed");
 }

@@ -153,6 +153,37 @@ impl ScriptDebugger {
         self.frame_with_variables(false)
     }
 
+    /// Snapshot a logical frame by its top-first backtrace index. Inline frames have no locals.
+    pub fn frame_at(&self, index: usize, show_all: bool) -> Option<ScriptFrame> {
+        let engine = self.engine.borrow();
+        let state = engine.state();
+        let frames = state.logical_stack_frames();
+        let frame = frames.iter().rev().nth(index)?;
+        let source_location =
+            frame.resolved(&*state.source_manager).map(|loc| ScriptSourceLocation {
+                path: loc.source_file.uri().as_str().to_string(),
+                line: loc.line,
+                column: loc.col,
+            });
+        Some(ScriptFrame {
+            function_name: Some(frame.name().to_string()),
+            source_location,
+            variables: state
+                .variables_for_frame(index, show_all)
+                .into_iter()
+                .map(ScriptValue::from)
+                .collect(),
+        })
+    }
+
+    pub fn frame_count(&self) -> usize {
+        self.engine.borrow().state().logical_stack_frames().len()
+    }
+
+    pub fn selected_frame_index(&self) -> usize {
+        self.engine.borrow().state().selected_stack_frame()
+    }
+
     /// Current frame snapshot with either source-visible or all debug variables.
     pub fn frame_with_variables(&self, show_all: bool) -> ScriptFrame {
         let engine = self.engine.borrow();
@@ -163,21 +194,8 @@ impl ScriptDebugger {
             column: loc.col,
         });
         let function_name = state.current_procedure().map(|name| name.to_string());
-        let variables = state
-            .current_variables(show_all)
-            .into_iter()
-            .map(|variable| ScriptValue {
-                name: variable.name,
-                value: variable.value.map(|felt| felt.as_canonical_u64()),
-                display_value: variable.display_value,
-                location: variable.location,
-                source: variable.source.map(|source| ScriptSourceLocation {
-                    path: source.path,
-                    line: source.line,
-                    column: source.column,
-                }),
-            })
-            .collect();
+        let variables =
+            state.current_variables(show_all).into_iter().map(ScriptValue::from).collect();
 
         ScriptFrame {
             function_name,
@@ -307,8 +325,24 @@ fn script_breakpoint_from(bp: &Breakpoint) -> ScriptBreakpoint {
     }
 }
 
+impl From<crate::ui::state::DebugVariableValue> for ScriptValue {
+    fn from(variable: crate::ui::state::DebugVariableValue) -> Self {
+        Self {
+            name: variable.name,
+            value: variable.value.map(|felt| felt.as_canonical_u64()),
+            display_value: variable.display_value,
+            location: variable.location,
+            source: variable.source.map(|source| ScriptSourceLocation {
+                path: source.path,
+                line: source.line,
+                column: source.column,
+            }),
+        }
+    }
+}
+
 #[cfg(all(test, feature = "python"))]
-pub(crate) use tests::test_debugger;
+pub(crate) use tests::{invocation_debugger, test_debugger};
 
 #[cfg(test)]
 mod tests;

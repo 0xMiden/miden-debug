@@ -48,6 +48,13 @@ miden.process.stack()
 miden.frame.variables()
 ```
 
+`miden.frame` and breakpoint callback frames inspect the executing invocation.
+`miden.thread.frames()` returns snapshots in innermost-first order, and
+`miden.thread.selected_frame()` snapshots the frame selected in the debugger.
+Each physical frame exposes its own locals, including suspended recursive
+callers. These snapshots retain their values after execution resumes. Inline
+frames have no separately inspectable locals in this release.
+
 Each variable `Value` exposes its first raw field element through `value`. When ABI type metadata
 is available, `display_value` also contains the fully decoded, human-readable value.
 

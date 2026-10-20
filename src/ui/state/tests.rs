@@ -132,38 +132,46 @@ fn state_with_entry_variables(source: &str) -> State {
 fn state_with_variables(source: &str) -> State {
     use miden_assembly_syntax::{
         Parse,
-        ast::{DebugVarInfo, DebugVarLocation},
+        ast::{DebugVarInfo, DebugVarLocation, Instruction, Op},
     };
-    use miden_processor::trace::RowIndex;
-
+    use miden_debug_types::Span;
     let source_manager = Arc::new(DefaultSourceManager::default());
-    let module = Parse::parse(source, false, source_manager.clone()).unwrap();
+    let source = source.replacen("begin", "begin push.7 nop nop drop", 1);
+    let mut module = Parse::parse(&source, false, source_manager.clone()).unwrap();
+    let mut declarations = 0;
+    for procedure in module.procedures_mut() {
+        for operation in procedure.body_mut().iter_mut() {
+            if let Op::Inst(instruction) = operation
+                && matches!(instruction.inner(), Instruction::Nop)
+            {
+                let info = if declarations == 0 {
+                    DebugVarInfo::new("answer", DebugVarLocation::Stack(0))
+                } else {
+                    DebugVarInfo::new("local0", DebugVarLocation::Const(Felt::from_u32(9)))
+                };
+                *instruction = Span::new(SourceSpan::default(), Instruction::DebugVar(info));
+                declarations += 1;
+            }
+        }
+    }
     let package = miden_assembly::Assembler::new(source_manager.clone())
         .assemble_program("program", module)
         .unwrap();
-    let executor = Executor::new(Vec::new()).into_debug(package.into(), source_manager.clone());
-    let mut state = State::new_local(
+    let mut executor = Executor::new(Vec::new()).into_debug(package.into(), source_manager.clone());
+    while executor.debug_vars.variable_count() < 2 {
+        executor.step().unwrap();
+        assert!(!executor.stopped);
+    }
+    State::new_local(
         source_manager,
-        Box::<DebuggerConfig>::default(),
+        Box::default(),
         DebugMode::Program,
         LocalState {
             executor,
             execution_failed: None,
             typed_procedure: None,
         },
-    );
-
-    let tracker = &mut state.executor_mut().debug_vars;
-    tracker.record_events_with_stack(
-        RowIndex::from(0),
-        vec![
-            DebugVarInfo::new("answer", DebugVarLocation::Stack(0)),
-            DebugVarInfo::new("local0", DebugVarLocation::Const(Felt::from(9u32))),
-        ],
-        &[Felt::from(7u32)],
-    );
-    tracker.update_to_cycle(RowIndex::from(0));
-    state
+    )
 }
 
 #[test]
@@ -177,7 +185,7 @@ fn completed_execution_has_no_live_variables() {
 
     assert!(state.executor().stopped);
     assert!(state.execution_failed().is_none());
-    assert!(state.executor().debug_vars.has_variables());
+    assert!(!state.executor().debug_vars.has_variables());
     for show_all in [false, true] {
         assert!(state.current_variables(show_all).is_empty());
         assert_eq!(state.format_variables(show_all), "Program has terminated; no live variables");
@@ -196,6 +204,27 @@ fn failed_execution_preserves_variables_for_inspection() {
     assert_eq!(state.current_variables(true).len(), 2);
     assert_eq!(state.format_variables(false), "answer=7");
     assert_eq!(state.format_variables(true), "answer=7, local0=9");
+}
+
+#[test]
+fn selected_frame_locals_preserve_caller_values_across_calls() {
+    for call in ["exec", "call"] {
+        let mut state = state_with_entry_variables(&format!(
+            "proc entrypoint push.22 nop drop push.3 drop end proc outer push.11 nop drop \
+             {call}.entrypoint push.4 drop end begin exec.outer push.5 drop end"
+        ));
+        state.run_until_stopped();
+        assert_eq!(state.format_variables(true), "n=22");
+        state.select_older_stack_frame();
+        assert_eq!(state.format_variables(true), "n=11", "{call} caller");
+        state.select_newer_stack_frame();
+        assert_eq!(state.format_variables(true), "n=22");
+        state.breakpoints.clear();
+        state.create_breakpoint(BreakpointType::Finish);
+        state.run_until_stopped();
+        assert_eq!(state.selected_stack_frame(), 0);
+        assert_eq!(state.format_variables(true), "n=11", "{call} returned caller");
+    }
 }
 
 #[test]
@@ -231,7 +260,7 @@ fn function_breakpoint_accepts_variables_without_resolved_source() {
     assert!(!state.executor().stopped);
     assert_eq!(state.breakpoints_hit.len(), 1);
     assert!(state.current_display_location().is_none());
-    assert_eq!(state.format_variables(true), "n=5");
+    assert_eq!(state.format_variables(true), "n=5", "{:?}", state.logical_stack_frames());
 }
 
 #[test]
@@ -270,11 +299,103 @@ fn successful_reload_epilogue_resets_stack_selection() {
     state.breakpoints_hit.push(Breakpoint::default());
     state.stopped = false;
     state.executor_mut().stopped = true;
+    state.create_breakpoint(BreakpointType::Finish);
+    assert!(!state.finish_targets.is_empty());
 
     state.finish_reload();
 
     assert!(!state.executor().stopped);
     assert_eq!(state.selected_stack_frame, 0);
     assert!(state.breakpoints_hit.is_empty());
+    assert!(state.finish_targets.is_empty());
     assert!(state.stopped);
+}
+
+#[test]
+fn finish_keeps_its_invocation_when_another_breakpoint_interrupts_it() {
+    let mut state = state_inside_inner_for_finish();
+    state.create_breakpoint(BreakpointType::Finish);
+    state.create_breakpoint(BreakpointType::Step);
+    state.run_until_stopped();
+    assert!(state.current_procedure().unwrap().ends_with("::inner"));
+    state.run_until_stopped();
+    assert!(!state.executor().stopped);
+    assert!(state.current_procedure().unwrap().ends_with("::outer"));
+    assert_eq!(state.logical_stack_frames().len(), 2);
+}
+
+fn state_inside_inner_for_finish() -> State {
+    let mut state = state_with_variables(
+        "proc inner push.7 drop push.6 drop end proc outer exec.inner push.8 drop end begin \
+         exec.outer push.9 drop end",
+    );
+    while !state.executor().stopped {
+        state.executor_mut().step().unwrap();
+        if state
+            .executor()
+            .current_asmop
+            .as_ref()
+            .is_some_and(|op| op.op().as_ref() == "push.7")
+        {
+            break;
+        }
+    }
+    assert!(!state.executor().stopped);
+    state
+}
+
+#[test]
+fn duplicate_finish_breakpoints_are_consumed_together() {
+    let mut state = state_inside_inner_for_finish();
+    state.create_breakpoint(BreakpointType::Finish);
+    state.create_breakpoint(BreakpointType::Step);
+    state.run_until_stopped();
+    assert!(state.current_procedure().unwrap().ends_with("::inner"));
+
+    state.create_breakpoint(BreakpointType::Finish);
+    state.run_until_stopped();
+    assert!(!state.executor().stopped);
+    assert!(state.current_procedure().unwrap().ends_with("::outer"));
+    assert!(state.breakpoints.is_empty(), "neither finish breakpoint may remain orphaned");
+    assert!(state.finish_targets.is_empty());
+    assert_eq!(state.breakpoints_hit.len(), 2);
+    assert!(state.breakpoints_hit.iter().all(|bp| bp.ty == BreakpointType::Finish));
+}
+
+#[test]
+fn deleted_finish_target_does_not_survive_breakpoint_id_reuse() {
+    let mut state = state_inside_inner_for_finish();
+    state.create_breakpoint(BreakpointType::Finish);
+    let deleted = state.breakpoints.last().unwrap().clone();
+    state.create_breakpoint(BreakpointType::Step);
+    state.run_until_stopped();
+    assert!(state.current_procedure().unwrap().ends_with("::inner"));
+
+    state.breakpoints.retain(|bp| bp.id != deleted.id);
+    state.next_breakpoint_id = deleted.id;
+    state.create_breakpoint(BreakpointType::Finish);
+    let replacement = state.breakpoints.last().unwrap().clone();
+    assert_eq!(replacement.id, deleted.id);
+    assert_ne!(replacement.creation_cycle, deleted.creation_cycle);
+
+    state.run_until_stopped();
+    assert!(!state.executor().stopped);
+    assert!(state.current_procedure().unwrap().ends_with("::outer"));
+    assert_eq!(state.breakpoints_hit, [replacement]);
+    assert!(state.breakpoints.is_empty());
+    assert!(state.finish_targets.is_empty(), "deleted targets must be pruned on resume");
+}
+
+#[test]
+fn deleting_an_interrupted_finish_allows_execution_to_complete() {
+    let mut state = state_inside_inner_for_finish();
+    state.create_breakpoint(BreakpointType::Finish);
+    state.create_breakpoint(BreakpointType::Step);
+    state.run_until_stopped();
+    state.breakpoints.clear();
+
+    state.run_until_stopped();
+    assert!(state.executor().stopped);
+    assert!(state.breakpoints_hit.is_empty());
+    assert!(state.finish_targets.is_empty());
 }

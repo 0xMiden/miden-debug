@@ -15,7 +15,7 @@ use pyo3::{
     types::{PyDict, PyModule},
 };
 
-use super::{ScriptBreakpoint, ScriptDebugger, ScriptSourceLocation, ScriptValue};
+use super::{ScriptBreakpoint, ScriptDebugger, ScriptFrame, ScriptSourceLocation, ScriptValue};
 
 type SharedDebugger = Rc<RefCell<ScriptDebugger>>;
 
@@ -558,11 +558,16 @@ impl PyThread {
 #[pymethods]
 impl PyThread {
     fn frames(&self) -> Vec<PyFrame> {
-        vec![self.selected_frame()]
+        let count = self.debugger.borrow().frame_count();
+        (0..count)
+            .filter_map(|index| PyFrame::snapshot(self.debugger.clone(), index))
+            .collect()
     }
 
     fn selected_frame(&self) -> PyFrame {
-        PyFrame::new(self.debugger.clone())
+        let index = self.debugger.borrow().selected_frame_index();
+        PyFrame::snapshot(self.debugger.clone(), index)
+            .unwrap_or_else(|| PyFrame::new(self.debugger.clone()))
     }
 
     fn __repr__(&self) -> &'static str {
@@ -659,28 +664,61 @@ impl PyCommandResult {
 #[derive(Clone)]
 pub struct PyFrame {
     debugger: SharedDebugger,
+    /// Enumerated frames are stop-time snapshots; the global/callback frame remains live.
+    snapshot: Option<(ScriptFrame, Vec<ScriptValue>)>,
 }
 
 impl PyFrame {
     fn new(debugger: SharedDebugger) -> Self {
-        Self { debugger }
+        Self {
+            debugger,
+            snapshot: None,
+        }
+    }
+
+    fn snapshot(debugger: SharedDebugger, index: usize) -> Option<Self> {
+        let frame = debugger.borrow().frame_at(index, false)?;
+        let all = debugger.borrow().frame_at(index, true)?.variables;
+        Some(Self {
+            debugger,
+            snapshot: Some((frame, all)),
+        })
     }
 }
 
 #[pymethods]
 impl PyFrame {
     fn function_name(&self) -> Option<String> {
-        self.debugger.borrow().frame().function_name
+        self.snapshot.as_ref().map_or_else(
+            || self.debugger.borrow().frame().function_name,
+            |(frame, _)| frame.function_name.clone(),
+        )
     }
 
     fn source_location(&self) -> Option<PySourceLocation> {
-        self.debugger.borrow().frame().source_location.map(PySourceLocation::from)
+        self.snapshot
+            .as_ref()
+            .map_or_else(
+                || self.debugger.borrow().frame().source_location,
+                |(frame, _)| frame.source_location.clone(),
+            )
+            .map(PySourceLocation::from)
     }
 
     fn variables(&self, py: Python<'_>, all: Option<bool>) -> PyResult<Py<PyDict>> {
-        let frame = self.debugger.borrow().frame_with_variables(all.unwrap_or(false));
+        let show_all = all.unwrap_or(false);
+        let values = self.snapshot.as_ref().map_or_else(
+            || self.debugger.borrow().frame_with_variables(show_all).variables,
+            |(frame, all)| {
+                if show_all {
+                    all.clone()
+                } else {
+                    frame.variables.clone()
+                }
+            },
+        );
         let variables = PyDict::new(py);
-        for value in frame.variables {
+        for value in values {
             variables.set_item(value.name.clone(), PyValue::from(value))?;
         }
         Ok(variables.unbind())

@@ -20,3 +20,13 @@ pub struct DapUiFrame {
     #[serde(default)]
     pub inline: bool,
 }
+
+/// A resolved local with both its user-facing display and its canonical first field element.
+/// Keeping the raw value separate preserves booleans, signed integers, and aggregate values
+/// for bundled clients and scripting without interpreting the display string.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DapVariableValue {
+    pub name: String,
+    pub value: String,
+    pub raw: Option<u64>,
+}

@@ -57,7 +57,9 @@ fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<Execut
     let mut error = None;
 
     while !executor.stopped {
-        if let Err(err) = executor.step() {
+        if let Err(err) = executor.step_with_observer(|executor| {
+            observe_callee(&mut recorder, executor);
+        }) {
             error = Some(err);
             break;
         }
@@ -81,19 +83,6 @@ fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<Execut
             // On the entry cycle execution is still in the caller, so the callee is named later.
             Some(FrameTransition::Entered) => {
                 recorder.enter(clk, executor.callstack.logical_frames(""));
-            }
-            None if recorder.needs_callee() => {
-                let frames = executor.callstack.logical_frames("");
-                if let Some(callee) = recorder.pending_callee(&frames)
-                    && let Some((info, function)) = callee.debug_info().zip(callee.function())
-                {
-                    let name = &info[function.name_idx];
-                    recorder.observe_callee(
-                        name,
-                        return_felt_count(info, function),
-                        callee.invocation_id(),
-                    );
-                }
             }
             None => {}
         }
@@ -128,6 +117,22 @@ fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<Execut
     }
 
     (recorder.finish(), error)
+}
+
+fn observe_callee(recorder: &mut CallTraceRecorder, executor: &DebugExecutor) {
+    if !recorder.needs_callee() {
+        return;
+    }
+    let frames = executor.callstack.logical_frames("");
+    if let Some(callee) = recorder.pending_callee(&frames)
+        && let Some((info, function)) = callee.debug_info().zip(callee.function())
+    {
+        recorder.observe_callee(
+            &info[function.name_idx],
+            return_felt_count(info, function),
+            callee.invocation_id(),
+        );
+    }
 }
 
 /// Read `count` consecutive felts of a typed argument out of the VM state.

@@ -150,6 +150,30 @@ end
     assert_eq!(function_3.exit_clk, None);
 }
 
+#[test]
+fn a_call_failing_on_its_first_operation_keeps_its_identity() {
+    let replay = replay_source(
+        r#"
+proc fail
+assert
+end
+begin
+emit.event("readonly::miden_debug::frame_start")
+exec.fail
+emit.event("readonly::miden_debug::frame_end")
+end
+"#,
+        false,
+    );
+
+    assert!(replay.error.is_some(), "asserting the zero input should fail");
+    assert_eq!(replay.trace.roots.len(), 1);
+    let frame = &replay.trace.roots[0];
+    assert_eq!(frame.callee.as_deref(), Some("::$exec::fail"));
+    assert_eq!(frame.exit_clk, None);
+    assert_eq!(frame.results, None);
+}
+
 /// A call with no debug information: it takes a value off the stack, and nothing says how
 /// many it took, so what it returned cannot be worked out.
 ///

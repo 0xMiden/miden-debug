@@ -4,7 +4,10 @@ use miden_core::FMP_ADDR;
 use miden_debug_types::DefaultSourceManager;
 use miden_processor::{ExecutionError, Felt, event::EventId};
 
-use super::{DebugQuery, Event, ExecutionConfig, Executor, ReplaySnapshot, state::DebugExecutor};
+use super::{
+    DebugQuery, Event, ExecutionConfig, Executor, ReplaySnapshot, source::SourceContext,
+    state::DebugExecutor,
+};
 use crate::debug::{
     CallTrace, CallTraceRecorder, DebugVarSnapshot, FrameTransition, resolve_typed_variable_values,
     return_felt_count, value_felt_count,
@@ -18,6 +21,9 @@ pub struct CallTraceReplay {
 }
 
 /// Replay `recording` and collect its call trace.
+///
+/// Calls with insufficient source metadata retain their timing and children, but may have no
+/// callee name, arguments, or result values. Callee recovery conservatively stops at metadata gaps.
 pub fn replay_call_trace(recording: ReplaySnapshot) -> CallTraceReplay {
     let ReplaySnapshot {
         package,
@@ -57,8 +63,8 @@ fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<Execut
     let mut error = None;
 
     while !executor.stopped {
-        if let Err(err) = executor.step_with_observer(|executor| {
-            observe_callee(&mut recorder, executor);
+        if let Err(err) = executor.step_with_observer(|executor, source| {
+            observe_callee(&mut recorder, executor, source);
             observe_arguments(&mut recorder, executor);
         }) {
             error = Some(err);
@@ -92,11 +98,15 @@ fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<Execut
     (recorder.finish(), error)
 }
 
-fn observe_callee(recorder: &mut CallTraceRecorder, executor: &DebugExecutor) {
+fn observe_callee(
+    recorder: &mut CallTraceRecorder,
+    executor: &DebugExecutor,
+    source: &SourceContext,
+) {
     if !recorder.needs_callee() {
         return;
     }
-    if !executor.callstack.has_recovered_current_frame() {
+    if !executor.callstack.has_recovered_current_frame() || has_metadata_gap(source) {
         recorder.stop_callee_search();
         return;
     }
@@ -110,6 +120,21 @@ fn observe_callee(recorder: &mut CallTraceRecorder, executor: &DebugExecutor) {
             callee.invocation_id(),
         );
     }
+}
+
+/// A stripped static import can retain a source node and recovered ancestors without attribution
+/// for its own code. Do not let a later unmarked descendant supply its name or result signature.
+///
+/// This is deliberately a call-trace heuristic: an empty source occurrence may also be generated
+/// code, while inherited inline rows or merged operations can hide a gap. On a detected gap we
+/// prefer an unnamed frame, preserving its timing and independently marked children.
+///
+/// TODO: Remove this heuristic when the processor resolver exposes active-invocation recovery
+/// evidence that distinguishes the current invocation from retained ancestors.
+fn has_metadata_gap(source: &SourceContext) -> bool {
+    source
+        .source_node()
+        .is_none_or(|node| node.asm_ops.is_empty() && node.inline_calls.is_empty())
 }
 
 fn observe_arguments(recorder: &mut CallTraceRecorder, executor: &DebugExecutor) {

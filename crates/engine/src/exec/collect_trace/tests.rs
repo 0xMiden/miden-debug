@@ -11,6 +11,127 @@ use crate::{
     exec::Executor,
 };
 
+/// Declare a felt parameter immediately before each occurrence of an assembly operation.
+fn declare_felt_argument(
+    package: &mut Package,
+    operation: &str,
+    location: miden_assembly_syntax::ast::DebugVarLocation,
+) {
+    use miden_core::serde::Serializable;
+    use miden_mast_package::{
+        SectionId,
+        debug_info::{
+            DebugPrimitiveType, DebugSourceNodeId, DebugSourceVar, DebugTypeInfo,
+            PackageDebugInfoBuilder,
+        },
+    };
+
+    let info = package.debug_info().unwrap().expect("assembled package has debug info");
+    let mut builder = PackageDebugInfoBuilder::from(alloc::boxed::Box::new(info));
+    let name_idx = builder.add_string(Arc::from("x"));
+    let type_id = builder.add_type(DebugTypeInfo::Primitive(DebugPrimitiveType::Felt));
+    let mut attached = 0;
+    for source in (0..builder.debug_info().nodes().len() as u32).map(DebugSourceNodeId::from) {
+        let node = &builder.debug_info()[source];
+        let operations: Vec<_> = (node.op_start..node.op_end)
+            .filter(|&op| {
+                node.asm_op_for_operation(op)
+                    .is_some_and(|asmop| &*builder.debug_info()[asmop.op_name_idx] == operation)
+            })
+            .collect();
+        for op_idx in operations {
+            builder[source].debug_vars.push(DebugSourceVar {
+                op_idx,
+                name_idx,
+                type_id: Some(type_id),
+                arg_idx: core::num::NonZeroU32::new(1),
+                location_idx: None,
+                value_location: location.clone(),
+            });
+            attached += 1;
+        }
+    }
+    assert!(attached > 0, "fixture did not attach the argument");
+    package.sections.retain(|section| section.id != SectionId::DEBUG_INFO);
+    package.sections.push(miden_mast_package::Section::new(
+        SectionId::DEBUG_INFO,
+        builder.build().to_bytes(),
+    ));
+}
+
+#[test]
+fn arguments_are_captured_before_writes_to_their_storage_or_frame_base() {
+    use miden_assembly_syntax::ast::DebugVarLocation;
+    let fmp = miden_core::FMP_ADDR.as_canonical_u64();
+    for (location, write) in [
+        (DebugVarLocation::Memory(200), "push.99.200".into()),
+        (DebugVarLocation::Local(0), "push.99.200".into()),
+        (DebugVarLocation::Local(0), format!("push.300.{fmp}")),
+    ] {
+        let manager = Arc::new(DefaultSourceManager::default());
+        let mut package = miden_assembly::Assembler::new(manager.clone())
+            .assemble_program(
+                "program",
+                format!(
+                    r#"
+proc mutate(x: felt)
+mem_store
+end
+begin
+push.7 mem_store.200
+push.11 mem_store.300
+push.200 mem_store.{fmp}
+{write}
+emit.event("{FRAME_START_EVENT}")
+exec.mutate
+emit.event("{FRAME_END_EVENT}")
+end
+"#
+                ),
+            )
+            .unwrap();
+        declare_felt_argument(&mut package, "mem_store", location.clone());
+        let mut executor = Executor::new(Vec::new()).into_debug(Arc::from(package), manager);
+        let (trace, error) = collect_call_trace(&mut executor);
+        assert!(error.is_none(), "{error:?}");
+        let frame = &trace.roots[0];
+        assert_eq!(frame.callee.as_deref(), Some("::$exec::mutate"));
+        assert_eq!(frame.args.len(), 1);
+        assert_eq!(frame.args[0].values.as_deref(), Some([7].as_slice()), "{location:?}: {write}");
+    }
+}
+
+#[test]
+fn a_call_failing_on_its_first_operation_keeps_its_arguments() {
+    use miden_assembly_syntax::ast::DebugVarLocation;
+    let manager = Arc::new(DefaultSourceManager::default());
+    let mut package = miden_assembly::Assembler::new(manager.clone())
+        .assemble_program(
+            "program",
+            format!(
+                r#"
+proc fail(x: felt)
+assert
+end
+begin
+emit.event("{FRAME_START_EVENT}")
+exec.fail
+emit.event("{FRAME_END_EVENT}")
+end
+"#
+            ),
+        )
+        .unwrap();
+    declare_felt_argument(&mut package, "assert", DebugVarLocation::Stack(0));
+    let mut executor = Executor::new(Vec::new()).into_debug(Arc::from(package), manager);
+    let (trace, error) = collect_call_trace(&mut executor);
+    assert!(error.is_some());
+    let frame = &trace.roots[0];
+    assert_eq!(frame.args.len(), 1);
+    assert_eq!(frame.args[0].values.as_deref(), Some([0].as_slice()));
+    assert_eq!(frame.exit_clk, None);
+}
+
 /// A real run with the markers the compiler writes around each `exec`. `function_1` calls
 /// `function_2` and `function_3`; names, nesting and results all come from the run.
 #[test]

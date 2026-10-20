@@ -59,6 +59,7 @@ fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<Execut
     while !executor.stopped {
         if let Err(err) = executor.step_with_observer(|executor| {
             observe_callee(&mut recorder, executor);
+            observe_arguments(&mut recorder, executor);
         }) {
             error = Some(err);
             break;
@@ -86,34 +87,6 @@ fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<Execut
             }
             None => {}
         }
-
-        // Only inspect the selected physical invocation. Inline-local ownership is not
-        // available, so an exec-only wrapper must not borrow an unmarked leaf's arguments.
-        if let Some(enter_clk) = recorder.accepting_args()
-            && let Some(owner) = recorder.argument_owner()
-            && executor.debug_vars.current_invocation() == Some(owner)
-        {
-            for snapshot in executor.debug_vars.current_variables() {
-                let Some(index) = snapshot.info.arg_index() else {
-                    continue;
-                };
-                // Up to and including `enter_clk`, variables belong to the caller.
-                if usize::from(snapshot.clk) <= enter_clk {
-                    continue;
-                }
-                // Already recorded, so skip reading VM memory again.
-                if recorder.has_arg(index.get()) {
-                    continue;
-                }
-                // An untyped argument has no width, so it is recorded by name only.
-                let ty = snapshot.info.ty();
-                let felt_count = ty.and_then(value_felt_count);
-                let values = felt_count
-                    .zip(ty)
-                    .and_then(|(count, ty)| resolve_arg_values(executor, snapshot, ty, count));
-                recorder.observe_arg(index.get(), snapshot.info.name(), felt_count, values);
-            }
-        }
     }
 
     (recorder.finish(), error)
@@ -132,6 +105,36 @@ fn observe_callee(recorder: &mut CallTraceRecorder, executor: &DebugExecutor) {
             return_felt_count(info, function),
             callee.invocation_id(),
         );
+    }
+}
+
+fn observe_arguments(recorder: &mut CallTraceRecorder, executor: &DebugExecutor) {
+    // Only inspect the selected physical invocation. Inline-local ownership is not
+    // available, so an exec-only wrapper must not borrow an unmarked leaf's arguments.
+    if let Some(enter_clk) = recorder.accepting_args()
+        && let Some(owner) = recorder.argument_owner()
+        && executor.debug_vars.current_invocation() == Some(owner)
+    {
+        for snapshot in executor.debug_vars.current_variables() {
+            let Some(index) = snapshot.info.arg_index() else {
+                continue;
+            };
+            // Up to and including `enter_clk`, variables belong to the caller.
+            if usize::from(snapshot.clk) <= enter_clk {
+                continue;
+            }
+            // Already recorded, so skip reading VM memory again.
+            if recorder.has_arg(index.get()) {
+                continue;
+            }
+            // An untyped argument has no width, so it is recorded by name only.
+            let ty = snapshot.info.ty();
+            let felt_count = ty.and_then(value_felt_count);
+            let values = felt_count
+                .zip(ty)
+                .and_then(|(count, ty)| resolve_arg_values(executor, snapshot, ty, count));
+            recorder.observe_arg(index.get(), snapshot.info.name(), felt_count, values);
+        }
     }
 }
 

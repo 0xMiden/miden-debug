@@ -188,8 +188,8 @@ fn resolve_arg_values(
     let read_memory = |addr: u32| executor.read_memory_element(addr);
     let read_local = |offset: i16| {
         let fmp = read_memory(FMP_ADDR.as_canonical_u64() as u32)?;
-        let addr = u32::try_from(fmp.as_canonical_u64() as i64 + i64::from(offset)).ok()?;
-        read_memory(addr)
+        let fmp = u32::try_from(fmp.as_canonical_u64()).ok()?;
+        read_memory(fmp.checked_add_signed(i32::from(offset))?)
     };
 
     resolve_typed_variable_values(

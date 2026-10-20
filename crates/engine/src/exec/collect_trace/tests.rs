@@ -102,6 +102,61 @@ end
 }
 
 #[test]
+fn local_arguments_validate_the_frame_base_and_signed_offset() {
+    use miden_assembly_syntax::ast::DebugVarLocation;
+
+    let fmp = miden_core::FMP_ADDR.as_canonical_u64();
+    // An invalid base must not become readable by applying a negative offset first.
+    let last_address = u32::MAX;
+    for (base, offset, expected) in [
+        (i64::MAX as u64, 1, None),
+        (1u64 << 63, -1, None),
+        (u64::from(u32::MAX) + 1, -1, None),
+        (u64::from(u32::MAX), 1, None),
+        (0, -1, None),
+        (201, -1, Some([7])),
+        (199, 1, Some([7])),
+    ] {
+        let manager = Arc::new(DefaultSourceManager::default());
+        let mut package = miden_assembly::Assembler::new(manager.clone())
+            .assemble_program(
+                "program",
+                format!(
+                    r#"
+proc inspect(x: felt)
+nop
+end
+begin
+push.7 mem_store.200
+push.11 mem_store.{last_address}
+push.{base} mem_store.{fmp}
+emit.event("{FRAME_START_EVENT}")
+exec.inspect
+emit.event("{FRAME_END_EVENT}")
+end
+"#
+                ),
+            )
+            .unwrap();
+        declare_felt_argument(&mut package, "nop", DebugVarLocation::Local(offset));
+        let mut executor = Executor::new(Vec::new()).into_debug(Arc::from(package), manager);
+        let (trace, error) = collect_call_trace(&mut executor);
+        assert!(error.is_none(), "{error:?}");
+        let frame = &trace.roots[0];
+        assert_eq!(frame.callee.as_deref(), Some("::$exec::inspect"));
+        assert!(frame.exit_clk.is_some());
+        assert_eq!(frame.args.len(), 1);
+        assert_eq!(frame.args[0].name, "x");
+        assert_eq!(frame.args[0].felt_count, Some(1));
+        assert_eq!(
+            frame.args[0].values.as_deref(),
+            expected.as_ref().map(|values| values.as_slice()),
+            "base={base}, offset={offset}"
+        );
+    }
+}
+
+#[test]
 fn a_call_failing_on_its_first_operation_keeps_its_arguments() {
     use miden_assembly_syntax::ast::DebugVarLocation;
     let manager = Arc::new(DefaultSourceManager::default());

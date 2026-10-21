@@ -52,6 +52,9 @@ const MAX_PRINTLN_BYTES: usize = 512 * 1024;
 /// manage execution step-by-step, such as is done by the debugger; or by running
 /// the program to completion and obtaining an [ExecutionTrace], which can be used
 /// to introspect the final program state.
+///
+/// [Executor::into_stepper] is the third exit: a [Stepper] with the same host, for driving the
+/// program to its end while observing every cycle without the debugger's bookkeeping.
 pub struct Executor {
     stack: StackInputs,
     advice: AdviceInputs,
@@ -202,12 +205,18 @@ impl Executor {
     /// dropped since there is no call stack to feed. Nothing is kept for inspection, which makes
     /// this the cheap way to step a program to its end while observing every cycle. The profiler
     /// configuration is not used; observe the cycles through the stepper's callback instead.
+    ///
+    /// Panics like [`Executor::into_debug`] when the advice inputs do not fit the options or
+    /// the package has no usable entry point.
     pub fn into_stepper(
         mut self,
         package: Arc<Package>,
         source_manager: Arc<dyn SourceManager>,
     ) -> (Stepper, DebuggerHost<dyn SourceManager>) {
         assert!(package.is_program());
+        if !self.profiler_config.instruments.is_empty() {
+            log::warn!("a stepper runs no profiler; the configured instruments are dropped");
+        }
 
         let mut host = self.build_host(source_manager);
         register_builtin_event_handlers(&mut host, None);
@@ -263,7 +272,8 @@ impl Executor {
 
         log::debug!("creating debug executor with event replay");
 
-        // Replay feeds the recorded mutations, so the live event handlers are not registered.
+        // Replay feeds the recorded mutations, so the live event handlers are not registered
+        // and nothing is recorded either.
         let mut host = self.new_host(source_manager);
         for forest in extra_mast_forests {
             host.load_mast_forest(forest);

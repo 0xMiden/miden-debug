@@ -246,6 +246,55 @@ fn debug_executor_and_stepper_produce_the_same_records() {
     }
 }
 
+/// A loop whose body is a procedure of another package starts a source node per iteration
+/// that no finish of this forest closes; the loop's own finish must pop it.
+#[test]
+fn external_loop_body_does_not_pile_up_open_nodes() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let library: Arc<Package> = Arc::from(
+        miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_library(
+                "dep",
+                "namespace dep::counter pub proc tick sub.1 dup neq.0 end",
+                None::<String>,
+            )
+            .unwrap(),
+    );
+    let package = Arc::from(
+        miden_assembly::Assembler::new(source_manager.clone())
+            .with_package(library.clone(), Linkage::Dynamic)
+            .unwrap()
+            .assemble_program(
+                "program",
+                "use dep::counter begin dup neq.0 while.true exec.counter::tick end drop end",
+            )
+            .unwrap(),
+    );
+
+    let iterations = 12;
+    let mut executor = Executor::new(vec![Felt::new(iterations).unwrap()]);
+    executor.with_package(library).unwrap();
+    let (mut stepper, mut host) = executor.into_stepper(package, source_manager);
+    let mut deepest = 0;
+    let mut body_starts = 0;
+    while stepper
+        .step_sync(&mut host, |cycle| {
+            body_starts += usize::from(cycle.node_start.is_some_and(|start| {
+                cycle.forest.get_node_by_id(cycle.exec_node.unwrap()).is_some_and(|node| {
+                    matches!(node, MastNode::External(_)) && start.parent.is_some()
+                })
+            }));
+        })
+        .unwrap()
+    {
+        deepest = deepest.max(stepper.open_source_nodes());
+    }
+    assert_eq!(body_starts, iterations as usize);
+    // Root join, loop guard, loop, body: nothing accumulates across iterations.
+    assert!(deepest <= 6, "{deepest} nodes open at the deepest point");
+    assert_eq!(stepper.open_source_nodes(), 0);
+}
+
 #[test]
 fn inline_frames_name_the_inlined_procedure() {
     let (package, _) = fixture();

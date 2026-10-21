@@ -65,9 +65,9 @@ pub struct NodeStart {
 
 /// Keeps the open source nodes between steps so a node start can name its parent.
 ///
-/// A start pushes, a finish pops through the node, and a loop's per-iteration finish leaves the
-/// loop open. One tracker follows one execution from start to end; it must see every cycle, in
-/// order.
+/// A start pushes, a finish pops through the node, and a loop's per-iteration finish pops the
+/// body while keeping the loop. One tracker follows one execution from start to end; it must
+/// see every cycle, in order.
 #[derive(Debug, Default)]
 pub struct SourceTracker {
     /// Nodes that have started and not finished, innermost last, each with its forest.
@@ -121,11 +121,16 @@ impl SourceTracker {
                 ),
                 Some(node),
             ) => {
-                self.close(forest, node);
+                self.close(forest, node, false);
                 None
             }
             // A loop's finish runs once per iteration and rechecks the condition, so the loop
-            // stays open; it is popped when its parent finishes.
+            // stays open. Its body is done, though: a body that is an external node never gets
+            // a finish in this forest, so it is popped here or it would pile up per iteration.
+            (Some(Continuation::FinishLoop(_)), Some(node)) => {
+                self.close(forest, node, true);
+                None
+            }
             _ => None,
         };
 
@@ -168,15 +173,15 @@ impl SourceTracker {
         same_forest.clone().find(lists_child).or_else(|| same_forest.clone().next())
     }
 
-    /// Pops the open nodes above and including `node` of `forest`. Leaves the stack alone when
-    /// the node is not open.
-    fn close(&mut self, forest: &Arc<MastForest>, node: DebugSourceNodeId) {
+    /// Pops the open nodes above `node` of `forest`, and `node` itself unless `keep` is set.
+    /// Leaves the stack alone when the node is not open.
+    fn close(&mut self, forest: &Arc<MastForest>, node: DebugSourceNodeId, keep: bool) {
         let position = self
             .open
             .iter()
             .rposition(|(open_forest, open)| *open == node && Arc::ptr_eq(open_forest, forest));
         if let Some(position) = position {
-            self.open.truncate(position);
+            self.open.truncate(position + usize::from(keep));
         }
     }
 }

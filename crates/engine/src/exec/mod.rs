@@ -50,3 +50,15 @@ pub use self::{
     dap_client::{DapClient, DapStopReason},
     dap_types::{DapUiFrame, DapUiState, DapVariableValue},
 };
+
+/// Resolves a future that is expected to complete on its first poll, as the futures of a
+/// synchronous host do; a future that yields is a bug in the caller.
+pub(crate) fn poll_immediately<T>(future: impl Future<Output = T>) -> T {
+    use core::task::{Context, Poll, Waker};
+
+    let mut future = core::pin::pin!(future);
+    match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(value) => value,
+        Poll::Pending => panic!("future was expected to complete immediately"),
+    }
+}

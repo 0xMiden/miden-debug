@@ -1,10 +1,6 @@
 //! Test-only utilities shared across unit tests.
 
 use alloc::string::String;
-use core::{
-    pin::pin,
-    task::{Context, Poll, Waker},
-};
 
 use miden_assembly_syntax::ast::types::Type;
 
@@ -64,16 +60,4 @@ pub(crate) fn write_scalar_bytes(
     }
 
     Ok(())
-}
-
-/// Drives `future` to completion on the current thread.
-///
-/// Only for futures that are ready on the first poll, as those of a synchronous host are; a
-/// future that yields is a test failure, not something to wait for.
-pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
-    let mut future = pin!(future);
-    match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("synchronous test host unexpectedly yielded"),
-    }
 }

@@ -3,7 +3,7 @@ use alloc::string::ToString;
 use miden_assembly::{Assembler, DefaultSourceManager};
 
 use super::*;
-use crate::{exec::DebuggerHost, test_utils::block_on as ready};
+use crate::exec::{DebuggerHost, poll_immediately};
 
 #[test]
 fn trace_handler_errors_preserve_the_registered_name_through_diagnostics() {
@@ -25,7 +25,7 @@ fn trace_handler_errors_preserve_the_registered_name_through_diagnostics() {
     )
     .unwrap();
     let mut wrapper = DiagnosticHostWrapper::new(&mut host);
-    let error = ready(
+    let error = poll_immediately(
         FastProcessor::new(StackInputs::default()).execute(&package.unwrap_program(), &mut wrapper),
     )
     .expect_err("the trace handler must reject execution");
@@ -73,14 +73,15 @@ fn diagnostics_delegate_events_capture_state_and_preserve_execution_results() {
             .resolve_event(crate::exec::event::FRAME_START_EVENT.to_event_id())
             .is_some()
     );
-    assert!(ready(wrapper.get_mast_forest(&Word::default())).is_none());
+    assert!(poll_immediately(wrapper.get_mast_forest(&Word::default())).is_none());
     let processor = FastProcessor::new_with_options(
         StackInputs::default(),
         AdviceInputs::default(),
         ExecutionOptions::default(),
     )
     .unwrap();
-    let output = ready(processor.execute(&package.unwrap_program(), &mut wrapper)).unwrap();
+    let output =
+        poll_immediately(processor.execute(&package.unwrap_program(), &mut wrapper)).unwrap();
     assert_eq!(output.stack[0], Felt::from(7u32));
     assert_eq!(wrapper.call_depth, 0);
     assert!(wrapper.last_cycle > RowIndex::from(0u32));
@@ -97,7 +98,7 @@ fn diagnostic_executor_returns_success_and_reports_failures() {
             .assemble_program("diagnostic-test", source)
             .unwrap();
         let mut host = miden_processor::DefaultHost::default();
-        let result = ready(
+        let result = poll_immediately(
             DiagnosticExecutor::new(
                 StackInputs::default(),
                 AdviceInputs::default(),

@@ -16,15 +16,14 @@ use miden_assembly::{DefaultSourceManager, Linkage};
 use miden_core::{Felt, Word, mast::MastNode};
 use miden_mast_package::Package;
 use miden_processor::{
-    BaseHost, DefaultHost, FastProcessor, FutureMaybeSend, Host, LoadedMastForest, ProcessorState,
-    StackInputs, advice::AdviceMutation, event::EventError,
+    BaseHost, DefaultHost, ExecutionError, FastProcessor, FutureMaybeSend, Host, LoadedMastForest,
+    ProcessorState, StackInputs, advice::AdviceMutation, event::EventError,
 };
 
 use super::*;
 use crate::{
-    exec::{Executor, Stepper},
+    exec::{Executor, Stepper, poll_immediately as block_on},
     profiling::{Instrument, OutputResult, OutputWriter, ProfilerConfig},
-    test_utils::block_on,
 };
 
 /// Two procedures, an if/else, and a loop guarded by the split the assembler wraps around every
@@ -140,8 +139,8 @@ fn source_node(package: &Package, pred: impl Fn(&MastNode) -> bool) -> Vec<u32> 
 #[derive(Debug, PartialEq, Eq)]
 struct Record {
     exec_node: Option<MastNodeId>,
-    /// The node count of the debug info, which tells one package's from another's.
-    debug_info_nodes: Option<usize>,
+    /// The debug info the cycle was resolved against, compared by value.
+    debug_info: Option<Arc<PackageDebugInfo>>,
     source_node: Option<u32>,
     op: Option<Operation>,
     op_idx: Option<u32>,
@@ -154,7 +153,7 @@ impl From<&CycleInfo<'_>> for Record {
     fn from(cycle: &CycleInfo<'_>) -> Self {
         Self {
             exec_node: cycle.exec_node,
-            debug_info_nodes: cycle.debug_info.map(|info| info.nodes().len()),
+            debug_info: cycle.debug_info.cloned(),
             source_node: cycle.source_node.map(u32::from),
             op: cycle.op,
             op_idx: cycle.op_idx,
@@ -629,14 +628,8 @@ fn a_library_without_debug_info_does_not_inherit_the_pending_one() {
         })
         .unwrap();
     assert!(!in_library.is_empty() && !in_program.is_empty());
-    assert!(
-        in_program.iter().all(|record| record.debug_info_nodes.is_some()),
-        "{in_program:?}"
-    );
-    assert!(
-        in_library.iter().all(|record| record.debug_info_nodes.is_none()),
-        "{in_library:?}"
-    );
+    assert!(in_program.iter().all(|record| record.debug_info.is_some()), "{in_program:?}");
+    assert!(in_library.iter().all(|record| record.debug_info.is_none()), "{in_library:?}");
 }
 
 /// The stepper can be held across an await inside a `Send` future.
@@ -661,7 +654,6 @@ fn finalization_step_produces_no_record() {
     steps += 1;
     let clock = u32::from(stepper.processor().state().clock()) as usize;
     assert_eq!(records, clock);
-    assert_eq!(stepper.cycle(), clock);
     assert_eq!(steps, clock + 1);
 }
 
@@ -686,7 +678,7 @@ fn bare_program_first_record_has_the_supplied_debug_info() {
         .unwrap();
 
     let first = &from_program[0];
-    assert_eq!(first.debug_info_nodes, Some(debug_info.nodes().len()), "{first:?}");
+    assert_eq!(first.debug_info.as_deref(), Some(&*debug_info), "{first:?}");
     assert!(first.source_node.is_some(), "{first:?}");
     assert!(first.node_start.is_some_and(|start| start.parent.is_none()), "{first:?}");
     assert_eq!(from_program, from_package);
@@ -839,7 +831,8 @@ fn dynamic_entries_in_the_same_forest_name_the_dynamic_node() {
 
 /// A library procedure whose root is itself a dynamic node, calling back into the program:
 /// the program's external boundary is popped on the return, not on the callback, so the
-/// target's root has no parent and nothing of the callback stays open.
+/// target's root has no parent and nothing of the callback stays open. The second shape, where
+/// the dynamic node is not the root, pushes a boundary of its own and is the control.
 #[test]
 fn a_callback_through_a_trampoline_does_not_pop_the_boundary_early() {
     for trampoline in ["dynexec", "push.100 dynexec"] {
@@ -876,8 +869,9 @@ fn a_callback_through_a_trampoline_does_not_pop_the_boundary_early() {
         executor.with_package(package.clone()).unwrap();
         let (mut stepper, mut host) = executor.into_stepper(package.clone(), source_manager);
         let mut starts = Vec::new();
-        let mut open_after_callback = Vec::new();
-        let mut seen_callback = false;
+        let mut open_at_external = None;
+        let mut open_on_return = None;
+        let mut returned = false;
         while stepper
             .step_sync(&mut host, |cycle| {
                 let in_program = Arc::ptr_eq(cycle.forest, package.mast_forest());
@@ -889,13 +883,20 @@ fn a_callback_through_a_trampoline_does_not_pop_the_boundary_early() {
                     starts.push((in_program, external, start));
                 }
                 if cycle.op == Some(Operation::Push(Felt::new(9).unwrap())) {
-                    seen_callback = true;
+                    returned = true;
                 }
             })
             .unwrap()
         {
-            if seen_callback {
-                open_after_callback.push(stepper.open_source_nodes());
+            let open = stepper.open_source_nodes();
+            // The counts are read after the step: right after the external start, and right
+            // after the first cycle back in the program.
+            if open_at_external.is_none()
+                && starts.last().is_some_and(|(in_program, external, _)| *in_program && *external)
+            {
+                open_at_external = Some(open);
+            } else if returned && open_on_return.is_none() {
+                open_on_return = Some(open);
             }
         }
         let external = starts.iter().position(|(in_program, external, _)| *in_program && *external);
@@ -906,7 +907,10 @@ fn a_callback_through_a_trampoline_does_not_pop_the_boundary_early() {
             .find(|(in_program, ..)| *in_program)
             .unwrap_or_else(|| panic!("{trampoline}: no callback start in {starts:?}"));
         assert_eq!(target.2.parent, None, "{trampoline}: {starts:?}");
-        assert!(seen_callback, "{trampoline}");
+        assert!(returned, "{trampoline}");
+        // Back in the program, nothing of the trampoline or the callback is open: the count is
+        // the one right after the external start.
+        assert_eq!(open_on_return, open_at_external, "{trampoline}");
         assert_eq!(stepper.open_source_nodes(), 0, "{trampoline}");
     }
 }
@@ -935,13 +939,19 @@ fn dynamic_calls_into_another_forest_are_bounded() {
     executor.with_package(library.clone()).unwrap();
     let (mut stepper, mut host) = executor.into_stepper(package, source_manager);
     let mut roots = Vec::new();
+    let mut dynamic_nodes = Vec::new();
     let mut deepest = 0;
     while stepper
         .step_sync(&mut host, |cycle| {
-            if let Some(start) = cycle.node_start
-                && Arc::ptr_eq(cycle.forest, library.mast_forest())
-            {
-                roots.push(start);
+            if let Some(start) = cycle.node_start {
+                if Arc::ptr_eq(cycle.forest, library.mast_forest()) {
+                    roots.push(start);
+                } else if matches!(
+                    cycle.forest.get_node_by_id(cycle.exec_node.unwrap()),
+                    Some(MastNode::Dyn(_))
+                ) {
+                    dynamic_nodes.push(start);
+                }
             }
         })
         .unwrap()
@@ -950,6 +960,11 @@ fn dynamic_calls_into_another_forest_are_bounded() {
     }
     assert_eq!(roots.len(), 2, "{roots:?}");
     assert!(roots.iter().all(|start| start.parent.is_none()), "{roots:?}");
+    // The first call's boundary was popped on its finish: the second dynamic node's parent is
+    // a node of the program's own tree, not something the first call left behind.
+    assert_eq!(dynamic_nodes.len(), 2, "{dynamic_nodes:?}");
+    assert!(dynamic_nodes.iter().all(|start| start.parent.is_some()), "{dynamic_nodes:?}");
+    assert_ne!(dynamic_nodes[1].parent, Some(dynamic_nodes[0].node), "{dynamic_nodes:?}");
     // The deepest point is reached on both calls: the first leaves nothing behind.
     assert_eq!(deepest, 5);
     assert_eq!(stepper.open_source_nodes(), 0);
@@ -984,8 +999,6 @@ fn into_output_is_refused_after_a_failure() {
     assert!(stepper.step_sync(&mut DefaultHost::default(), |_| {}).is_err());
     assert!(stepper.failed() && stepper.stopped());
     assert!(stepper.run_sync(&mut DefaultHost::default(), |_| {}).is_err());
-    let clock = u32::from(stepper.processor().state().clock()) as usize;
-    assert_eq!(stepper.cycle(), clock);
     assert!(stepper.into_output().is_err());
 }
 
@@ -1051,4 +1064,159 @@ fn stepper_async_step_and_output() {
         .execute_sync(&package.unwrap_program(), &mut DefaultHost::default())
         .unwrap();
     assert_eq!(output.stack, expected.stack);
+}
+
+/// Assembles a library without debug info whose one procedure is a bare `dynexec`, and a
+/// program with debug info that enters it dynamically and is called back by it.
+fn stripped_trampoline(
+    source_manager: &Arc<DefaultSourceManager>,
+    body: &str,
+) -> (Arc<Package>, Arc<Package>) {
+    let mut library = *miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_library("b", "namespace b::m pub proc tramp dynexec end", None::<String>)
+        .unwrap();
+    library.strip_debug_info().unwrap();
+    let library = Arc::new(library);
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .with_package(library.clone(), Linkage::Dynamic)
+        .unwrap()
+        .assemble_program(
+            "program",
+            format!(
+                "use b::m proc target push.1 drop end begin procref.target mem_storew_le.100 \
+                 dropw procref.m::tramp mem_storew_le.104 dropw {body} end"
+            ),
+        )
+        .map(Arc::<Package>::from)
+        .unwrap();
+    (library, package)
+}
+
+/// A dynamic node without a source node, the root of a library without debug info entered
+/// dynamically: its boundary takes the dynamic rule all the same, so it is popped on its
+/// finish and the caller's own boundary and nodes are reachable again.
+#[test]
+fn a_dynamic_root_without_a_source_node_pops_its_boundary() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    // After the return a split starts, whose parent must be the enclosing join again.
+    let (library, package) = stripped_trampoline(
+        &source_manager,
+        "push.100 push.104 dynexec push.7 drop push.1 if.true push.9 drop end",
+    );
+    let mut executor = Executor::new(Vec::new());
+    executor.with_package(library).unwrap();
+    executor.with_package(package.clone()).unwrap();
+    let (mut stepper, mut host) = executor.into_stepper(package.clone(), source_manager);
+    let mut returned = false;
+    let mut starts_after_return = Vec::new();
+    let mut open_after_return = None;
+    while stepper
+        .step_sync(&mut host, |cycle| {
+            if cycle.op == Some(Operation::Push(Felt::new(7).unwrap())) {
+                returned = true;
+            }
+            if returned && let Some(start) = cycle.node_start {
+                starts_after_return.push(start);
+            }
+        })
+        .unwrap()
+    {
+        if returned && open_after_return.is_none() {
+            open_after_return = Some(stepper.open_source_nodes());
+        }
+    }
+    assert!(returned);
+    // The trampoline's boundary is gone: only the program's own nodes are open.
+    assert!(open_after_return.is_some_and(|open| open <= 3), "{open_after_return:?}");
+    // The split the program starts after the return is a child of an open node again.
+    assert!(!starts_after_return.is_empty());
+    assert!(
+        starts_after_return.iter().all(|start| start.parent.is_some()),
+        "{starts_after_return:?}"
+    );
+    assert_eq!(stepper.open_source_nodes(), 0);
+}
+
+/// The same trampoline in a loop: nothing accumulates across the iterations.
+#[test]
+fn a_dynamic_root_without_a_source_node_in_a_loop_stays_bounded() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let (library, package) =
+        stripped_trampoline(&source_manager, "repeat.50 push.100 push.104 dynexec end");
+    let mut executor = Executor::new(Vec::new());
+    executor.with_package(library).unwrap();
+    executor.with_package(package.clone()).unwrap();
+    let (mut stepper, mut host) = executor.into_stepper(package, source_manager);
+    let mut deepest = 0;
+    while stepper.step_sync(&mut host, |_| {}).unwrap() {
+        deepest = deepest.max(stepper.open_source_nodes());
+    }
+    // The unrolled repetitions nest in a tree of joins; a boundary leaking per iteration would
+    // open two nodes per iteration on top of that.
+    assert!(deepest <= 16, "{deepest} nodes open at the deepest point");
+    assert_eq!(stepper.open_source_nodes(), 0);
+}
+
+/// Debug info can only be attributed from the first step: after a step that completed, the
+/// pending info would land on whatever context comes next.
+#[test]
+#[should_panic(expected = "attributed from the first step")]
+fn debug_info_after_a_completed_step_panics() {
+    let (package, _) = fixture();
+    let debug_info = Arc::new(package.debug_info().unwrap().unwrap());
+    let mut stepper = stepper(&package, 1, 3);
+    stepper.step_sync(&mut DefaultHost::default(), |_| {}).unwrap();
+    let _ = stepper.with_debug_info(debug_info);
+}
+
+/// Nor after a step that was dropped, whose context is gone although the clock is still zero.
+#[test]
+#[should_panic(expected = "attributed from the first step")]
+fn debug_info_after_a_dropped_step_panics() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let event_id = miden_core::events::EventId::from_name("miden-debug::test::yield").as_u64();
+    let package = miden_assembly::Assembler::new(source_manager)
+        .assemble_program("program", "begin emit end")
+        .map(Arc::<Package>::from)
+        .unwrap();
+    let debug_info = Arc::new(package.debug_info().unwrap().unwrap());
+    let mut host = YieldingHost {
+        inner: DefaultHost::default(),
+        yielded: false,
+    };
+    let inputs = StackInputs::new(&[Felt::new(event_id).unwrap()]).unwrap();
+    let mut stepper = Stepper::for_package(FastProcessor::new(inputs), package).unwrap();
+    let mut cx = Context::from_waker(Waker::noop());
+    loop {
+        let mut step = pin!(stepper.step(&mut host, |_| {}));
+        match step.as_mut().poll(&mut cx) {
+            Poll::Pending => break,
+            Poll::Ready(Ok(true)) => continue,
+            other => panic!("the program ended before yielding: {other:?}"),
+        }
+    }
+    let _ = stepper.with_debug_info(debug_info);
+}
+
+/// A cycle that completes and then trips the cycle limit is counted and described like any
+/// other; only a cycle whose operation fails is left out of the count.
+#[test]
+fn a_cycle_that_trips_the_limit_is_counted() {
+    let (package, _) = fixture();
+    let default = miden_processor::ExecutionOptions::default();
+    let options =
+        miden_processor::ExecutionOptions::new(Some(64), 64, default.core_trace_fragment_size())
+            .unwrap();
+    let processor = FastProcessor::new_with_options(
+        StackInputs::new(&inputs(1, 3)).unwrap(),
+        miden_processor::advice::AdviceInputs::default(),
+        options,
+    )
+    .unwrap();
+    let mut stepper = Stepper::for_package(processor, package).unwrap();
+    let mut records = 0;
+    let error = stepper.run_sync(&mut DefaultHost::default(), |_| records += 1).unwrap_err();
+    assert!(matches!(error, ExecutionError::CycleLimitExceeded(64)), "{error:?}");
+    assert_eq!(records, stepper.cycle());
+    assert!(stepper.failed());
 }

@@ -12,7 +12,11 @@ use miden_processor::{
 };
 
 pub(crate) use super::source::{CurrentCycleInfo, extract_current_op};
-use super::{DebuggerHost, ExecutionTrace, source::SourceContext};
+use super::{
+    DebuggerHost, ExecutionTrace,
+    cycle::{CycleInfo, SourceTracker},
+    source::SourceContext,
+};
 use crate::{
     Breakpoint, BreakpointType, OperationMatcher,
     debug::{CallFrame, CallStack, DebugVarTracker, StepInfo},
@@ -65,6 +69,8 @@ pub struct DebugExecutor {
     pub stopped: bool,
     /// The profiler used by this executor
     pub profiler: Profiler,
+    /// Keeps the open source nodes between steps, so a cycle that starts a node names its parent
+    pub source_tracker: SourceTracker,
 }
 
 impl super::query::DebugQuery for DebugExecutor {
@@ -140,7 +146,18 @@ impl DebugExecutor {
     ///
     /// Returns the call frame exited this cycle, if any
     pub fn step(&mut self) -> Result<Option<CallFrame>, ExecutionError> {
-        self.step_with_observer(|_, _| {})
+        self.step_impl(|_, _| {}, |_| {})
+    }
+
+    /// Advance the program state by one cycle, describing the cycle to `on_cycle` first.
+    ///
+    /// `on_cycle` runs before the cycle executes, after the profiler's instruments received the
+    /// same record, so it sees a cycle that fails too. Otherwise like [`Self::step`].
+    pub fn step_with(
+        &mut self,
+        on_cycle: impl FnOnce(&CycleInfo<'_>),
+    ) -> Result<Option<CallFrame>, ExecutionError> {
+        self.step_impl(|_, _| {}, on_cycle)
     }
 
     /// Observe the current source context, recovered frames, and declarations before a cycle.
@@ -148,6 +165,17 @@ impl DebugExecutor {
     pub(crate) fn step_with_observer(
         &mut self,
         observe: impl FnOnce(&Self, &SourceContext),
+    ) -> Result<Option<CallFrame>, ExecutionError> {
+        self.step_impl(observe, |_| {})
+    }
+
+    /// One step: the internal observer sees the source context after the call stack and the
+    /// declarations were brought up to date, then the instruments and `on_cycle` receive the
+    /// cycle record, then the processor runs the cycle.
+    fn step_impl(
+        &mut self,
+        observe: impl FnOnce(&Self, &SourceContext),
+        on_cycle: impl FnOnce(&CycleInfo<'_>),
     ) -> Result<Option<CallFrame>, ExecutionError> {
         if self.stopped {
             self.last_debug_var_count = 0;
@@ -186,6 +214,11 @@ impl DebugExecutor {
             debug_var_infos,
         );
         observe(self, &source);
+
+        let cycle = self.source_tracker.observe(&resume_ctx, &source);
+        self.profiler.on_cycle(&cycle);
+        on_cycle(&cycle);
+        drop(cycle);
 
         // Execute one step
         let step_result = if let Some(debug_info) = source.debug_info() {

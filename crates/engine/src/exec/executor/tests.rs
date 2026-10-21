@@ -237,3 +237,45 @@ fn replays_from_a_serialized_snapshot() {
     assert_eq!(replayed_result, recorded_result);
     assert_eq!(replayed_result, 208);
 }
+
+/// `into_stepper` builds the same host as `into_debug`: the registered event handlers run and
+/// the debugger's own frame events are accepted without a call stack to record them.
+#[test]
+fn into_stepper_keeps_the_event_handlers() {
+    use miden_assembly::DefaultSourceManager;
+    use miden_core::events::EventId;
+    use miden_processor::{ProcessorState, advice::AdviceMutation, event::EventError};
+
+    use crate::event::{FRAME_END_EVENT, FRAME_START_EVENT};
+
+    let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
+    let event_name = "miden-debug::test::into-stepper";
+    let event_id = EventId::from_name(event_name).as_u64();
+    // The handler pushes 41 onto the advice stack; the program moves it to the operand stack
+    // and adds one, inside a frame delimited by the debugger's frame events.
+    let source = format!(
+        "begin emit.event(\"{FRAME_START_EVENT}\") push.{event_id} emit drop adv_push add.1 \
+         emit.event(\"{FRAME_END_EVENT}\") swap drop end"
+    );
+    let program = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program("program", source)
+        .map(Arc::from)
+        .expect("failed to assemble test program");
+
+    let handler = |_: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
+        Ok(vec![AdviceMutation::extend_advice_stack(
+            [Felt::from(41u32)].into_iter().collect(),
+        )])
+    };
+    let mut executor = Executor::new(Vec::new());
+    executor
+        .register_event_handler(EventName::from_string(event_name.to_string()), Arc::new(handler))
+        .expect("failed to register event handler");
+
+    let (mut stepper, mut host) = executor.into_stepper(program, source_manager);
+    let mut cycles = 0;
+    stepper.run_sync(&mut host, |_| cycles += 1).expect("stepping failed");
+    assert_eq!(cycles, stepper.cycle());
+    let output = stepper.into_output().expect("the program terminated");
+    assert_eq!(output.stack.get_element(0), Some(Felt::from(42u32)));
+}

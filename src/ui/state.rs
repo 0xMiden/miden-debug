@@ -160,7 +160,7 @@ impl RemoteState {
     ) -> Result<Self, Report> {
         use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
-        use miden_debug_engine::{debug::DebugVarTracker, profiling::Profiler};
+        use miden_debug_engine::{SourceTracker, debug::DebugVarTracker, profiling::Profiler};
         use miden_processor::{ContextId, FastProcessor};
 
         use crate::exec::DebuggerHost;
@@ -188,6 +188,7 @@ impl RemoteState {
             cycle: snapshot.cycle,
             stopped: false,
             profiler: Profiler::default(),
+            source_tracker: SourceTracker::new(),
         };
 
         Ok(Self {

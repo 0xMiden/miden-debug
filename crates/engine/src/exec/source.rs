@@ -1,7 +1,10 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use miden_assembly_syntax::ast::DebugVarInfo;
-use miden_core::{mast::MastNode, operations::AssemblyOp};
+use miden_core::{
+    mast::{MastNode, MastNodeId},
+    operations::AssemblyOp,
+};
 use miden_mast_package::debug_info::{DebugSourceNode, DebugSourceNodeId, PackageDebugInfo};
 use miden_processor::{Continuation, ResumeContext, operation::Operation};
 
@@ -77,6 +80,8 @@ impl SourceContext {
 #[derive(Clone, Copy)]
 pub(crate) struct CurrentCycleInfo {
     pub op: Option<Operation>,
+    /// The MAST node the cycle works on; `None` when the cycle only switches forests.
+    pub exec_node: Option<MastNodeId>,
     pub source_node_id: Option<DebugSourceNodeId>,
     pub op_idx: Option<usize>,
     pub control_flow_kind: Option<ControlFlowOp>,
@@ -118,6 +123,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                 let op = block.op_batches()[*batch_index].ops().get(*op_idx_in_batch).copied();
                 return CurrentCycleInfo {
                     op,
+                    exec_node,
                     source_node_id,
                     op_idx: Some(global_idx),
                     control_flow_kind: None,
@@ -135,6 +141,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                     }
                     return CurrentCycleInfo {
                         op: None,
+                        exec_node,
                         source_node_id,
                         op_idx: Some(global_idx),
                         control_flow_kind: Some(ControlFlowOp::Respan),
@@ -150,6 +157,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                 };
                 return CurrentCycleInfo {
                     op: None,
+                    exec_node,
                     source_node_id,
                     op_idx: None,
                     control_flow_kind,
@@ -163,6 +171,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
             | Continuation::FinishDyn(_) => {
                 return CurrentCycleInfo {
                     op: None,
+                    exec_node,
                     source_node_id,
                     op_idx: None,
                     control_flow_kind: Some(ControlFlowOp::End),
@@ -171,6 +180,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
             Continuation::EnterForest { .. } => {
                 return CurrentCycleInfo {
                     op: None,
+                    exec_node,
                     source_node_id,
                     op_idx: None,
                     control_flow_kind: None,
@@ -180,6 +190,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
     }
     CurrentCycleInfo {
         op: None,
+        exec_node: None,
         source_node_id: None,
         op_idx: None,
         control_flow_kind: None,

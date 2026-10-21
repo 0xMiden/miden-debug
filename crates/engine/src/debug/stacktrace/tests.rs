@@ -254,3 +254,71 @@ impl InlineCallFrame {
         }
     }
 }
+
+#[test]
+fn compact_inline_ranges_preserve_interiors_gaps_and_frame_order() {
+    use miden_core::serde::Deserializable;
+    use miden_mast_package::debug_info::PackageDebugInfoBuilder;
+
+    let package = miden_assembly::Assembler::new(Arc::new(DefaultSourceManager::default()))
+        .assemble_program("ranges", "begin push.1.2.3.4 dropw push.5.6.7.8 dropw end")
+        .unwrap();
+    let info = package.debug_info().unwrap().unwrap();
+    let (source_index, node) = info
+        .nodes()
+        .iter()
+        .enumerate()
+        .find(|(_, node)| node.op_end - node.op_start >= 14)
+        .unwrap();
+    let source = DebugSourceNodeId::from(u32::try_from(source_index).unwrap());
+    let start = node.op_start;
+    let location = node.asm_ops[0].location_idx.into_option().unwrap();
+    let definition = info.functions()[0];
+    let mut builder = PackageDebugInfoBuilder::from(Box::new(info));
+    let mut inner = definition;
+    inner.mast_root = Default::default();
+    inner.name_idx = builder.add_string("source::inner");
+    let inner = builder.add_function(inner);
+    let mut outer = definition;
+    outer.mast_root = Default::default();
+    outer.name_idx = builder.add_string("source::outer");
+    let outer = builder.add_function(outer);
+    builder[source].inline_calls = vec![
+        DebugSourceInlineCall {
+            op_idx: start + 2,
+            op_end: start + 5,
+            callee_idx: inner,
+            loc_idx: location,
+        },
+        DebugSourceInlineCall {
+            op_idx: start,
+            op_end: start + 10,
+            callee_idx: outer,
+            loc_idx: location,
+        },
+        DebugSourceInlineCall {
+            op_idx: start + 12,
+            op_end: start + 14,
+            callee_idx: inner,
+            loc_idx: location,
+        },
+    ];
+    let bytes = builder.build().to_bytes_with_standard_limits().unwrap();
+    let info = PackageDebugInfo::read_from_bytes(&bytes).unwrap();
+    assert_eq!(info[source].inline_calls.len(), 3);
+    for (offset, expected) in [
+        (0, vec!["source::outer"]),
+        (2, vec!["source::inner", "source::outer"]),
+        (4, vec!["source::inner", "source::outer"]),
+        (5, vec!["source::outer"]),
+        (9, vec!["source::outer"]),
+        (10, vec![]),
+        (11, vec![]),
+        (12, vec!["source::inner"]),
+        (14, vec![]),
+    ] {
+        let frames = inline_frames_for_operation(Some((&info, source, start + offset)), []);
+        let names = frames.iter().map(|frame| frame.name.as_ref()).collect::<Vec<_>>();
+        assert_eq!(names, expected, "operation {offset}");
+    }
+}

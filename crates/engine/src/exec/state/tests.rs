@@ -963,3 +963,62 @@ fn caller_frame_base_includes_the_final_write_before_a_merged_exec() {
         assert!(suspended);
     }
 }
+
+#[test]
+fn source_inlining_with_the_physical_procedure_name_is_preserved() {
+    use miden_assembly_syntax::{
+        Parse,
+        ast::{DebugInlineCallInfo, Instruction, Op},
+        debuginfo::{Span, Spanned},
+    };
+
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let mut module = Parse::parse(
+        "proc worker nop push.2 mul end begin push.5 exec.worker drop end",
+        false,
+        source_manager.clone(),
+    )
+    .unwrap();
+    let procedure = module
+        .procedures_mut()
+        .find(|procedure| procedure.name().as_str() == "worker")
+        .unwrap();
+    let marker = procedure.body_mut().iter_mut().next().unwrap();
+    let span = marker.span();
+    let location = source_manager.file_line_col(span).unwrap();
+    *marker = Op::Inst(Span::new(
+        span,
+        Instruction::DebugInlineCall(DebugInlineCallInfo::new(
+            "::$exec::worker",
+            location.clone(),
+            location,
+        )),
+    ));
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program("same-named-inline", module)
+        .map(Arc::from)
+        .unwrap();
+    let mut executor = Executor::new(Vec::new()).into_debug(package, source_manager);
+    let mut checked = false;
+    while !executor.stopped {
+        executor.step().unwrap();
+        if executor.current_op != Some(miden_processor::operation::Operation::Mul) {
+            continue;
+        }
+        let logical = executor.callstack.logical_frames("");
+        let worker = logical
+            .iter()
+            .filter(|frame| frame.name().ends_with("::worker"))
+            .collect::<Vec<_>>();
+        assert_eq!(worker.len(), 2, "{logical:?}");
+        assert_eq!(
+            worker
+                .iter()
+                .filter(|frame| frame.kind() == crate::debug::LogicalFrameKind::Inline)
+                .count(),
+            1
+        );
+        checked = true;
+    }
+    assert!(checked);
+}

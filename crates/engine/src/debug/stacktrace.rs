@@ -981,7 +981,7 @@ fn resolve_assembly_location(
 }
 
 #[cfg(feature = "std")]
-fn demangle(name: &str) -> String {
+pub(super) fn demangle(name: &str) -> String {
     let mut input = name.as_bytes();
     let mut demangled = Vec::with_capacity(input.len() * 2);
     rustc_demangle::demangle_stream(&mut input, &mut demangled, /* include_hash= */ false)
@@ -990,8 +990,12 @@ fn demangle(name: &str) -> String {
 }
 
 #[cfg(not(feature = "std"))]
-fn demangle(name: &str) -> String {
-    rustc_demangle::demangle(name).to_string()
+pub(super) fn demangle(name: &str) -> String {
+    // Assembly contexts qualify the linkage symbol with a package/module path.
+    match name.rsplit_once("::") {
+        Some((prefix, symbol)) => format!("{prefix}::{:#}", rustc_demangle::demangle(symbol)),
+        None => format!("{:#}", rustc_demangle::demangle(name)),
+    }
 }
 
 #[cfg(test)]

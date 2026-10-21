@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Function breakpoints match Rust source names as well as mangled linkage names.
 - Local `finish` and DAP step-out follow recovered invocation identities, including recursive and uninstrumented calls, while retaining frame-event fallback for stripped packages. Pending local return breakpoints remain associated with their original invocation when another breakpoint interrupts execution.
 - Stack traces retain event frames when a source-aware caller enters a stripped callee.
 

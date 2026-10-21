@@ -5,22 +5,17 @@ use alloc::{
 };
 
 use miden_assembly_syntax::{ast::DebugVarLocation, debuginfo::SourceManager};
-use miden_core::{
-    mast::{MastNode, MastNodeId},
-    operations::AssemblyOp,
-};
-use miden_mast_package::debug_info::{DebugSourceNodeId, PackageDebugInfo};
+use miden_core::operations::AssemblyOp;
 use miden_processor::{
-    ContextId, Continuation, ExecutionError, FastProcessor, Felt, ResumeContext, StackOutputs,
+    ContextId, ExecutionError, FastProcessor, Felt, ResumeContext, StackOutputs,
     operation::Operation, trace::RowIndex,
 };
 
-use super::{DebuggerHost, ExecutionTrace};
+pub(crate) use super::source::{CurrentCycleInfo, extract_current_op};
+use super::{DebuggerHost, ExecutionTrace, source::SourceContext};
 use crate::{
     Breakpoint, BreakpointType, OperationMatcher,
-    debug::{
-        CallFrame, CallStack, ControlFlowOp, DebugVarTracker, StepInfo, inline_frames_for_operation,
-    },
+    debug::{CallFrame, CallStack, DebugVarTracker, StepInfo},
     profiling::Profiler,
 };
 
@@ -96,121 +91,6 @@ impl DebugExecutor {
     }
 }
 
-pub(crate) struct CurrentCycleInfo {
-    pub op: Option<Operation>,
-    pub node_id: Option<MastNodeId>,
-    pub source_node_id: Option<DebugSourceNodeId>,
-    pub op_idx: Option<usize>,
-    pub control_flow_kind: Option<ControlFlowOp>,
-}
-
-/// Extract the current operation and assembly info from the continuation stack
-/// before a step is executed. This lets us know what operation will run next.
-pub(crate) fn extract_current_op(ctx: &ResumeContext) -> CurrentCycleInfo {
-    let forest = ctx.current_forest();
-    let debug_info = ctx.debug_info();
-    let continuation_stack = ctx.continuation_stack();
-    for (cont, source_node_id) in
-        continuation_stack.iter_continuations_for_next_clock_with_source_node_ids()
-    {
-        let exec_node = cont.exec_node();
-        let source_node_id = source_node_id.or_else(|| {
-            exec_node.zip(debug_info.as_deref()).and_then(|(exec_node, di)| {
-                di.unique_source_root_for_exec_node(exec_node).ok().flatten()
-            })
-        });
-        match cont {
-            Continuation::ResumeBasicBlock {
-                node_id,
-                batch_index,
-                op_idx_in_batch,
-            } => {
-                let MastNode::Block(block) = &forest[*node_id] else {
-                    unreachable!()
-                };
-                // Compute global op index within the basic block
-                let mut global_idx = 0;
-                for batch in &block.op_batches()[..*batch_index] {
-                    global_idx += batch.ops().len();
-                }
-                global_idx += op_idx_in_batch;
-                let op = block.op_batches()[*batch_index].ops().get(*op_idx_in_batch).copied();
-                return CurrentCycleInfo {
-                    op,
-                    node_id: Some(*node_id),
-                    source_node_id,
-                    op_idx: Some(global_idx),
-                    control_flow_kind: None,
-                };
-            }
-            Continuation::Respan {
-                node_id,
-                batch_index,
-            } => {
-                let node = &forest[*node_id];
-                if let MastNode::Block(block) = node {
-                    let mut global_idx = 0;
-                    for batch in &block.op_batches()[..*batch_index] {
-                        global_idx += batch.ops().len();
-                    }
-                    return CurrentCycleInfo {
-                        op: None,
-                        node_id: Some(*node_id),
-                        source_node_id,
-                        op_idx: Some(global_idx),
-                        control_flow_kind: Some(ControlFlowOp::Respan),
-                    };
-                }
-            }
-            Continuation::StartNode(node_id) => {
-                let control_flow_kind = match &forest[*node_id] {
-                    MastNode::Block(_) => Some(ControlFlowOp::Span),
-                    MastNode::Join(_) => Some(ControlFlowOp::Join),
-                    MastNode::Split(_) => Some(ControlFlowOp::Split),
-                    _ => None,
-                };
-                return CurrentCycleInfo {
-                    op: None,
-                    node_id: Some(*node_id),
-                    source_node_id,
-                    op_idx: None,
-                    control_flow_kind,
-                };
-            }
-            Continuation::FinishBasicBlock(_)
-            | Continuation::FinishJoin(_)
-            | Continuation::FinishSplit(_)
-            | Continuation::FinishLoop { .. }
-            | Continuation::FinishCall(_)
-            | Continuation::FinishDyn(_) => {
-                return CurrentCycleInfo {
-                    op: None,
-                    node_id: None,
-                    source_node_id,
-                    op_idx: None,
-                    control_flow_kind: Some(ControlFlowOp::End),
-                };
-            }
-            Continuation::EnterForest { .. } => {
-                return CurrentCycleInfo {
-                    op: None,
-                    node_id: None,
-                    source_node_id,
-                    op_idx: None,
-                    control_flow_kind: None,
-                };
-            }
-        }
-    }
-    CurrentCycleInfo {
-        op: None,
-        node_id: None,
-        source_node_id: None,
-        op_idx: None,
-        control_flow_kind: None,
-    }
-}
-
 /// Wait for entry declarations in the current straight-line source occurrence, but never run
 /// through a branch or a callee just because a later location exists somewhere in the function.
 /// Only declarations observed this cycle count; kills and stale caller variables do not.
@@ -260,6 +140,15 @@ impl DebugExecutor {
     ///
     /// Returns the call frame exited this cycle, if any
     pub fn step(&mut self) -> Result<Option<CallFrame>, ExecutionError> {
+        self.step_with_observer(|_, _| {})
+    }
+
+    /// Observe the current source context, recovered frames, and declarations before a cycle.
+    /// The observer also runs when that cycle fails, but never after execution has stopped.
+    pub(crate) fn step_with_observer(
+        &mut self,
+        observe: impl FnOnce(&Self, &SourceContext),
+    ) -> Result<Option<CallFrame>, ExecutionError> {
         if self.stopped {
             self.last_debug_var_count = 0;
             return Ok(None);
@@ -274,45 +163,32 @@ impl DebugExecutor {
             }
         };
 
-        let debug_info: Option<Arc<PackageDebugInfo>> = resume_ctx.debug_info();
-
-        // Before step: peek continuation to determine what will execute
+        let source = SourceContext::new(&resume_ctx);
         let CurrentCycleInfo {
             op,
-            node_id,
-            source_node_id,
-            op_idx,
             control_flow_kind,
-        } = extract_current_op(&resume_ctx);
-        let debug_node_id = source_node_id.or_else(|| {
-            node_id.zip(debug_info.as_deref()).and_then(|(exec_node, di)| {
-                di.unique_source_root_for_exec_node(exec_node).ok().flatten()
-            })
-        });
-        let source_node = debug_node_id.zip(debug_info.as_deref()).map(|(dnid, di)| &di[dnid]);
-        let asmop = source_node.and_then(|source_node| match op_idx {
-            Some(op_idx) => source_node.asm_op_for_operation(op_idx as u32),
-            None => source_node.asm_op_for_operation(0),
-        });
-        let inline_frames = inline_frames_for_operation(
-            debug_info.as_deref().zip(debug_node_id).map(|(debug_info, debug_node_id)| {
-                (debug_info, debug_node_id, op_idx.unwrap_or_default() as u32)
-            }),
-            resume_ctx.inherited_inline_call_contexts(),
+            ..
+        } = source.cycle;
+        let debug_var_infos = source.debug_vars();
+        let source_asmop = source.asmop();
+        self.callstack.observe_source_context(
+            &resume_ctx,
+            source.source_operation(),
+            source_asmop.as_ref(),
         );
 
-        // Look up debug vars from MAST forest for the current operation
-        let debug_var_infos: Vec<_> = source_node
-            .zip(op_idx)
-            .zip(debug_info.as_deref())
-            .map(|((source_node, op_idx), di)| {
-                source_node.debug_infos_for_operation(op_idx as u32, di).collect()
-            })
-            .unwrap_or_default();
-        let pre_step_stack = self.processor.state().get_stack_state();
+        let debug_var_count = debug_var_infos.len();
+        self.debug_vars.observe_execution(
+            self.callstack.invocation_ids(),
+            self.callstack.current_invocation(),
+            &self.processor,
+            RowIndex::from((self.cycle + 1) as u32),
+            debug_var_infos,
+        );
+        observe(self, &source);
 
         // Execute one step
-        let step_result = if let Some(debug_info) = debug_info.as_deref() {
+        let step_result = if let Some(debug_info) = source.debug_info() {
             self.processor
                 .step_with_package_debug_info_sync(&mut self.host, resume_ctx, debug_info)
         } else {
@@ -335,14 +211,7 @@ impl DebugExecutor {
 
                 // Track operation
                 self.current_op = op;
-                self.current_asmop = asmop.zip(debug_info.as_deref()).map(|(asmop, di)| {
-                    AssemblyOp::new(
-                        asmop.location_idx.into_option().and_then(|loc| di.get_location(loc)),
-                        di[asmop.context_name_idx].clone(),
-                        asmop.num_cycles,
-                        di[asmop.op_name_idx].clone(),
-                    )
-                });
+                self.current_asmop = source_asmop;
                 if let Some(asmop) = self.current_asmop.as_ref() {
                     self.current_proc = Some(asmop.context_name().clone());
                 }
@@ -362,24 +231,17 @@ impl DebugExecutor {
                     asmop: self.current_asmop.as_ref(),
                     clk: RowIndex::from(self.cycle as u32),
                     ctx: self.current_context,
-                    inline_frames: &inline_frames,
+                    inline_frames: source.inline_frames(),
                 };
                 let exited = self.callstack.next(&step_info);
 
-                // Record and process debug variable events
-                let debug_var_count = debug_var_infos.len();
-                self.debug_vars.record_events_with_stack(
-                    RowIndex::from(self.cycle as u32),
-                    debug_var_infos,
-                    &pre_step_stack,
-                );
-                self.debug_vars.update_to_cycle(RowIndex::from(self.cycle as u32));
                 self.last_debug_var_count = debug_var_count;
 
                 Ok(exited)
             }
             Ok(None) => {
-                // Program completed
+                // Program completed: no invocation remains available for inspection.
+                self.debug_vars.reset();
                 self.stopped = true;
                 self.last_debug_var_count = 0;
                 let state = self.processor.state();
@@ -405,6 +267,15 @@ impl DebugExecutor {
         }
     }
 
+    /// Whether a captured invocation has returned and execution has reached a caller operation.
+    /// Event-only targets may stop without source information.
+    pub fn has_returned(&self, target: &crate::debug::ReturnTarget) -> bool {
+        self.callstack.has_returned(target)
+            && (!target.is_recovered()
+                || !self.callstack.has_recovered_current_frame()
+                || (self.current_op.is_some() && self.current_asmop.is_some()))
+    }
+
     /// Advance the program state until `breakpoint` is hit.
     ///
     /// If the program has already reached its termination state, it returns the same result
@@ -421,14 +292,12 @@ impl DebugExecutor {
             ty: breakpoint,
         };
         let start_asmop = self.current_asmop.clone();
+        let return_target =
+            (breakpoint.ty == BreakpointType::Finish).then(|| self.callstack.return_target());
         while !self.stopped {
-            match self.step()? {
-                Some(exited)
-                    if exited.should_break_on_exit() && breakpoint.ty == BreakpointType::Finish =>
-                {
-                    return Ok(());
-                }
-                _ => (),
+            self.step()?;
+            if return_target.as_ref().is_some_and(|target| self.has_returned(target)) {
+                return Ok(());
             }
 
             let (op, is_op_boundary, proc, loc) = {

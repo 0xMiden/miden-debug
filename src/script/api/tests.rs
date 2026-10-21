@@ -100,3 +100,34 @@ pub(crate) fn test_debugger() -> ScriptDebugger {
     };
     ScriptDebugger::from_config(Box::new(config)).expect("test package should load")
 }
+
+#[test]
+fn frame_selection_inspects_distinct_invocations_without_changing_current_frame() {
+    let debugger = invocation_debugger();
+    assert_eq!(debugger.frame().variables[0].value, Some(22));
+    debugger.handle_command("frame 1").unwrap();
+    assert_eq!(debugger.handle_command("vars all").unwrap().trim(), "n=11");
+    // Existing current-frame snapshots continue to describe the executing invocation.
+    assert_eq!(debugger.frame().variables[0].value, Some(22));
+    let caller = debugger.frame_at(1, true).unwrap();
+    assert!(caller.function_name.as_deref().unwrap().ends_with("::outer"));
+    assert_eq!(caller.variables[0].value, Some(11));
+    assert!(debugger.frame_at(99, true).is_none());
+    debugger.finish().unwrap();
+    assert_eq!(debugger.frame().variables[0].value, Some(11));
+    assert_eq!(debugger.selected_frame_index(), 0);
+}
+
+pub(crate) fn invocation_debugger() -> ScriptDebugger {
+    use miden_core::serde::Serializable;
+    let package = crate::program_loader::invocation_test_package(None);
+    let debugger = ScriptDebugger::new(Box::new(DebuggerConfig {
+        input: Some(crate::InputFile::new("stdin://", Some(package.to_bytes().into_boxed_slice()))),
+        ..Default::default()
+    }))
+    .unwrap();
+    debugger.set_breakpoint("in *inner").unwrap();
+    debugger.continue_().unwrap();
+    debugger.delete_breakpoint(None).unwrap();
+    debugger
+}

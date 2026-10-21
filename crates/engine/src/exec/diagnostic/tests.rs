@@ -1,3 +1,4 @@
+use alloc::string::ToString;
 use core::{
     future::Future,
     task::{Context, Poll, Waker},
@@ -14,6 +15,46 @@ fn ready<F: Future>(future: F) -> F::Output {
         Poll::Ready(output) => output,
         Poll::Pending => panic!("synchronous test host unexpectedly yielded"),
     }
+}
+
+#[test]
+fn trace_handler_errors_preserve_the_registered_name_through_diagnostics() {
+    use miden_processor::{
+        DefaultHost,
+        event::{EventName, TraceError},
+    };
+
+    let package = Assembler::new(Arc::new(DefaultSourceManager::default()))
+        .assemble_program("program", "begin trace.event(\"test::reject\") end")
+        .unwrap();
+    let mut host = DefaultHost::default();
+    let name = EventName::new("test::reject");
+    host.register_trace_handler(
+        name.clone(),
+        Arc::new(|_: &ProcessorState<'_>| -> Result<(), TraceError> {
+            Err(std::io::Error::other("trace rejected").into())
+        }),
+    )
+    .unwrap();
+    let mut wrapper = DiagnosticHostWrapper::new(&mut host);
+    let error = ready(
+        FastProcessor::new(StackInputs::default()).execute(&package.unwrap_program(), &mut wrapper),
+    )
+    .expect_err("the trace handler must reject execution");
+    let ExecutionError::EventError {
+        event_id,
+        event_name,
+        error,
+        ..
+    } = error
+    else {
+        panic!("unexpected execution error: {error:?}");
+    };
+    assert_eq!(event_id, name.to_event_id());
+    assert_eq!(event_name, Some(name));
+    assert_eq!(error.to_string(), "trace rejected");
+    assert!(wrapper.last_cycle > RowIndex::from(0u32));
+    assert!(!wrapper.last_stack_state.is_empty());
 }
 
 #[test]

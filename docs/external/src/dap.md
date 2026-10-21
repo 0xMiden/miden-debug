@@ -113,6 +113,13 @@ round-trip.
 
 ## IDE clients
 
+Request `scopes` with a frame ID from `stackTrace` to inspect that invocation's
+locals. `evaluate` accepts the same `frameId`; omitting it selects the executing
+physical invocation. Suspended callers and recursive invocations retain separate
+locals. Inline frames have no separate locals in this release. Frame IDs and
+variable references expire when execution resumes or restarts, so clients must
+fetch them again after each stop.
+
 Two first-party IDE extensions speak the same protocol against the same
 server:
 
@@ -166,6 +173,7 @@ that IDE clients can hook:
 | ----- | ---- | ---- |
 | `miden/uiState` | `{ cycle, current_stack: [u64], callstack: [{ name, source_path, line, column }] }` | Pushed before every `stopped` event so the IDE inspector can render without extra requests. |
 | `evaluate("__miden_ui_state")` | Same payload as above, JSON-encoded | Available as a DAP `evaluate` expression for clients that prefer pull over push. |
+| `evaluate("__miden_variables[ all]")` | JSON array of `{ name, value, raw }` | Inspects the requested `frameId`; `value` is formatted text and `raw` is the first field element or `null`. The optional `all` includes compiler locals. |
 | `evaluate("__miden_read_memory ...")` | Formatted memory read | Same grammar as the TUI's `:r` — `__miden_read_memory <type> <addr> <fmt> <count>`. |
 
 The TUI client uses these to populate the operand-stack, memory, and call-stack

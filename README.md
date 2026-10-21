@@ -27,12 +27,13 @@ cargo make coverage
 ```
 
 This writes a Cobertura report to `rust-coverage.xml`. CI uploads the same report as the
-`rust-coverage` artifact, including when the coverage gate fails, and updates a coverage comment
-on each pull request. It requires at least 75% line coverage of production code across the
-workspace. Unit tests live in separate `tests.rs` or `*_tests.rs` files, and shared test helpers
-live under `tests/`. These paths are excluded from the report by cargo-llvm-cov's default
-filename filters. All workspace tests still run, including TUI rendering tests using Ratatui's
-in-memory test backend; the production code they exercise contributes to coverage.
+`rust-coverage` artifact, and [octocov](https://github.com/k1LoW/octocov) comments on each pull
+request with the coverage changes against the base branch, including the files the pull request
+touches. The coverage is only reported: below 75% line coverage the report carries a warning,
+but CI does not fail. Unit tests live in separate `tests.rs` or `*_tests.rs` files, and shared
+test helpers live under `tests/`. These paths are excluded from the report by cargo-llvm-cov's
+default filename filters. All workspace tests still run, including TUI rendering tests using
+Ratatui's in-memory test backend; the production code they exercise contributes to coverage.
 
 ## License
 

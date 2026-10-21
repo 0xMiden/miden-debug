@@ -12,7 +12,9 @@ use miden_assembly_syntax::ast::{
     DebugVarLocation, types::Type,
 };
 use miden_core::Felt;
-use miden_processor::trace::RowIndex;
+use miden_processor::{ContextId, FastProcessor, trace::RowIndex};
+
+use super::InvocationId;
 
 type DebugVarEvents = Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>>;
 type CapturedDebugValues = Rc<RefCell<BTreeMap<(RowIndex, Arc<str>), Vec<Felt>>>>;
@@ -26,8 +28,52 @@ pub struct DebugVarSnapshot {
     pub info: DebugVarInfo,
 }
 
+/// A variable resolved in its owning invocation's retained execution context.
+#[derive(Debug, Clone)]
+pub struct ResolvedDebugVariable {
+    pub raw: Option<Felt>,
+    pub value: String,
+    pub type_name: String,
+}
+
+#[derive(Default)]
+struct InvocationVariables {
+    variables: BTreeMap<String, DebugVarSnapshot>,
+    captured: BTreeMap<String, Vec<Felt>>,
+    /// Locations with frame-base anchors refreshed while active and retained while suspended.
+    locations: BTreeMap<String, DebugVarLocation>,
+    context: ContextId,
+    fmp: Option<u32>,
+}
+
+impl InvocationVariables {
+    fn refresh_storage(&mut self, processor: &FastProcessor) {
+        let read_memory = |address: u32| {
+            processor.memory().read_element(self.context, Felt::from_u32(address)).ok()
+        };
+        self.fmp = read_memory(miden_core::FMP_ADDR.as_canonical_u64() as u32)
+            .and_then(|value| u32::try_from(value.as_canonical_u64()).ok());
+        let read_local =
+            |offset: i16| read_memory(self.fmp?.checked_add_signed(i32::from(offset))?);
+        self.locations = self
+            .variables
+            .iter()
+            .map(|(name, variable)| {
+                (
+                    name.clone(),
+                    anchor_frame_bases(variable.info.value_location(), &read_memory, &read_local)
+                        .unwrap_or(DebugVarLocation::Unavailable),
+                )
+            })
+            .collect();
+    }
+}
+
 /// Tracks debug variable snapshots, mapping variable names to their most recent location info.
 pub struct DebugVarTracker {
+    invocations: BTreeMap<InvocationId, InvocationVariables>,
+    current_invocation: Option<InvocationId>,
+    invocation_mode: bool,
     /// All debug variable events recorded during execution, keyed by clock cycle.
     events: DebugVarEvents,
     /// Canonical values frozen at transient debug decorators.
@@ -44,12 +90,151 @@ impl DebugVarTracker {
     /// Create a new tracker using the given shared event store.
     pub fn new(events: DebugVarEvents) -> Self {
         Self {
+            invocations: BTreeMap::new(),
+            current_invocation: None,
+            invocation_mode: false,
             events,
             captured_values: Rc::new(Default::default()),
             current_vars: BTreeMap::new(),
             current_captured_values: BTreeMap::new(),
             processed_up_to: RowIndex::from(0),
         }
+    }
+
+    pub fn current_invocation(&self) -> Option<InvocationId> {
+        self.current_invocation
+    }
+
+    pub fn has_invocation(&self, invocation: InvocationId) -> bool {
+        self.invocations.contains_key(&invocation)
+    }
+
+    pub fn variables_for(
+        &self,
+        invocation: InvocationId,
+    ) -> impl Iterator<Item = &DebugVarSnapshot> {
+        self.invocations
+            .get(&invocation)
+            .into_iter()
+            .flat_map(|frame| frame.variables.values())
+    }
+
+    /// Observe the operation's owner and declarations before executing it. Only observed active
+    /// invocations acquire variable state; recovered ancestors do not inherit a callee's locals.
+    pub fn observe_execution(
+        &mut self,
+        live_ids: impl IntoIterator<Item = InvocationId>,
+        current: Option<InvocationId>,
+        processor: &FastProcessor,
+        clk: RowIndex,
+        mut infos: Vec<DebugVarInfo>,
+    ) {
+        // An external CALL can switch memory contexts before its source forest is entered.
+        // The retained caller identity still appears during that transition, but it must not
+        // acquire the callee's memory context or declarations. An invocation's context is fixed.
+        let current = current.filter(|id| {
+            self.invocations
+                .get(id)
+                .is_none_or(|frame| frame.context == processor.state().ctx())
+        });
+        // The previous operation may have changed a frame base immediately before an exec
+        // boundary. Refresh the departing owner before capturing the new owner's declarations.
+        // CALL/return context switches already suspend the old context without modifying it.
+        if self.current_invocation != current
+            && let Some(previous) = self.current_invocation
+            && let Some(frame) = self.invocations.get_mut(&previous)
+            && frame.context == processor.state().ctx()
+        {
+            frame.refresh_storage(processor);
+        }
+        self.invocation_mode = true;
+        self.current_invocation = current;
+        let live_ids = live_ids.into_iter().collect::<alloc::collections::BTreeSet<_>>();
+        self.invocations.retain(|id, _| live_ids.contains(id));
+        let Some(current) = current else { return };
+        let state = processor.state();
+        let context = state.ctx();
+        let stack = state.get_stack_state();
+        let frame = self.invocations.entry(current).or_default();
+        frame.context = context;
+        let kills = infos.iter().map(is_debug_var_kill).collect::<Vec<_>>();
+        let captured = snapshot_transient_debug_values(&mut infos, &stack);
+        for (info, is_kill) in infos.into_iter().zip(kills) {
+            let name = info.name().to_string();
+            if is_kill {
+                frame.variables.remove(&name);
+                frame.captured.remove(&name);
+                frame.locations.remove(&name);
+            } else {
+                match captured.get(info.name()) {
+                    Some(values) => {
+                        frame.captured.insert(name.clone(), values.clone());
+                    }
+                    None => {
+                        frame.captured.remove(&name);
+                    }
+                }
+                frame.variables.insert(name, DebugVarSnapshot { clk, info });
+            }
+        }
+        frame.refresh_storage(processor);
+    }
+
+    /// Read live storage using the selected invocation's context and retained frame bases.
+    pub fn resolve(
+        &self,
+        invocation: InvocationId,
+        name: &str,
+        processor: &FastProcessor,
+    ) -> Option<ResolvedDebugVariable> {
+        let frame = self.invocations.get(&invocation)?;
+        let variable = frame.variables.get(name)?;
+        let read_memory = |address: u32| {
+            processor.memory().read_element(frame.context, Felt::from_u32(address)).ok()
+        };
+        let active =
+            self.current_invocation == Some(invocation) && processor.state().ctx() == frame.context;
+        let fmp = if active {
+            read_memory(miden_core::FMP_ADDR.as_canonical_u64() as u32)
+                .and_then(|value| u32::try_from(value.as_canonical_u64()).ok())
+        } else {
+            frame.fmp
+        };
+        let read_local = |offset: i16| read_memory(fmp?.checked_add_signed(i32::from(offset))?);
+        let location = if active {
+            anchor_frame_bases(variable.info.value_location(), &read_memory, &read_local)
+                .unwrap_or(DebugVarLocation::Unavailable)
+        } else {
+            frame.locations.get(name)?.clone()
+        };
+        let captured = frame.captured.get(name);
+        let raw = captured
+            .and_then(|values| values.first().copied())
+            .or_else(|| resolve_variable_value(&location, &[], read_memory, read_local));
+        let type_name =
+            variable.info.ty().map(ToString::to_string).unwrap_or_else(|| "Felt".into());
+        let typed = variable.info.ty().and_then(|ty| {
+            super::format_value(ty, |count| {
+                captured.filter(|values| values.len() == count).cloned().or_else(|| {
+                    resolve_typed_variable_values(
+                        &location,
+                        ty,
+                        count,
+                        &[],
+                        read_memory,
+                        read_local,
+                    )
+                })
+            })
+        });
+        let value = typed
+            .or_else(|| raw.map(|value| value.as_canonical_u64().to_string()))
+            .unwrap_or_else(|| "<unavailable>".into());
+        Some(ResolvedDebugVariable {
+            raw,
+            value,
+            type_name,
+        })
     }
 
     /// Record debug variable events at the given clock cycle.
@@ -114,35 +299,90 @@ impl DebugVarTracker {
 
     /// Reset the tracker to the beginning of execution.
     pub fn reset(&mut self) {
+        self.invocations.clear();
+        self.current_invocation = None;
         self.current_vars.clear();
         self.current_captured_values.clear();
         self.processed_up_to = RowIndex::from(0);
     }
 
+    fn active_variables(&self) -> Option<&BTreeMap<String, DebugVarSnapshot>> {
+        if self.invocation_mode {
+            Some(&self.invocations.get(&self.current_invocation?)?.variables)
+        } else {
+            Some(&self.current_vars)
+        }
+    }
+
     /// Get all currently visible variables.
     pub fn current_variables(&self) -> impl Iterator<Item = &DebugVarSnapshot> {
-        self.current_vars.values()
+        self.active_variables().into_iter().flat_map(|variables| variables.values())
     }
 
     /// Get a specific variable by name.
     pub fn get_variable(&self, name: &str) -> Option<&DebugVarSnapshot> {
-        self.current_vars.get(name)
+        self.active_variables()?.get(name)
     }
 
     /// Returns canonical values captured at the variable's latest debug decorator.
     pub fn captured_values(&self, name: &str) -> Option<&[Felt]> {
-        self.current_captured_values.get(name).map(Vec::as_slice)
+        if self.invocation_mode {
+            self.invocations
+                .get(&self.current_invocation?)?
+                .captured
+                .get(name)
+                .map(Vec::as_slice)
+        } else {
+            self.current_captured_values.get(name).map(Vec::as_slice)
+        }
     }
 
     /// Get the number of tracked variables.
     pub fn variable_count(&self) -> usize {
-        self.current_vars.len()
+        self.active_variables().map_or(0, BTreeMap::len)
     }
 
     /// Check if there are any tracked variables.
     pub fn has_variables(&self) -> bool {
-        !self.current_vars.is_empty()
+        self.variable_count() != 0
     }
+}
+
+/// Only frame-base operands are anchored. Ordinary memory reads remain live, including pointers
+/// read by general location expressions. The original declaration is retained for the next refresh.
+fn anchor_frame_bases(
+    location: &DebugVarLocation,
+    read_memory: &impl Fn(u32) -> Option<Felt>,
+    read_local: &impl Fn(i16) -> Option<Felt>,
+) -> Option<DebugVarLocation> {
+    let operations = match location {
+        DebugVarLocation::ResolvedFrameBase { base, byte_offset } => vec![
+            DebugLocationExpressionOp::ConstU64(resolve_frame_base_address(
+                *base,
+                *byte_offset,
+                read_memory,
+                read_local,
+            )?),
+            DebugLocationExpressionOp::DerefBytes,
+        ],
+        DebugVarLocation::Expression(expression) => expression
+            .operations()
+            .iter()
+            .map(|operation| match operation {
+                DebugLocationExpressionOp::FrameBaseAddress { base, byte_offset } => {
+                    Some(DebugLocationExpressionOp::ConstU64(resolve_frame_base_address(
+                        *base,
+                        *byte_offset,
+                        read_memory,
+                        read_local,
+                    )?))
+                }
+                operation => Some(*operation),
+            })
+            .collect::<Option<Vec<_>>>()?,
+        location => return Some(location.clone()),
+    };
+    Some(DebugVarLocation::Expression(DebugLocationExpression::new(operations).ok()?))
 }
 
 /// Snapshot transient debug locations at the decorator point.

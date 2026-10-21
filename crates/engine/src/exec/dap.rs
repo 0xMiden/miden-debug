@@ -18,33 +18,32 @@ use std::{
 };
 
 use dap::prelude::*;
+#[cfg(test)]
 use miden_assembly_syntax::ast::{DebugVarInfo, DebugVarLocation};
 use miden_core::{Word, operations::AssemblyOp};
 use miden_debug_types::{Location, Uri};
 use miden_mast_package::{
     MastForest, Package,
-    debug_info::{DebugFileIdx, DebugSourceAsmOp, DebugSourceNodeId, PackageDebugInfo},
+    debug_info::{DebugFileIdx, PackageDebugInfo},
 };
 use miden_processor::{
     BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, FutureMaybeSend,
     Host, LoadedMastForest, ProcessorState, ResumeContext, StackInputs, StackOutputs,
     advice::{AdviceInputs, AdviceMutation},
-    event::EventError,
+    event::{EventError, TraceError},
     trace::RowIndex,
 };
 
 use super::{
-    EventMutationRecorder, MastForestRecorder, ReplaySnapshot, ReplaySnapshotRecorder,
-    ReplaySnapshotWrite,
-    state::{extract_current_op, should_wait_for_entry_variables},
+    EventMutationRecorder, MastForestRecorder, RecordingHost, ReplaySnapshot,
+    ReplaySnapshotRecorder, ReplaySnapshotWrite, source::SourceContext,
+    state::should_wait_for_entry_variables,
 };
 use crate::{
     debug::{
-        DebugVarSnapshot, DebugVarTracker, FormatType, ReadMemoryExpr, format_value,
-        inline_frames_for_operation, procedure_matches, procedure_pattern,
-        resolve_typed_variable_values, resolve_variable_values,
+        DebugVarSnapshot, DebugVarTracker, FormatType, InvocationId, LogicalFrameKind,
+        ReadMemoryExpr, RecoveredCallStack, procedure_matches, procedure_pattern,
     },
-    exec::state::CurrentCycleInfo,
     normalize_source_path,
 };
 
@@ -177,21 +176,16 @@ struct DapPresentedFrame {
     line: i64,
     column: i64,
     inline: bool,
+    invocation: Option<InvocationId>,
 }
 
-/// A host wrapper that intercepts trace events to track the call stack for DAP stack traces,
-/// while delegating all other operations to the inner host.
+/// Tracks recovered frames and event-based fallback frames while forwarding host operations.
+/// Event handling also records advice mutations and loaded forests for execution replay.
 struct DapHostWrapper<'a, H> {
-    inner: &'a mut H,
+    inner: RecordingHost<'a, H>,
     call_depth: usize,
     frames: Vec<DapCallFrame>,
-    /// When set, the advice mutations produced by each `on_event` invocation of the inner host
-    /// are recorded here, in execution order, so they can be replayed later (e.g. transaction
-    /// debugging with event replay).
-    event_recorder: Option<EventMutationRecorder>,
-    /// When set, the MAST forests the inner host resolves are recorded here, so a replay session
-    /// can load the same code for `call`/`dyncall` targets.
-    forest_recorder: Option<MastForestRecorder>,
+    recovered: RecoveredCallStack,
 }
 
 impl<'a, H> DapHostWrapper<'a, H> {
@@ -201,11 +195,10 @@ impl<'a, H> DapHostWrapper<'a, H> {
         forest_recorder: Option<MastForestRecorder>,
     ) -> Self {
         Self {
-            inner,
+            inner: RecordingHost::new(inner, event_recorder, forest_recorder),
             call_depth: 0,
             frames: Vec::new(),
-            event_recorder,
-            forest_recorder,
+            recovered: RecoveredCallStack::default(),
         }
     }
 }
@@ -224,52 +217,12 @@ impl<H: Host> BaseHost for DapHostWrapper<'_, H> {
     ) -> Option<&miden_core::events::EventName> {
         self.inner.resolve_event(event_id)
     }
-}
 
-#[cfg(false)]
-impl<S: ?Sized + miden_assembly::SourceManager> SyncHost
-    for DapHostWrapper<'_, super::DebuggerHost<S>>
-{
-    fn get_mast_forest(&self, node_digest: &Word) -> Option<LoadedMastForest> {
-        // Record every forest the inner host resolves, so a replay session can load the same
-        // code for `call`/`dyncall` targets. The recorder deduplicates.
-        let forest_recorder = self.forest_recorder.clone();
-        let forest = SyncHost::get_mast_forest(&*self.inner, node_digest);
-        if let (Some(recorder), Some(forest)) = (&forest_recorder, &forest) {
-            recorder.record(forest.clone());
-        }
-        forest
-    }
-
-    fn on_event(
-        &mut self,
-        process: &ProcessorState<'_>,
-    ) -> Result<Vec<AdviceMutation>, EventError> {
-        use miden_core::events::EventId;
-        match crate::Event::from(EventId::from_felt(process.get_stack_item(0))) {
-            crate::Event::FrameStart => {
-                self.call_depth += 1;
-                self.frames.push(DapCallFrame {
-                    name: Arc::default(),
-                    source_path: None,
-                    line: 0,
-                    column: 0,
-                });
-            }
-            crate::Event::FrameEnd => {
-                self.call_depth = self.call_depth.saturating_sub(1);
-                self.frames.pop();
-            }
-            _ => (),
-        }
-        // Every invocation is recorded, including empty mutation sets: event replay pops one
-        // entry per event, so the log must stay aligned with the event stream.
-        let recorder = self.event_recorder.clone();
-        let result = SyncHost::on_event(self.inner, process);
-        if let (Some(recorder), Ok(mutations)) = (&recorder, &result) {
-            recorder.record(crate::exec::clone_advice_mutations(mutations));
-        }
-        result
+    fn resolve_trace(
+        &self,
+        trace_id: miden_core::events::EventId,
+    ) -> Option<&miden_core::events::EventName> {
+        self.inner.resolve_trace(trace_id)
     }
 }
 
@@ -278,17 +231,7 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
         &self,
         node_digest: &Word,
     ) -> impl FutureMaybeSend<Option<LoadedMastForest>> {
-        // Record every forest the inner host resolves, so a replay session can load the same
-        // code for `call`/`dyncall` targets. The recorder deduplicates.
-        let forest_recorder = self.forest_recorder.clone();
-        let fut = self.inner.get_mast_forest(node_digest);
-        async move {
-            let forest = fut.await;
-            if let (Some(recorder), Some(forest)) = (&forest_recorder, &forest) {
-                recorder.record(forest.clone());
-            }
-            forest
-        }
+        self.inner.get_mast_forest(node_digest)
     }
 
     fn on_event(
@@ -313,17 +256,14 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
             }
             _ => (),
         }
-        // Every invocation is recorded, including empty mutation sets: event replay pops one
-        // entry per event, so the log must stay aligned with the event stream.
-        let recorder = self.event_recorder.clone();
-        let fut = self.inner.on_event(process);
-        async move {
-            let result = fut.await;
-            if let (Some(recorder), Ok(mutations)) = (&recorder, &result) {
-                recorder.record(crate::exec::clone_advice_mutations(mutations));
-            }
-            result
-        }
+        self.inner.on_event(process)
+    }
+
+    fn on_trace(
+        &mut self,
+        process: &ProcessorState<'_>,
+    ) -> impl FutureMaybeSend<Result<(), TraceError>> {
+        self.inner.on_trace(process)
     }
 }
 
@@ -523,6 +463,28 @@ fn presented_frames<H: Host>(
     current_asmop: Option<&AssemblyOp>,
     cycle: usize,
 ) -> Vec<DapPresentedFrame> {
+    if host.recovered.has_current_frame() {
+        return host
+            .recovered
+            .logical_frames("")
+            .into_iter()
+            .rev()
+            .map(|frame| {
+                let (source_path, line, column) = frame
+                    .assembly_location()
+                    .and_then(|location| resolve_location_with_column(location, host))
+                    .map_or((None, 0, 0), |(path, line, column)| (Some(path), line, column));
+                DapPresentedFrame {
+                    name: Arc::from(frame.display_name()),
+                    source_path,
+                    line,
+                    column,
+                    inline: frame.kind() == LogicalFrameKind::Inline,
+                    invocation: frame.invocation_id(),
+                }
+            })
+            .collect();
+    }
     if host.frames.is_empty() {
         let (name, source_path, line, column) = match current_asmop {
             Some(asmop) => {
@@ -539,6 +501,7 @@ fn presented_frames<H: Host>(
             line,
             column,
             inline: false,
+            invocation: None,
         }];
     }
 
@@ -561,6 +524,7 @@ fn present_recorded_frames(frames: &[DapCallFrame]) -> Vec<DapPresentedFrame> {
                 line,
                 column,
                 inline: true,
+                invocation: None,
             });
         }
 
@@ -574,6 +538,7 @@ fn present_recorded_frames(frames: &[DapCallFrame]) -> Vec<DapPresentedFrame> {
             line,
             column,
             inline: false,
+            invocation: None,
         });
     }
 
@@ -853,17 +818,6 @@ fn resolve_breakpoint_line(lines: &BTreeSet<i64>, requested_line: i64) -> Option
         .or_else(|| lines.range(..requested_line).next_back().copied())
 }
 
-fn record_debug_vars(
-    debug_state: &mut DapDebugVarState,
-    cycle: usize,
-    debug_var_infos: Vec<DebugVarInfo>,
-    stack: &[miden_processor::Felt],
-) {
-    let clk = RowIndex::from(cycle as u32);
-    debug_state.debug_vars.record_events_with_stack(clk, debug_var_infos, stack);
-    debug_state.debug_vars.update_to_cycle(clk);
-}
-
 fn is_compiler_generated_name(name: &str) -> bool {
     let Some(suffix) = name.strip_prefix("local") else {
         return false;
@@ -873,7 +827,7 @@ fn is_compiler_generated_name(name: &str) -> bool {
 
 fn is_visible_source_var<H: Host>(
     var: &DebugVarSnapshot,
-    current_asmop: Option<&AssemblyOp>,
+    current_location: Option<(&str, i64)>,
     host: &DapHostWrapper<'_, H>,
     source_path_prefixes: &[String],
     show_all: bool,
@@ -887,7 +841,7 @@ fn is_visible_source_var<H: Host>(
         return false;
     }
 
-    let Some(current) = current_asmop.and_then(|asmop| resolve_asmop_location(asmop, host)) else {
+    let Some(current) = current_location else {
         return true;
     };
 
@@ -898,7 +852,7 @@ fn is_visible_source_var<H: Host>(
     let Some((var_path, var_line)) = resolve_location(var_loc, host) else {
         return true;
     };
-    source_var_location_is_visible(&var_path, var_line, &current.0, current.1, source_path_prefixes)
+    source_var_location_is_visible(&var_path, var_line, current.0, current.1, source_path_prefixes)
 }
 
 fn source_var_location_is_visible(
@@ -911,137 +865,68 @@ fn source_var_location_is_visible(
     source_paths_match(var_path, current_path, source_path_prefixes) && var_line < current_line
 }
 
-fn resolve_debug_var_value(
-    processor: &mut FastProcessor,
-    location: &DebugVarLocation,
-) -> Option<miden_processor::Felt> {
-    resolve_debug_var_values(processor, location, None, 1)?.pop()
-}
-
-fn resolve_debug_var_values(
-    processor: &mut FastProcessor,
-    location: &DebugVarLocation,
-    ty: Option<&miden_assembly_syntax::ast::types::Type>,
-    count: usize,
-) -> Option<Vec<miden_processor::Felt>> {
-    let state = processor.state();
-    let stack = state.get_stack_state();
-    let context = state.ctx();
-
-    let read_mem = |addr: u32| -> Option<miden_processor::Felt> {
-        processor
-            .memory()
-            .read_element(
-                context,
-                miden_processor::Felt::new(u64::from(addr)).expect("value exceeds field modulus"),
+/// Resolve values through the same invocation-owned view used by local inspection.
+fn resolved_debug_variables<H: Host>(
+    processor: &FastProcessor,
+    host: &DapHostWrapper<'_, H>,
+    frame: &DapPresentedFrame,
+    debug_state: &DapDebugVarState,
+    source_path_prefixes: &[String],
+    show_all: bool,
+) -> Vec<(String, crate::debug::ResolvedDebugVariable)> {
+    let Some(invocation) = frame.invocation else {
+        return Vec::new();
+    };
+    debug_state
+        .debug_vars
+        .variables_for(invocation)
+        .filter(|var| {
+            is_visible_source_var(
+                var,
+                frame.source_path.as_deref().map(|path| (path, frame.line)),
+                host,
+                source_path_prefixes,
+                show_all,
             )
-            .ok()
-    };
-
-    let resolve_local = |offset| {
-        let fmp_addr = miden_core::FMP_ADDR.as_canonical_u64() as u32;
-        let fmp = read_mem(fmp_addr)?;
-        let addr = (fmp.as_canonical_u64() as i64 + i64::from(offset)) as u32;
-        read_mem(addr)
-    };
-
-    match ty {
-        Some(ty) => {
-            resolve_typed_variable_values(location, ty, count, &stack, read_mem, resolve_local)
-        }
-        None => resolve_variable_values(location, count, &stack, read_mem, resolve_local),
-    }
-}
-
-fn debug_var_to_dap_variable(
-    processor: &mut FastProcessor,
-    var: &DebugVarSnapshot,
-    captured_values: Option<&[miden_processor::Felt]>,
-) -> types::Variable {
-    let name = var.info.name().to_string();
-    let (value, type_field) = format_debug_var_value(processor, var, captured_values);
-
-    types::Variable {
-        name,
-        value,
-        type_field,
-        variables_reference: 0,
-        ..Default::default()
-    }
-}
-
-fn format_debug_var_value(
-    processor: &mut FastProcessor,
-    var: &DebugVarSnapshot,
-    captured_values: Option<&[miden_processor::Felt]>,
-) -> (String, Option<String>) {
-    let location = var.info.value_location();
-
-    if let Some(ty) = var.info.ty() {
-        let type_field = Some(ty.to_string());
-        if let Some(value) = format_value(ty, |count| {
-            captured_values
-                .filter(|values| values.len() == count)
-                .map(<[miden_processor::Felt]>::to_vec)
-                .or_else(|| resolve_debug_var_values(processor, location, Some(ty), count))
-        }) {
-            return (value, type_field);
-        }
-        if let Some(felt) = captured_values
-            .and_then(|values| values.first().copied())
-            .or_else(|| resolve_debug_var_value(processor, location))
-        {
-            return (felt.as_canonical_u64().to_string(), type_field);
-        }
-        return (location.to_string(), type_field);
-    }
-
-    let value = captured_values
-        .and_then(|values| values.first().copied())
-        .or_else(|| resolve_debug_var_value(processor, location))
-        .map(|felt| felt.as_canonical_u64().to_string())
-        .unwrap_or_else(|| location.to_string());
-    (value, Some("Felt".into()))
+        })
+        .filter_map(|var| {
+            let resolved =
+                debug_state.debug_vars.resolve(invocation, var.info.name(), processor)?;
+            Some((var.info.name().to_string(), resolved))
+        })
+        .collect()
 }
 
 fn debug_variables<H: Host>(
-    processor: &mut FastProcessor,
+    processor: &FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&AssemblyOp>,
+    frame: &DapPresentedFrame,
     debug_state: &DapDebugVarState,
     source_path_prefixes: &[String],
     show_all: bool,
 ) -> Vec<types::Variable> {
-    debug_state
-        .debug_vars
-        .current_variables()
-        .filter(|var| {
-            is_visible_source_var(var, current_asmop, host, source_path_prefixes, show_all)
-        })
-        .map(|var| {
-            let captured_values = debug_state.debug_vars.captured_values(var.info.name());
-            debug_var_to_dap_variable(processor, var, captured_values)
+    resolved_debug_variables(processor, host, frame, debug_state, source_path_prefixes, show_all)
+        .into_iter()
+        .map(|(name, resolved)| types::Variable {
+            name,
+            value: resolved.value,
+            type_field: Some(resolved.type_name),
+            variables_reference: 0,
+            ..Default::default()
         })
         .collect()
 }
 
 fn format_debug_variables<H: Host>(
-    processor: &mut FastProcessor,
+    processor: &FastProcessor,
     host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&AssemblyOp>,
+    frame: &DapPresentedFrame,
     debug_state: &DapDebugVarState,
     source_path_prefixes: &[String],
     show_all: bool,
 ) -> String {
-    let variables = debug_variables(
-        processor,
-        host,
-        current_asmop,
-        debug_state,
-        source_path_prefixes,
-        show_all,
-    );
-
+    let variables =
+        debug_variables(processor, host, frame, debug_state, source_path_prefixes, show_all);
     if variables.is_empty() {
         if show_all {
             "No debug variables tracked".into()
@@ -1055,25 +940,6 @@ fn format_debug_variables<H: Host>(
             .collect::<Vec<_>>()
             .join(", ")
     }
-}
-
-fn evaluate_debug_variable<H: Host>(
-    processor: &mut FastProcessor,
-    host: &DapHostWrapper<'_, H>,
-    current_asmop: Option<&AssemblyOp>,
-    debug_state: &DapDebugVarState,
-    source_path_prefixes: &[String],
-    expression: &str,
-) -> Option<types::Variable> {
-    let var = debug_state.debug_vars.get_variable(expression)?;
-    if !is_visible_source_var(var, current_asmop, host, source_path_prefixes, false) {
-        return None;
-    }
-    Some(debug_var_to_dap_variable(
-        processor,
-        var,
-        debug_state.debug_vars.captured_values(expression),
-    ))
 }
 
 /// Update the top frame on the host's frame stack with the current asmop's name and location.
@@ -1154,10 +1020,60 @@ pub struct DapExecutor {
     forest_recorder: Option<MastForestRecorder>,
 }
 
-/// Variables reference IDs for scopes.
-const SCOPE_STACK: i64 = 1;
-const SCOPE_MEMORY: i64 = 2;
-const SCOPE_LOCALS: i64 = 3;
+/// Handles are valid for one suspension only. Keep the allocator across restarts so an old
+/// frame or scope can never accidentally select a new invocation.
+#[derive(Default)]
+struct DapInspection {
+    next_handle: i64,
+    frames: Vec<(i64, DapPresentedFrame)>,
+    scopes: BTreeMap<i64, DapScope>,
+}
+
+#[derive(Clone)]
+enum DapScope {
+    Locals {
+        frame: DapPresentedFrame,
+        other: bool,
+    },
+    Stack,
+    Memory,
+}
+
+impl DapInspection {
+    fn invalidate(&mut self) {
+        self.frames.clear();
+        self.scopes.clear();
+    }
+
+    fn allocate(&mut self) -> i64 {
+        self.next_handle += 1;
+        self.next_handle
+    }
+
+    fn ensure_frames<H: Host>(
+        &mut self,
+        host: &DapHostWrapper<'_, H>,
+        asmop: Option<&AssemblyOp>,
+        cycle: usize,
+    ) {
+        if self.frames.is_empty() {
+            self.frames = presented_frames(host, asmop, cycle)
+                .into_iter()
+                .map(|frame| (self.allocate(), frame))
+                .collect();
+        }
+    }
+
+    fn frame(&self, id: i64) -> Option<&DapPresentedFrame> {
+        self.frames.iter().find_map(|(handle, frame)| (*handle == id).then_some(frame))
+    }
+
+    fn scope(&mut self, scope: DapScope) -> i64 {
+        let id = self.allocate();
+        self.scopes.insert(id, scope);
+        id
+    }
+}
 
 struct DapDebugVarState {
     debug_vars: DebugVarTracker,
@@ -1318,6 +1234,7 @@ impl DapExecutor {
         let mut breakpoints: Vec<StoredBreakpoint> = Vec::new();
         let mut function_breakpoints: Vec<StoredFunctionBreakpoint> = Vec::new();
         let mut is_restart = false;
+        let mut inspection = DapInspection::default();
         // VS Code's flow waits for `configurationDone` before stopping the VM at
         // the entry point; Zed's flow never sends `configurationDone`. Track
         // whether the entry stop has already been announced so it fires
@@ -1334,6 +1251,7 @@ impl DapExecutor {
         // diverge from a pristine fresh session. Phase 2 (terminate-and-reconnect)
         // solves this by creating a completely fresh host.
         loop {
+            inspection.invalidate();
             let mut processor =
                 FastProcessor::new_with_options(stack_inputs, advice_inputs.clone(), options)
                     .expect("advice inputs should fit advice map limits");
@@ -1363,21 +1281,17 @@ impl DapExecutor {
 
             // Extract initial asmop and populate the root frame.
             if let Some(ctx) = resume_ctx.as_ref() {
-                current_debug_info = ctx.debug_info();
-                let CurrentCycleInfo {
-                    source_node_id,
-                    op_idx,
-                    ..
-                } = extract_current_op(ctx);
-                current_asmop =
-                    extract_asm_op(current_debug_info.as_deref(), source_node_id, op_idx);
-                current_inline_frames = inline_frames_for_operation(
-                    current_debug_info.as_deref().zip(source_node_id).map(
-                        |(debug_info, source_node_id)| {
-                            (debug_info, source_node_id, op_idx.unwrap_or_default() as u32)
-                        },
-                    ),
-                    ctx.inherited_inline_call_contexts(),
+                let source = SourceContext::new(ctx);
+                current_debug_info = source.debug_info().cloned();
+                current_asmop = source.asmop();
+                wrapper.recovered.update(ctx, source.source_operation(), current_asmop.as_ref());
+                current_inline_frames = source.inline_frames().to_vec();
+                debug_state.debug_vars.observe_execution(
+                    wrapper.recovered.invocation_ids(),
+                    wrapper.recovered.current_invocation(),
+                    &processor,
+                    RowIndex::from(0),
+                    Vec::new(),
                 );
             }
             update_top_frame_with_debug(
@@ -1419,6 +1333,22 @@ impl DapExecutor {
                         log::error!("DAP protocol error: {e:#?}");
                         break;
                     }
+                };
+
+                let evaluation_frame = if let Command::Evaluate(ref args) = req.command {
+                    if let Some(frame_id) = args.frame_id {
+                        let Some(frame) = inspection.frame(frame_id).cloned() else {
+                            server.respond(req.error("Unknown or expired frame handle")).ok();
+                            continue;
+                        };
+                        Some(frame)
+                    } else {
+                        presented_frames(&wrapper, current_asmop.as_ref(), cycle)
+                            .into_iter()
+                            .find(|frame| !frame.inline)
+                    }
+                } else {
+                    None
                 };
 
                 match req.command {
@@ -1523,6 +1453,7 @@ impl DapExecutor {
 
                     // --- Execution Control ---
                     Command::Continue(_) => {
+                        inspection.invalidate();
                         let resp =
                             req.success(ResponseBody::Continue(responses::ContinueResponse {
                                 all_threads_continued: Some(true),
@@ -1587,6 +1518,7 @@ impl DapExecutor {
                     }
 
                     Command::Next(ref args) => {
+                        inspection.invalidate();
                         let is_instruction_step = matches!(
                             args.granularity,
                             Some(types::SteppingGranularity::Instruction)
@@ -1654,6 +1586,7 @@ impl DapExecutor {
                     }
 
                     Command::StepIn(_) => {
+                        inspection.invalidate();
                         let resp = req.success(ResponseBody::StepIn);
                         server.respond(resp).ok();
 
@@ -1703,6 +1636,7 @@ impl DapExecutor {
                     }
 
                     Command::StepOut(_) => {
+                        inspection.invalidate();
                         let resp = req.success(ResponseBody::StepOut);
                         server.respond(resp).ok();
 
@@ -1763,9 +1697,10 @@ impl DapExecutor {
                     }
 
                     Command::StackTrace(ref _args) => {
-                        let frames = presented_frames(&wrapper, current_asmop.as_ref(), cycle)
-                            .into_iter()
-                            .enumerate()
+                        inspection.ensure_frames(&wrapper, current_asmop.as_ref(), cycle);
+                        let frames = inspection
+                            .frames
+                            .iter()
                             .map(|(id, frame)| {
                                 let source = frame.source_path.as_ref().map(|path| types::Source {
                                     name: Some(path.rsplit('/').next().unwrap_or(path).to_string()),
@@ -1773,8 +1708,8 @@ impl DapExecutor {
                                     ..Default::default()
                                 });
                                 types::StackFrame {
-                                    id: id as i64,
-                                    name: frame.name,
+                                    id: *id,
+                                    name: frame.name.clone(),
                                     source,
                                     line: frame.line,
                                     column: frame.column,
@@ -1795,55 +1730,108 @@ impl DapExecutor {
                         server.respond(resp).ok();
                     }
 
-                    Command::Scopes(ref _args) => {
-                        let resp = req.success(ResponseBody::Scopes(responses::ScopesResponse {
-                            scopes: vec![
-                                types::Scope {
-                                    name: "Local Variables".into(),
-                                    variables_reference: SCOPE_LOCALS,
-                                    presentation_hint: Some(types::ScopePresentationhint::Locals),
-                                    named_variables: Some(
-                                        debug_variables(
-                                            &mut processor,
-                                            &wrapper,
-                                            current_asmop.as_ref(),
-                                            &debug_state,
-                                            &source_path_prefixes,
-                                            false,
-                                        )
-                                        .len() as i64,
-                                    ),
-                                    expensive: false,
-                                    ..Default::default()
-                                },
-                                types::Scope {
-                                    name: "Operand Stack".into(),
-                                    variables_reference: SCOPE_STACK,
-                                    expensive: false,
-                                    ..Default::default()
-                                },
-                                types::Scope {
-                                    name: "Memory".into(),
-                                    variables_reference: SCOPE_MEMORY,
-                                    expensive: false,
-                                    ..Default::default()
-                                },
-                            ],
-                        }));
-                        server.respond(resp).ok();
-                    }
-
-                    Command::Variables(ref args) => {
-                        let variables = match args.variables_reference {
-                            SCOPE_LOCALS => debug_variables(
-                                &mut processor,
+                    Command::Scopes(ref args) => {
+                        let Some(frame) = inspection.frame(args.frame_id).cloned() else {
+                            server.respond(req.error("Unknown or expired frame handle")).ok();
+                            continue;
+                        };
+                        let mut scopes = Vec::new();
+                        if frame
+                            .invocation
+                            .is_some_and(|id| debug_state.debug_vars.has_invocation(id))
+                        {
+                            let visible = debug_variables(
+                                &processor,
                                 &wrapper,
-                                current_asmop.as_ref(),
+                                &frame,
                                 &debug_state,
                                 &source_path_prefixes,
                                 false,
-                            ),
-                            SCOPE_STACK => {
+                            );
+                            let all = debug_variables(
+                                &processor,
+                                &wrapper,
+                                &frame,
+                                &debug_state,
+                                &source_path_prefixes,
+                                true,
+                            );
+                            for (name, other, count) in [
+                                ("Local Variables", false, visible.len()),
+                                ("Other Locals", true, all.len() - visible.len()),
+                            ] {
+                                if other && count == 0 {
+                                    continue;
+                                }
+                                scopes.push(types::Scope {
+                                    name: name.into(),
+                                    variables_reference: inspection.scope(DapScope::Locals {
+                                        frame: frame.clone(),
+                                        other,
+                                    }),
+                                    presentation_hint: Some(types::ScopePresentationhint::Locals),
+                                    named_variables: Some(count as i64),
+                                    expensive: false,
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                        // Raw VM state describes the running invocation, never a suspended caller.
+                        if inspection
+                            .frames
+                            .iter()
+                            .find(|(_, frame)| !frame.inline)
+                            .is_some_and(|(id, _)| *id == args.frame_id)
+                        {
+                            for (name, scope) in
+                                [("Operand Stack", DapScope::Stack), ("Memory", DapScope::Memory)]
+                            {
+                                scopes.push(types::Scope {
+                                    name: name.into(),
+                                    variables_reference: inspection.scope(scope),
+                                    expensive: false,
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                        server
+                            .respond(req.success(ResponseBody::Scopes(responses::ScopesResponse {
+                                scopes,
+                            })))
+                            .ok();
+                    }
+
+                    Command::Variables(ref args) => {
+                        let Some(scope) = inspection.scopes.get(&args.variables_reference) else {
+                            server.respond(req.error("Unknown or expired variable handle")).ok();
+                            continue;
+                        };
+                        let variables = match scope {
+                            DapScope::Locals { frame, other } => {
+                                let mut variables = debug_variables(
+                                    &processor,
+                                    &wrapper,
+                                    frame,
+                                    &debug_state,
+                                    &source_path_prefixes,
+                                    *other,
+                                );
+                                if *other {
+                                    let visible = debug_variables(
+                                        &processor,
+                                        &wrapper,
+                                        frame,
+                                        &debug_state,
+                                        &source_path_prefixes,
+                                        false,
+                                    );
+                                    variables.retain(|var| {
+                                        !visible.iter().any(|item| item.name == var.name)
+                                    });
+                                }
+                                variables
+                            }
+                            DapScope::Stack => {
                                 let state = processor.state();
                                 let stack = state.get_stack_state();
                                 stack
@@ -1858,7 +1846,7 @@ impl DapExecutor {
                                     })
                                     .collect()
                             }
-                            SCOPE_MEMORY => {
+                            DapScope::Memory => {
                                 let state = processor.state();
                                 let ctx = state.ctx();
                                 let mem = state.get_mem_state(ctx);
@@ -1875,7 +1863,6 @@ impl DapExecutor {
                                     })
                                     .collect()
                             }
-                            _ => Vec::new(),
                         };
 
                         let resp =
@@ -2003,6 +1990,45 @@ impl DapExecutor {
                     }
 
                     Command::Evaluate(ref args)
+                        if matches!(
+                            args.expression.as_str(),
+                            "__miden_variables" | "__miden_variables all"
+                        ) =>
+                    {
+                        let variables = resolved_debug_variables(
+                            &processor,
+                            &wrapper,
+                            evaluation_frame
+                                .as_ref()
+                                .expect("a default physical frame always exists"),
+                            &debug_state,
+                            &source_path_prefixes,
+                            args.expression.ends_with(" all"),
+                        )
+                        .into_iter()
+                        .map(|(name, resolved)| crate::exec::DapVariableValue {
+                            name,
+                            value: resolved.value,
+                            raw: resolved.raw.map(|felt| felt.as_canonical_u64()),
+                        })
+                        .collect::<Vec<_>>();
+                        server
+                            .respond(
+                                req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
+                                    result: serde_json::to_string(&variables)
+                                        .expect("bundled DAP variables should serialize"),
+                                    type_field: Some("json".into()),
+                                    presentation_hint: None,
+                                    variables_reference: 0,
+                                    named_variables: None,
+                                    indexed_variables: None,
+                                    memory_reference: None,
+                                })),
+                            )
+                            .ok();
+                    }
+
+                    Command::Evaluate(ref args)
                         if args.expression.starts_with("__miden_read_memory ") =>
                     {
                         let expr = args
@@ -2034,39 +2060,20 @@ impl DapExecutor {
                     }
 
                     Command::Evaluate(ref args)
-                        if args.expression == "vars" || args.expression == ":vars" =>
+                        if matches!(
+                            args.expression.as_str(),
+                            "vars" | ":vars" | "vars all" | ":vars all"
+                        ) =>
                     {
                         let result = format_debug_variables(
-                            &mut processor,
+                            &processor,
                             &wrapper,
-                            current_asmop.as_ref(),
+                            evaluation_frame
+                                .as_ref()
+                                .expect("a default physical frame always exists"),
                             &debug_state,
                             &source_path_prefixes,
-                            false,
-                        );
-                        let resp =
-                            req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
-                                result,
-                                type_field: Some("string".into()),
-                                presentation_hint: None,
-                                variables_reference: 0,
-                                named_variables: None,
-                                indexed_variables: None,
-                                memory_reference: None,
-                            }));
-                        server.respond(resp).ok();
-                    }
-
-                    Command::Evaluate(ref args)
-                        if args.expression == "vars all" || args.expression == ":vars all" =>
-                    {
-                        let result = format_debug_variables(
-                            &mut processor,
-                            &wrapper,
-                            current_asmop.as_ref(),
-                            &debug_state,
-                            &source_path_prefixes,
-                            true,
+                            args.expression.ends_with(" all"),
                         );
                         let resp =
                             req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
@@ -2082,14 +2089,19 @@ impl DapExecutor {
                     }
 
                     Command::Evaluate(ref args) => {
-                        if let Some(variable) = evaluate_debug_variable(
-                            &mut processor,
+                        if let Some(variable) = debug_variables(
+                            &processor,
                             &wrapper,
-                            current_asmop.as_ref(),
+                            evaluation_frame
+                                .as_ref()
+                                .expect("a default physical frame always exists"),
                             &debug_state,
                             &source_path_prefixes,
-                            args.expression.as_str(),
-                        ) {
+                            false,
+                        )
+                        .into_iter()
+                        .find(|variable| variable.name == args.expression)
+                        {
                             let resp =
                                 req.success(ResponseBody::Evaluate(responses::EvaluateResponse {
                                     result: variable.value,
@@ -2274,34 +2286,19 @@ fn advance_one<H: Host>(
     current_asmop: &mut Option<AssemblyOp>,
     debug_state: &mut DapDebugVarState,
 ) -> Result<Option<ResumeContext>, ExecutionError> {
-    let CurrentCycleInfo {
-        source_node_id,
-        op_idx,
-        ..
-    } = extract_current_op(&ctx);
-    let debug_info = ctx.debug_info();
-    let inline_frames = inline_frames_for_operation(
-        debug_info.as_deref().zip(source_node_id).map(|(debug_info, source_node_id)| {
-            (debug_info, source_node_id, op_idx.unwrap_or_default() as u32)
-        }),
-        ctx.inherited_inline_call_contexts(),
+    let source = SourceContext::new(&ctx);
+    let executed_asmop = source.executed_asmop();
+    let debug_var_infos = source.debug_vars();
+    let source_asmop = source.asmop();
+    host.recovered.update(&ctx, source.source_operation(), source_asmop.as_ref());
+    debug_state.debug_vars.observe_execution(
+        host.recovered.invocation_ids(),
+        host.recovered.current_invocation(),
+        processor,
+        RowIndex::from((*cycle + 1) as u32),
+        debug_var_infos,
     );
-    let executed_source_node = source_node_id.zip(debug_info.as_deref()).map(|(id, di)| &di[id]);
-    let (executed_asmop, debug_var_infos) = match executed_source_node.zip(op_idx) {
-        Some((source_node, op_idx)) => {
-            let op_idx = op_idx as u32;
-            let debug_info = debug_info.as_deref().unwrap();
-            let asm_op = source_node
-                .asm_op_for_operation(op_idx)
-                .and_then(|asm_op| asm_op.to_assembly_op(debug_info));
-            let debug_var_infos =
-                source_node.debug_infos_for_operation(op_idx, debug_info).collect::<Vec<_>>();
-            (asm_op, debug_var_infos)
-        }
-        None => (None, vec![]),
-    };
-    let pre_step_stack = processor.state().get_stack_state();
-    let result = if let Some(debug_info) = debug_info.as_ref() {
+    let result = if let Some(debug_info) = source.debug_info() {
         poll_immediately(processor.step_with_package_debug_info(host, ctx, debug_info))
     } else {
         poll_immediately(processor.step(host, ctx))
@@ -2309,42 +2306,18 @@ fn advance_one<H: Host>(
     match result {
         Ok(Some(new_ctx)) => {
             *cycle += 1;
-            record_debug_vars(debug_state, *cycle, debug_var_infos, &pre_step_stack);
             *current_asmop = executed_asmop;
-            update_top_frame_with_debug(host, current_asmop.as_ref(), &inline_frames);
+            update_top_frame_with_debug(host, current_asmop.as_ref(), source.inline_frames());
             Ok(Some(new_ctx))
         }
         Ok(None) => {
             *cycle += 1;
             *current_asmop = None;
+            debug_state.debug_vars.reset();
             Ok(None)
         }
         Err(e) => Err(e),
     }
-}
-
-fn extract_debug_asm_op(
-    debug_info: Option<&PackageDebugInfo>,
-    source_node_id: Option<DebugSourceNodeId>,
-    op_idx: Option<usize>,
-) -> Option<&DebugSourceAsmOp> {
-    let debug_info = debug_info?;
-    let source_node_id = source_node_id?;
-    let source_node = &debug_info[source_node_id];
-    match op_idx {
-        Some(op_idx) => source_node.asm_op_for_operation(op_idx as u32),
-        None => source_node.asm_op_for_operation(0),
-    }
-}
-
-fn extract_asm_op(
-    debug_info: Option<&PackageDebugInfo>,
-    source_node_id: Option<DebugSourceNodeId>,
-    op_idx: Option<usize>,
-) -> Option<AssemblyOp> {
-    let debug_asm_op = extract_debug_asm_op(debug_info, source_node_id, op_idx)?;
-    let debug_info = debug_info?;
-    debug_asm_op.to_assembly_op(debug_info)
 }
 
 fn is_next_source_line(
@@ -2503,7 +2476,7 @@ fn step_next_line<H: Host>(
     }
 }
 
-/// Step out: advance until call depth decreases.
+/// Step out: advance until the captured invocation returns.
 fn step_out<H: Host>(
     processor: &mut FastProcessor,
     host: &mut DapHostWrapper<'_, H>,
@@ -2512,7 +2485,7 @@ fn step_out<H: Host>(
     current_asmop: &mut Option<AssemblyOp>,
     debug_state: &mut DapDebugVarState,
 ) -> StepResult {
-    let target_depth = host.call_depth.saturating_sub(1);
+    let target = host.recovered.return_target(host.call_depth);
 
     loop {
         let ctx = match resume_ctx.take() {
@@ -2524,7 +2497,13 @@ fn step_out<H: Host>(
             Ok(Some(new_ctx)) => {
                 *resume_ctx = Some(new_ctx);
 
-                if host.call_depth <= target_depth {
+                // A recovered return can first appear on a control cycle. Stop at the
+                // caller's next assembly operation so source stepping has a usable location.
+                if target.has_returned(&host.recovered, host.call_depth)
+                    && (!target.is_recovered()
+                        || !host.recovered.has_current_frame()
+                        || current_asmop.is_some())
+                {
                     update_top_frame(host, current_asmop.as_ref());
                     return StepResult::Stepped;
                 }

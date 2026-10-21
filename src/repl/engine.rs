@@ -27,7 +27,6 @@ pub enum Outcome {
 /// [`super::script::run_script`]).
 pub struct ReplEngine {
     state: State,
-    selected_frame: usize,
 }
 
 impl ReplEngine {
@@ -35,7 +34,6 @@ impl ReplEngine {
     pub fn new(config: Box<DebuggerConfig>) -> Result<Self, Report> {
         Ok(Self {
             state: State::new(config)?,
-            selected_frame: 0,
         })
     }
 
@@ -93,7 +91,7 @@ impl ReplEngine {
     /// Print the current source location / procedure to `out`.
     pub fn print_location(&self, out: &mut dyn Write) {
         let frames = self.state.executor().callstack.logical_frames("");
-        if let Some(frame) = frames.iter().rev().nth(self.selected_frame) {
+        if let Some(frame) = frames.iter().rev().nth(self.state.selected_stack_frame()) {
             let name = frame.display_name();
             if let Some(resolved) = frame.resolved(&*self.state.source_manager) {
                 let _ = writeln!(out, "at {} in {}", resolved, name);
@@ -159,7 +157,7 @@ impl ReplEngine {
             }
         }
 
-        self.selected_frame = 0;
+        self.state.reset_stack_selection();
         self.report_execution_state(out);
         Ok(())
     }
@@ -176,7 +174,7 @@ impl ReplEngine {
         self.ensure_can_continue()?;
 
         self.state.run_until_stopped();
-        self.selected_frame = 0;
+        self.state.reset_stack_selection();
 
         self.report_execution_state(out);
 
@@ -196,7 +194,7 @@ impl ReplEngine {
 
         self.state.create_breakpoint(bp_type);
         self.state.run_until_stopped();
-        self.selected_frame = 0;
+        self.state.reset_stack_selection();
         self.report_execution_state(out);
         Ok(())
     }
@@ -315,7 +313,7 @@ impl ReplEngine {
 
     fn cmd_where(&mut self, out: &mut dyn Write) -> Result<(), String> {
         let frames = self.state.executor().callstack.logical_frames("");
-        if let Some(frame) = frames.iter().rev().nth(self.selected_frame) {
+        if let Some(frame) = frames.iter().rev().nth(self.state.selected_stack_frame()) {
             let name = frame.display_name();
             if let Some(resolved) = frame.resolved(&*self.state.source_manager) {
                 let _ = writeln!(
@@ -367,7 +365,11 @@ impl ReplEngine {
                 .resolved(&*self.state.source_manager)
                 .map(|r| format!(" at {}", r))
                 .unwrap_or_default();
-            let marker = if i == self.selected_frame { "*" } else { " " };
+            let marker = if i == self.state.selected_stack_frame() {
+                "*"
+            } else {
+                " "
+            };
 
             let _ = writeln!(out, "{} #{} {}{}", marker, i, frame.display_name(), loc_str);
         }
@@ -375,18 +377,14 @@ impl ReplEngine {
     }
 
     fn cmd_frame(&mut self, index: usize, out: &mut dyn Write) -> Result<(), String> {
-        let num_frames = self.state.executor().callstack.logical_frames("").len();
-        if index >= num_frames {
-            return Err(format!("invalid frame index {index}; backtrace has {num_frames} frames"));
-        }
-        self.selected_frame = index;
+        self.state.select_stack_frame(index)?;
         self.print_location(out);
         Ok(())
     }
 
     fn cmd_reload(&mut self, out: &mut dyn Write) -> Result<(), String> {
         self.state.reload().map_err(|e| format!("reload failed: {e}"))?;
-        self.selected_frame = 0;
+        self.state.reset_stack_selection();
         let _ = writeln!(out, "Program reloaded");
         self.report_execution_state(out);
         Ok(())

@@ -1,4 +1,4 @@
-name: GitHub Actions Security Analysis with zizmor
+name: GitHub Actions Security Analysis
 
 on:
   push:
@@ -16,9 +16,30 @@ on:
   merge_group:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions: {}
 
 jobs:
+  actions-lock:
+    name: Verify GitHub Actions lockfile
+    runs-on: ubuntu-latest
+    permissions: {}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify lockfile
+        run: |
+          gh extension install github/gh-actions-lock
+          gh actions-lock --verify
+
   zizmor:
     name: Run zizmor
     runs-on: ubuntu-latest
@@ -32,16 +53,16 @@ jobs:
     permissions: {}
     steps:
       - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
       - name: Run zizmor 🌈
-        uses: zizmorcore/zizmor-action@3dc1ecc9bcb9e94e9b2c709687979e1298497054 # v0.6.2
+        uses: zizmorcore/zizmor-action@v0.6.4
         with:
           advanced-security: false
           config: zizmor.yml
-          version: 1.29.0
+          version: 1.30.1
           # Audit this repository's own automation, not the workflows it ships.
           # `extra/templates` contains CI for generated projects: those run in a
           # user's repository with a user's token, and zizmor's remedies would

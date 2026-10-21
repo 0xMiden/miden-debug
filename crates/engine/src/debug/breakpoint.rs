@@ -217,8 +217,13 @@ pub(crate) fn procedure_pattern(spec: &str) -> Result<GlobMatcher, String> {
 
 /// Match a procedure pattern against a fully-qualified procedure name.
 pub(crate) fn procedure_matches(pattern: &GlobMatcher, procedure: &str) -> bool {
-    let procedure = miden_debug_types::Uri::from(format!("file://{procedure}"));
-    pattern.is_match(&procedure)
+    let raw = miden_debug_types::Uri::from(format!("file://{procedure}"));
+    if pattern.is_match(&raw) {
+        return true;
+    }
+    let demangled = super::stacktrace::demangle(procedure);
+    demangled != procedure
+        && pattern.is_match(&miden_debug_types::Uri::from(format!("file://{demangled}")))
 }
 
 /// Compile a user-provided file spec into a glob pattern.

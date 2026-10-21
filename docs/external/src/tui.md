@@ -128,9 +128,10 @@ Examples:
 ## Inspecting variables
 
 `:vars` (aliases `:variables`, `:locals`) renders source-level variables
-resolved from DWARF info embedded in the program. Values come from the live
-operand stack and the live FMP-relative memory frame; they update on every
-step.
+resolved from DWARF info embedded in the program for the selected physical
+stack frame. Suspended callers retain their own declarations, captured stack
+values, and frame bases; memory reads use the owning invocation's context.
+Inline frames do not yet expose separate locals or lexical scopes.
 
 By default the output hides compiler-generated locals (named `local0`,
 `local1`, …) so you only see the names that appear in the original source.
@@ -149,10 +150,8 @@ After successful termination, variable commands report `Program has terminated; 
 variables`. Final stack outputs remain available, and variables from a failed execution
 remain inspectable.
 
-Each variable is rendered as `name=value`. If the variable's storage location
-isn't currently materialised (e.g. it lives in a register that hasn't been
-spilled, or in memory that hasn't been written), the location specifier is
-shown verbatim instead of a value.
+Each variable is rendered as `name=value`. If its storage cannot be read,
+the value is shown as `<unavailable>`.
 
 ## Tips
 

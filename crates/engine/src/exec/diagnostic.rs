@@ -5,7 +5,7 @@ use miden_processor::{
     BaseHost, ExecutionError, ExecutionOptions, ExecutionOutput, FastProcessor, Felt,
     FutureMaybeSend, Host, LoadedMastForest, ProcessorState, StackInputs,
     advice::{AdviceInputs, AdviceMutation},
-    event::EventError,
+    event::{EventError, TraceError},
     trace::RowIndex,
 };
 
@@ -77,6 +77,13 @@ impl<H: Host> BaseHost for DiagnosticHostWrapper<'_, H> {
     ) -> Option<&miden_core::events::EventName> {
         self.inner.resolve_event(event_id)
     }
+
+    fn resolve_trace(
+        &self,
+        trace_id: miden_core::events::EventId,
+    ) -> Option<&miden_core::events::EventName> {
+        self.inner.resolve_trace(trace_id)
+    }
 }
 
 impl<H: Host> Host for DiagnosticHostWrapper<'_, H> {
@@ -99,6 +106,14 @@ impl<H: Host> Host for DiagnosticHostWrapper<'_, H> {
             _ => (),
         }
         self.inner.on_event(process)
+    }
+
+    fn on_trace(
+        &mut self,
+        process: &ProcessorState<'_>,
+    ) -> impl FutureMaybeSend<Result<(), TraceError>> {
+        self.capture_state(process);
+        self.inner.on_trace(process)
     }
 }
 

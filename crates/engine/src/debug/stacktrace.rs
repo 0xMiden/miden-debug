@@ -12,11 +12,16 @@ use std::path::{Path, PathBuf};
 
 use miden_core::operations::AssemblyOp;
 use miden_debug_types::{Location, SourceFile, SourceManager, SourceSpan, Uri};
-use miden_mast_package::debug_info::{DebugSourceInlineCall, DebugSourceNodeId, PackageDebugInfo};
+use miden_mast_package::debug_info::{
+    DebugFunctionIdx, DebugFunctionInfo, DebugSourceInlineCall, DebugSourceNodeId, PackageDebugInfo,
+};
 use miden_processor::{ContextId, SourceInlineCallContext, operation::Operation, trace::RowIndex};
 use miden_utils_sync::RwLock;
 
 use crate::Event;
+
+mod recovered;
+pub use recovered::{InvocationId, RecoveredCallStack, ReturnTarget};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ControlFlowOp {
@@ -73,10 +78,75 @@ pub struct LogicalStackFrame {
     name: Arc<str>,
     kind: LogicalFrameKind,
     location: Option<LogicalFrameLocation>,
-    physical_index: usize,
+    physical_index: Option<usize>,
+    origin: Option<miden_processor::DebugFrameOrigin>,
+    invocation: Option<InvocationId>,
+    source: Option<LogicalFrameSource>,
+}
+
+#[derive(Debug, Clone)]
+enum LogicalFrameSource {
+    Physical(miden_processor::DebugCallFrame),
+    Inline {
+        owner: InvocationId,
+        info: Arc<PackageDebugInfo>,
+        function_idx: DebugFunctionIdx,
+        call_site: Location,
+    },
 }
 
 impl LogicalStackFrame {
+    /// Compare source invocations independently of presentation names and current locations.
+    pub(crate) fn is_same_source_frame(&self, other: &Self) -> bool {
+        match (&self.source, &other.source) {
+            (
+                Some(LogicalFrameSource::Physical(left)),
+                Some(LogicalFrameSource::Physical(right)),
+            ) => left.is_same_frame(right),
+            (
+                Some(LogicalFrameSource::Inline {
+                    owner: left_owner,
+                    info: left_info,
+                    function_idx: left_function,
+                    call_site: left_site,
+                }),
+                Some(LogicalFrameSource::Inline {
+                    owner: right_owner,
+                    info: right_info,
+                    function_idx: right_function,
+                    call_site: right_site,
+                }),
+            ) => {
+                left_owner == right_owner
+                    && Arc::ptr_eq(left_info, right_info)
+                    && left_function == right_function
+                    && left_site == right_site
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn debug_info(&self) -> Option<&PackageDebugInfo> {
+        match self.source.as_ref()? {
+            LogicalFrameSource::Physical(frame) => Some(frame.debug_info()),
+            LogicalFrameSource::Inline { info, .. } => Some(info),
+        }
+    }
+
+    pub(crate) fn function(&self) -> Option<&DebugFunctionInfo> {
+        match self.source.as_ref()? {
+            LogicalFrameSource::Physical(frame) => Some(frame.function()),
+            LogicalFrameSource::Inline {
+                info, function_idx, ..
+            } => info.get_function(*function_idx),
+        }
+    }
+
+    /// Physical source invocations have local ownership; inline and event-only rows do not.
+    pub fn invocation_id(&self) -> Option<InvocationId> {
+        self.invocation
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -85,11 +155,28 @@ impl LogicalStackFrame {
         self.kind
     }
 
-    pub fn physical_index(&self) -> usize {
+    pub fn physical_index(&self) -> Option<usize> {
         self.physical_index
     }
 
+    pub fn origin(&self) -> Option<miden_processor::DebugFrameOrigin> {
+        self.origin
+    }
+
+    pub fn assembly_location(&self) -> Option<&Location> {
+        match self.location.as_ref()? {
+            LogicalFrameLocation::Assembly(location) => Some(location),
+            LogicalFrameLocation::Resolved(_) => None,
+        }
+    }
+
     pub fn display_name(&self) -> String {
+        if self
+            .origin
+            .is_some_and(|origin| origin != miden_processor::DebugFrameOrigin::Source)
+        {
+            return format!("[inferred] {}", self.name);
+        }
         match self.kind {
             LogicalFrameKind::Physical => self.name.to_string(),
             LogicalFrameKind::Inline => format!("[inlined] {}", self.name),
@@ -152,7 +239,16 @@ pub struct CallStack {
     contexts: BTreeSet<Arc<str>>,
     frames: Vec<CallFrame>,
     block_stack: Vec<Option<SpanContext>>,
+    recovered: RecoveredCallStack,
+    frame_transition: Option<FrameTransition>,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameTransition {
+    Entered,
+    Exited,
+}
+
 impl CallStack {
     pub fn new(events: Arc<RwLock<BTreeMap<RowIndex, Event>>>) -> Self {
         Self {
@@ -160,6 +256,8 @@ impl CallStack {
             contexts: BTreeSet::default(),
             frames: vec![],
             block_stack: vec![],
+            recovered: RecoveredCallStack::default(),
+            frame_transition: None,
         }
     }
 
@@ -171,6 +269,8 @@ impl CallStack {
             contexts: BTreeSet::default(),
             frames,
             block_stack: vec![],
+            recovered: RecoveredCallStack::default(),
+            frame_transition: None,
         }
     }
 
@@ -194,7 +294,40 @@ impl CallStack {
         self.frames.as_slice()
     }
 
+    /// Capture the current invocation for return stepping, with event fallback when needed.
+    pub fn return_target(&self) -> ReturnTarget {
+        self.recovered.return_target(self.frames.len())
+    }
+
+    pub fn has_returned(&self, target: &ReturnTarget) -> bool {
+        target.has_returned(&self.recovered, self.frames.len())
+    }
+
+    pub fn current_invocation(&self) -> Option<InvocationId> {
+        self.recovered.current_invocation()
+    }
+
+    pub fn invocation_ids(&self) -> impl Iterator<Item = InvocationId> + '_ {
+        self.recovered.invocation_ids()
+    }
+
+    pub fn has_recovered_current_frame(&self) -> bool {
+        self.recovered.has_current_frame()
+    }
+
+    pub fn observe_source_context(
+        &mut self,
+        context: &miden_processor::ResumeContext,
+        current: Option<(DebugSourceNodeId, u32)>,
+        asmop: Option<&AssemblyOp>,
+    ) {
+        self.recovered.update(context, current, asmop);
+    }
+
     pub fn logical_frames(&self, strip_prefix: &str) -> Vec<LogicalStackFrame> {
+        if self.recovered.has_current_frame() {
+            return self.recovered.logical_frames(strip_prefix);
+        }
         let mut logical = Vec::new();
         for (physical_index, frame) in self.frames.iter().enumerate() {
             let current_location = frame.last_logical_location();
@@ -207,7 +340,10 @@ impl CallStack {
                 name: frame.procedure(strip_prefix).unwrap_or_else(|| Arc::from("<unknown>")),
                 kind: LogicalFrameKind::Physical,
                 location,
-                physical_index,
+                physical_index: Some(physical_index),
+                origin: None,
+                invocation: None,
+                source: None,
             });
 
             for inline_index in (0..frame.inline_frames.len()).rev() {
@@ -223,11 +359,20 @@ impl CallStack {
                     name: Arc::from(inline.display_name().into_boxed_str()),
                     kind: LogicalFrameKind::Inline,
                     location,
-                    physical_index,
+                    physical_index: Some(physical_index),
+                    origin: None,
+                    invocation: None,
+                    source: None,
                 });
             }
         }
         logical
+    }
+
+    /// Takes the frame event handled by the most recent [`Self::next`], clearing it so a later
+    /// cycle does not read it as its own.
+    pub fn take_frame_transition(&mut self) -> Option<FrameTransition> {
+        self.frame_transition.take()
     }
 
     /// Updates the call stack from `info`
@@ -246,6 +391,11 @@ impl CallStack {
         log::trace!("handling {:?}/{:?} at cycle {}: {:?}", info.control, info.op, info.clk, event);
         let is_frame_start = event.as_ref().is_some_and(|event| event.is_frame_start());
         let is_frame_end = event.as_ref().is_some_and(|event| event.is_frame_end());
+        self.frame_transition = match (is_frame_start, is_frame_end) {
+            (true, _) => Some(FrameTransition::Entered),
+            (_, true) => Some(FrameTransition::Exited),
+            _ => None,
+        };
         let popped_frame = self.handle_event(event, procedure.clone(), info.op, info.asmop);
 
         match info.control {
@@ -777,11 +927,11 @@ impl fmt::Display for StackTrace<'_> {
                 write!(f, " in <unavailable>")?;
             }
             if is_top {
-                let physical_frame = &self.callstack.frames[frame.physical_index()];
-                // Print op context
-                let context_size = physical_frame.context.len();
+                let context = self.callstack.current_frame().map(CallFrame::recent);
+                // A failure can have recovered source frames before any physical frame exists.
+                let context_size = context.map_or(0, VecDeque::len);
                 writeln!(f, ":\n\nLast {context_size} Instructions (of current frame):")?;
-                for (i, op) in physical_frame.context.iter().enumerate() {
+                for (i, op) in context.into_iter().flatten().enumerate() {
                     let is_last = i + 1 == context_size;
                     if let Some(callee) = op.callee("") {
                         write!(f, " |   exec.{callee}")?;
@@ -831,7 +981,7 @@ fn resolve_assembly_location(
 }
 
 #[cfg(feature = "std")]
-fn demangle(name: &str) -> String {
+pub(super) fn demangle(name: &str) -> String {
     let mut input = name.as_bytes();
     let mut demangled = Vec::with_capacity(input.len() * 2);
     rustc_demangle::demangle_stream(&mut input, &mut demangled, /* include_hash= */ false)
@@ -840,8 +990,12 @@ fn demangle(name: &str) -> String {
 }
 
 #[cfg(not(feature = "std"))]
-fn demangle(name: &str) -> String {
-    rustc_demangle::demangle(name).to_string()
+pub(super) fn demangle(name: &str) -> String {
+    // Assembly contexts qualify the linkage symbol with a package/module path.
+    match name.rsplit_once("::") {
+        Some((prefix, symbol)) => format!("{prefix}::{:#}", rustc_demangle::demangle(symbol)),
+        None => format!("{:#}", rustc_demangle::demangle(name)),
+    }
 }
 
 #[cfg(test)]

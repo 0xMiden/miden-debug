@@ -58,3 +58,6 @@ impl NativePtr {
         self.offset == 0
     }
 }
+
+#[cfg(test)]
+mod tests;

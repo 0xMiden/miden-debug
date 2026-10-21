@@ -4,7 +4,9 @@
 //! (`SourceContext`). This module adds what instruments need on top of it: the forest, the
 //! exec node, and, for a cycle that starts a source node, the source node that started it.
 //! [`DebugExecutor`] and [`Stepper`] both produce it, so there is one reading of the
-//! continuation stream.
+//! continuation stream for the two stepping drivers. The DAP server steps the processor on its
+//! own, produces no record, and counts the finalization step as a cycle, which the two drivers
+//! do not.
 //!
 //! [`DebugExecutor`]: crate::DebugExecutor
 //! [`Stepper`]: crate::Stepper
@@ -35,9 +37,14 @@ use crate::debug::{ControlFlowOp, InlineCallFrame};
 pub struct CycleInfo<'a> {
     /// The forest the step executes in.
     pub forest: &'a Arc<MastForest>,
-    /// The debug info of that forest's package, when it carries any.
+    /// The debug info the step is resolved against: the forest's package's own, or, on the
+    /// first step of a stepper built from a bare program, the one supplied to it, which the
+    /// processor copies for the later steps. `None` when the package carries none, and for
+    /// a library with debug info when the program itself has none, since the processor then
+    /// tracks no source at all. Key records by `forest`, not by this.
     pub debug_info: Option<&'a Arc<PackageDebugInfo>>,
-    /// The MAST node the step works on. In step mode every described cycle has one.
+    /// The MAST node the step works on. Every described cycle has one; the type is shared
+    /// with the resolution of a context that has nothing left to run.
     pub exec_node: Option<MastNodeId>,
     /// The source occurrence of `exec_node`, when the package has debug info.
     pub source_node: Option<DebugSourceNodeId>,
@@ -75,11 +82,12 @@ pub struct NodeStart {
 ///
 /// A start pushes, a finish pops through the node, and a loop's per-iteration finish pops the
 /// body while keeping the loop. A start whose callee may run in another forest, an external
-/// or a dynamic node, also pushes a boundary: whatever the callee's forest leaves open, such
-/// as the children of a root whose start was never described, is popped with the boundary on
-/// the first cycle back in this forest, and a parent is only ever looked for above the
-/// innermost boundary. One tracker follows one execution from start to end; it must see every
-/// cycle, in order.
+/// or a dynamic node, pushes a boundary (the dynamic node itself is pushed below it, so that
+/// its finish still finds it): whatever the callee leaves open, such as the children of a
+/// root whose start was never described, is popped with the boundary on the first cycle after
+/// the continuation stack unwound back to the caller, and a parent is only ever looked for
+/// above the innermost boundary. One tracker follows one execution from start to end; it must
+/// see every cycle, in order.
 #[derive(Debug, Default)]
 pub struct SourceTracker {
     /// Open nodes and forest boundaries, innermost last.
@@ -106,6 +114,8 @@ enum Entry {
         /// The dynamic node that left, when the boundary is a dynamic node's; an external
         /// node leaves no entry of its own.
         dynamic: Option<DebugSourceNodeId>,
+        /// Depth of the continuation stack at the start that left, the leaving node on top.
+        depth: usize,
     },
 }
 
@@ -142,7 +152,10 @@ impl SourceTracker {
             !matches!(next, Continuation::EnterForest { .. }),
             "a resume context never starts with a forest switch"
         );
-        let returned_from = self.return_to(forest);
+        let depth = ctx.continuation_stack().len();
+        // On a cross-forest dynamic call this is `Some` on the `FinishDyn` back in the caller,
+        // which starts nothing; only a same-forest callee root makes use of it.
+        let returned_from = self.return_to(forest, depth);
         let node_start = match next {
             Continuation::StartNode(exec_node) => {
                 // The boundary does not depend on the node having a source node: a forest
@@ -161,13 +174,15 @@ impl SourceTracker {
                 match kind {
                     // An external node has no finish in this forest: its callee runs
                     // elsewhere and execution comes back to the next continuation.
-                    Some(MastNode::External(_)) => self.push_boundary(forest, None),
-                    // A dynamic node has a finish, but its callee may run elsewhere too.
+                    Some(MastNode::External(_)) => self.push_boundary(forest, None, depth),
+                    // A dynamic node has a finish, but its callee may run elsewhere too. The
+                    // node goes below the boundary: the boundary is popped first, and the
+                    // finish then closes the node in the caller's frame.
                     Some(MastNode::Dyn(_)) => {
                         if let Some(node) = node {
                             self.push_node(forest, node);
                         }
-                        self.push_boundary(forest, node);
+                        self.push_boundary(forest, node, depth);
                     }
                     _ => {
                         if let Some(node) = node {
@@ -196,7 +211,10 @@ impl SourceTracker {
                 }
                 None
             }
-            _ => None,
+            // Operations, `RESPAN`, and a forest switch neither open nor close a node.
+            Continuation::ResumeBasicBlock { .. }
+            | Continuation::Respan { .. }
+            | Continuation::EnterForest { .. } => None,
         };
 
         Some(CycleInfo {
@@ -220,12 +238,19 @@ impl SourceTracker {
         });
     }
 
-    /// Marks that `forest` leaves through `dynamic`, or through an external node.
-    fn push_boundary(&mut self, forest: &Arc<MastForest>, dynamic: Option<DebugSourceNodeId>) {
+    /// Marks that `forest` leaves through `dynamic`, or through an external node, with the
+    /// continuation stack `depth` deep.
+    fn push_boundary(
+        &mut self,
+        forest: &Arc<MastForest>,
+        dynamic: Option<DebugSourceNodeId>,
+        depth: usize,
+    ) {
         self.boundaries.push(self.open.len());
         self.open.push(Entry::Boundary {
             forest: forest.clone(),
             dynamic,
+            depth,
         });
     }
 
@@ -245,21 +270,30 @@ impl SourceTracker {
     }
 
     /// Pops the innermost boundary and everything above it once execution is back in the
-    /// forest that left through it. Returns the dynamic node that left, if it was one.
+    /// forest that left through it, with the continuation stack unwound to where it was,
+    /// `depth` deep now. Returns the dynamic node that left, if it was one.
     ///
-    /// A callee that is in the same forest as its caller pops the boundary on its first
-    /// cycle, so it opens its nodes in the caller's frame; that only loses the boundary's
-    /// cleanup for a self-referencing external node, which the assembler does not emit.
-    fn return_to(&mut self, forest: &Arc<MastForest>) -> Option<DebugSourceNodeId> {
+    /// Being in the leaving forest is not enough: a callee may call back into it, deeper on
+    /// the stack. An external node is gone from the stack on return, so the stack is shorter
+    /// than it was. A dynamic node's finish is still there: on a cross-forest return the
+    /// stack is as deep as it was, and a callee in the caller's own forest opens its root one
+    /// deeper, on the first cycle after the dynamic start, when its nodes go into the caller's
+    /// frame. Anything deeper is still inside a callee.
+    fn return_to(&mut self, forest: &Arc<MastForest>, depth: usize) -> Option<DebugSourceNodeId> {
         let position = *self.boundaries.last()?;
         let Entry::Boundary {
             forest: left,
             dynamic,
+            depth: left_at,
         } = &self.open[position]
         else {
             unreachable!("boundary positions point at boundaries")
         };
-        if !Arc::ptr_eq(left, forest) {
+        let unwound = match dynamic {
+            Some(_) => depth <= left_at + 1,
+            None => depth < *left_at,
+        };
+        if !unwound || !Arc::ptr_eq(left, forest) {
             return None;
         }
         let dynamic = *dynamic;
@@ -270,8 +304,9 @@ impl SourceTracker {
     /// The innermost open node of `forest` that lists `child` among its children, or the
     /// innermost open node of that forest when none does.
     ///
-    /// Only the current frame is searched, so a node of a root entered from another package,
-    /// whose start was never described, gets no parent rather than a node of the caller. The
+    /// Only the current frame is searched, so a node of a root entered through an external
+    /// node, whose start was never described, gets no parent rather than a node of the
+    /// caller. The
     /// second rule covers a node whose parent is open but does not list it, which happens when
     /// the debug info and the forest disagree; a loop that exited but is still open never
     /// lists its sibling as a child, so the first rule skips it.

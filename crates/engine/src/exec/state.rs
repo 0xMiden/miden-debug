@@ -153,7 +153,9 @@ impl DebugExecutor {
     ///
     /// `on_cycle` runs before the cycle executes, after the profiler's instruments received the
     /// same record, so it sees a cycle that fails too. The step that finalizes a finished
-    /// program runs no cycle and is not described. Otherwise like [`Self::step`].
+    /// program runs no cycle and is not described. Unlike [`Stepper`](crate::Stepper), a step
+    /// after a failure is not an error: it returns `Ok(None)` like a step after the end.
+    /// Otherwise like [`Self::step`].
     pub fn step_with(
         &mut self,
         on_cycle: impl FnOnce(&CycleInfo<'_>),

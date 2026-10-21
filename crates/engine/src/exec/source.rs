@@ -19,7 +19,15 @@ pub(crate) struct SourceContext {
 
 impl SourceContext {
     pub fn new(context: &ResumeContext) -> Self {
-        let debug_info = context.debug_info();
+        Self::with_debug_info(context, context.debug_info())
+    }
+
+    /// Selects the cycle metadata against `debug_info` instead of the context's own, which a
+    /// context built from a bare program does not have before its first step.
+    pub fn with_debug_info(
+        context: &ResumeContext,
+        debug_info: Option<Arc<PackageDebugInfo>>,
+    ) -> Self {
         let cycle = extract_cycle(context, debug_info.as_deref());
         let inline_frames = inline_frames_for_operation(
             debug_info

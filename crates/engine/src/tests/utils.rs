@@ -1,6 +1,10 @@
 //! Test-only utilities shared across unit tests.
 
 use alloc::string::String;
+use core::{
+    pin::pin,
+    task::{Context, Poll, Waker},
+};
 
 use miden_assembly_syntax::ast::types::Type;
 
@@ -60,4 +64,17 @@ pub(crate) fn write_scalar_bytes(
     }
 
     Ok(())
+}
+
+/// Drives `future` to completion on the current thread.
+///
+/// Only for futures that make progress on every poll, as those of a synchronous host do.
+pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
+    let mut future = pin!(future);
+    let mut cx = Context::from_waker(Waker::noop());
+    loop {
+        if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
+            return output;
+        }
+    }
 }

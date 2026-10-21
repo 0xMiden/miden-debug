@@ -148,7 +148,6 @@ fn function_breakpoints_match_rust_symbols_without_source_path_fallback() {
                     &mut cycle,
                     &mut asmop,
                     &ContinueBreakpoints {
-                        source: &[],
                         function: &function,
                         source_path_prefixes: &[],
                     },

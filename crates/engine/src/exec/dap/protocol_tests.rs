@@ -269,6 +269,95 @@ fn removed_pending_source_breakpoints_do_not_stop_in_loaded_packages() {
 }
 
 #[test]
+fn relocated_source_breakpoint_moves_when_another_package_loads_the_requested_line() {
+    use miden_assembly_syntax::ast::{ModuleKind, Path as AssemblyPath};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("shared.masm");
+    fs::write(&path, "pub proc foo\n    push.11\nend\n\npub proc bar\n    push.22\nend\n").unwrap();
+    let path = path.canonicalize().unwrap();
+    let manager = Arc::new(DefaultSourceManager::default());
+    let module = Module::parser(Some(ModuleKind::Library))
+        .parse_file(Some(AssemblyPath::new("fixture::shared")), &path, manager.clone())
+        .unwrap();
+    let shared: Arc<Package> = Assembler::new(manager.clone())
+        .assemble_library("shared", module, None::<&str>)
+        .unwrap()
+        .into();
+    let dependency: Arc<Package> = Assembler::new(manager.clone())
+        .with_package(shared.clone(), miden_assembly::Linkage::Static)
+        .unwrap()
+        .assemble_library(
+            "dependency",
+            "namespace fixture::dependency use fixture::shared pub proc run exec.shared::bar \
+             push.1 add end",
+            None::<&str>,
+        )
+        .unwrap()
+        .into();
+    let package: Arc<Package> = Assembler::new(manager)
+        .with_package(shared, miden_assembly::Linkage::Static)
+        .unwrap()
+        .with_package(dependency.clone(), miden_assembly::Linkage::Dynamic)
+        .unwrap()
+        .assemble_program(
+            "root",
+            "use fixture::shared use fixture::dependency begin exec.shared::foo \
+             exec.dependency::run add drop end",
+        )
+        .unwrap()
+        .into();
+    let mut session = Session::start_with_packages(
+        package,
+        Arc::new(DefaultSourceManager::default()),
+        DapConfig::new("127.0.0.1:0"),
+        vec![dependency],
+    );
+    session.handshake("launch");
+    let response = session.request(
+        "setBreakpoints",
+        json!({"source": {"path": path}, "breakpoints": [{"line": 6}]}),
+    );
+    let breakpoint = &response["body"]["breakpoints"][0];
+    assert_eq!(breakpoint["verified"], true);
+    assert_eq!(breakpoint["line"], 2);
+    let id = breakpoint["id"].clone();
+
+    session.request("continue", json!({"threadId": 1}));
+    let (stop, snapshot) = session.stop();
+    assert_eq!(stop["body"]["reason"], "breakpoint", "{stop:?}");
+    assert_eq!(snapshot.unwrap()["current_stack"][0], 11);
+
+    let mut stopped_in_bar = false;
+    for _ in 0..8 {
+        session.request("continue", json!({"threadId": 1}));
+        let (stop, snapshot) = session.stop();
+        assert_eq!(stop["body"]["reason"], "breakpoint", "{stop:?}");
+        if snapshot.unwrap()["current_stack"][0] == 22 {
+            stopped_in_bar = true;
+            break;
+        }
+    }
+    assert!(stopped_in_bar, "the newly loaded executable line must be hit");
+    session.request("threads", json!({}));
+    assert_eq!(session.breakpoint_events.len(), 1);
+    let update = &session.breakpoint_events[0];
+    assert_eq!(update["reason"], "changed");
+    assert_eq!(update["breakpoint"]["id"], id);
+    assert_eq!(update["breakpoint"]["verified"], true);
+    assert_eq!(update["breakpoint"]["line"], 6);
+
+    let response = session.request(
+        "setBreakpoints",
+        json!({"source": {"path": path}, "breakpoints": [{"line": 6}]}),
+    );
+    assert_eq!(response["body"]["breakpoints"][0]["line"], 6);
+    assert_eq!(response["body"]["breakpoints"][0]["verified"], true);
+    assert_eq!(session.breakpoint_events.len(), 1);
+    session.disconnect();
+}
+
+#[test]
 fn instruction_stepping_verifies_pending_source_breakpoints_once() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("lazy.masm");

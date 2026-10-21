@@ -1405,7 +1405,6 @@ impl DapExecutor {
             // Extract initial asmop and populate the root frame.
             if let Some(ctx) = resume_ctx.as_ref() {
                 let source = SourceContext::new(ctx);
-                current_debug_info = source.debug_info().cloned();
                 if let Some(info) = source.debug_info() {
                     debug_state.source_breakpoints.observe(info.clone(), &wrapper);
                 }

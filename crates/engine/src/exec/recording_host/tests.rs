@@ -8,7 +8,7 @@ use miden_processor::{
 };
 
 use super::{EventMutationRecorder, RecordingHost};
-use crate::test_utils::block_on as poll_immediately;
+use crate::exec::poll_immediately;
 
 #[test]
 fn trace_handler_errors_preserve_the_registered_name() {

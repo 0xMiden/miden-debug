@@ -267,19 +267,7 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
     }
 }
 
-// POLL IMMEDIATELY
-// ================================================================================================
-
-/// Resolve a future that is expected to complete immediately (synchronous host methods).
-fn poll_immediately<T>(fut: impl std::future::Future<Output = T>) -> T {
-    let waker = std::task::Waker::noop();
-    let mut cx = std::task::Context::from_waker(waker);
-    let mut fut = std::pin::pin!(fut);
-    match fut.as_mut().poll(&mut cx) {
-        std::task::Poll::Ready(val) => val,
-        std::task::Poll::Pending => panic!("future was expected to complete immediately"),
-    }
-}
+use super::poll_immediately;
 
 macro_rules! write_with_format_type {
     ($out:ident, $read_expr:ident, $value:expr) => {

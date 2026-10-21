@@ -29,6 +29,8 @@ pub struct Stepper {
     tracker: SourceTracker,
     /// Number of VM cycles executed so far.
     cycle: usize,
+    /// Set once a step failed; the program is then stopped without a valid output.
+    failed: bool,
 }
 
 impl Stepper {
@@ -40,6 +42,7 @@ impl Stepper {
             pending_debug_info: None,
             tracker: SourceTracker::new(),
             cycle: 0,
+            failed: false,
         }
     }
 
@@ -72,6 +75,11 @@ impl Stepper {
     /// Whether the program has terminated, successfully or not.
     pub fn stopped(&self) -> bool {
         self.resume_ctx.is_none()
+    }
+
+    /// Whether a step failed. A failed program is stopped and has no output.
+    pub fn failed(&self) -> bool {
+        self.failed
     }
 
     /// The processor being stepped.
@@ -148,10 +156,13 @@ impl Stepper {
 
     /// The outputs of the terminated program, as a full execution would have returned them.
     ///
-    /// Fails if the program is still running.
+    /// Fails if the program is still running or if a step failed.
     pub fn into_output(self) -> Result<ExecutionOutput, ExecutionError> {
         if self.resume_ctx.is_some() {
             return Err(ExecutionError::Internal("the program has not terminated"));
+        }
+        if self.failed {
+            return Err(ExecutionError::Internal("the program failed and has no output"));
         }
         // The last step already rejected a final stack deeper than the output width.
         let stack: Vec<_> = self.processor.stack().iter().rev().copied().collect();
@@ -197,7 +208,15 @@ impl Stepper {
         &mut self,
         next: Result<Option<ResumeContext>, ExecutionError>,
     ) -> Result<bool, ExecutionError> {
-        self.resume_ctx = next?;
-        Ok(self.resume_ctx.is_some())
+        match next {
+            Ok(next) => {
+                self.resume_ctx = next;
+                Ok(self.resume_ctx.is_some())
+            }
+            Err(error) => {
+                self.failed = true;
+                Err(error)
+            }
+        }
     }
 }

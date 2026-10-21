@@ -347,6 +347,23 @@ fn bare_program_first_record_has_the_supplied_debug_info() {
     }
 }
 
+/// A failed program is stopped but has no output to export.
+#[test]
+fn into_output_is_refused_after_a_failure() {
+    let package = miden_assembly::Assembler::default()
+        .assemble_program("failing", "begin assert end")
+        .map(Arc::<Package>::from)
+        .unwrap();
+    let mut stepper =
+        Stepper::for_package(FastProcessor::new(StackInputs::default()), package).unwrap();
+    let mut records = 0;
+    stepper.run_sync(&mut DefaultHost::default(), |_| records += 1).unwrap_err();
+    assert!(records > 0, "the failing cycle is described");
+    assert!(stepper.stopped());
+    assert!(stepper.failed());
+    assert!(stepper.into_output().is_err());
+}
+
 #[test]
 fn inline_frames_name_the_inlined_procedure() {
     let (package, _) = fixture();

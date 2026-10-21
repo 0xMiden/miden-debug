@@ -22,13 +22,14 @@ use super::{
 /// open source nodes, which makes it the cheap way to observe an execution through the engine.
 #[derive(Debug)]
 pub struct Stepper {
+    /// The processor being stepped.
     processor: FastProcessor,
+    /// Where the program is in its life.
     state: State,
     /// Debug info to attribute the first step to when the context was built without it.
     pending_debug_info: Option<Arc<PackageDebugInfo>>,
+    /// The open source nodes, so a start can name its parent.
     tracker: SourceTracker,
-    /// Number of VM cycles completed so far.
-    cycle: usize,
 }
 
 /// Where the stepper is in the program's life.
@@ -39,7 +40,8 @@ pub struct Stepper {
 enum State {
     /// The context the next step consumes.
     Ready(ResumeContext),
-    /// A step took the context and has not returned; stays if that step's future was dropped.
+    /// A step took the context and has not returned; stays if that step's future was dropped
+    /// or if it unwound through the callback or the host.
     Stepping,
     /// The program terminated successfully.
     Finished,
@@ -59,7 +61,6 @@ impl Stepper {
             state: State::Ready(resume_ctx),
             pending_debug_info: None,
             tracker: SourceTracker::new(),
-            cycle: 0,
         }
     }
 
@@ -79,15 +80,18 @@ impl Stepper {
     ///
     /// The first cycle is resolved against it and the processor installs it on the first
     /// step; a context that already has debug info keeps its own, and so does every later
-    /// context, such as one of a library without debug info.
+    /// context, such as one of a library without debug info. Must be called before the first
+    /// step.
     pub fn with_debug_info(mut self, debug_info: Arc<PackageDebugInfo>) -> Self {
+        debug_assert_eq!(self.cycle(), 0, "debug info is attributed from the first step");
         self.pending_debug_info = Some(debug_info);
         self
     }
 
-    /// Number of VM cycles completed so far; a failing cycle is not counted.
+    /// Number of VM cycles completed so far, the processor's clock; a failing cycle is not
+    /// counted.
     pub fn cycle(&self) -> usize {
-        self.cycle
+        u32::from(self.processor.state().clock()) as usize
     }
 
     /// Whether the program has terminated, successfully or not.
@@ -121,7 +125,7 @@ impl Stepper {
         host: &mut impl SyncHost,
         on_cycle: impl FnOnce(&CycleInfo<'_>),
     ) -> Result<bool, ExecutionError> {
-        let Some((ctx, debug_info, described)) = self.before_step(on_cycle)? else {
+        let Some(Step { ctx, debug_info }) = self.before_step(on_cycle)? else {
             return Ok(false);
         };
         let next = match debug_info {
@@ -130,7 +134,7 @@ impl Stepper {
             }
             None => self.processor.step_sync(host, ctx),
         };
-        self.after_step(next, described)
+        self.after_step(next)
     }
 
     /// Executes one step with an asynchronous host, describing its cycle to `on_cycle` first.
@@ -141,7 +145,7 @@ impl Stepper {
         host: &mut impl Host,
         on_cycle: impl FnOnce(&CycleInfo<'_>),
     ) -> Result<bool, ExecutionError> {
-        let Some((ctx, debug_info, described)) = self.before_step(on_cycle)? else {
+        let Some(Step { ctx, debug_info }) = self.before_step(on_cycle)? else {
             return Ok(false);
         };
         let next = match debug_info {
@@ -150,7 +154,7 @@ impl Stepper {
             }
             None => self.processor.step(host, ctx).await,
         };
-        self.after_step(next, described)
+        self.after_step(next)
     }
 
     /// Steps with a synchronous host until the program terminates.
@@ -192,29 +196,15 @@ impl Stepper {
         let stack: Vec<_> = self.processor.stack().iter().rev().copied().collect();
         let stack = StackOutputs::new(&stack)
             .map_err(|_| ExecutionError::Internal("the final stack is not a valid output"))?;
-        // `into_parts` gives the advice provider and the memory but drops the deferred
-        // state, so the precompile witness is exported from a clone of it first.
-        let precompile_witness =
-            self.processor.deferred_state().clone().into_witness().map_err(|_| {
-                ExecutionError::Internal("failed to export deferred execution witness")
-            })?;
-        let (advice, memory) = self.processor.into_parts();
-        Ok(ExecutionOutput {
-            stack,
-            advice,
-            memory,
-            precompile_witness,
-        })
+        execution_output(self.processor, stack)
     }
 
     /// Takes the resume context, describes its cycle to `on_cycle` if it has one, and returns
-    /// the context, the debug info the step should run with, and whether a cycle was
-    /// described. `None` once the program has finished.
-    #[allow(clippy::type_complexity)]
+    /// what the step needs. `None` once the program has finished.
     fn before_step(
         &mut self,
         on_cycle: impl FnOnce(&CycleInfo<'_>),
-    ) -> Result<Option<(ResumeContext, Option<Arc<PackageDebugInfo>>, bool)>, ExecutionError> {
+    ) -> Result<Option<Step>, ExecutionError> {
         let ctx = match core::mem::replace(&mut self.state, State::Stepping) {
             State::Ready(ctx) => ctx,
             State::Finished => {
@@ -236,25 +226,19 @@ impl Stepper {
         let pending = self.pending_debug_info.take();
         let debug_info = ctx.debug_info().or(pending);
         let source = SourceContext::with_debug_info(&ctx, debug_info.clone());
-        let described = match self.tracker.observe(&ctx, &source) {
-            Some(cycle) => {
-                on_cycle(&cycle);
-                true
-            }
-            None => false,
-        };
-        Ok(Some((ctx, debug_info, described)))
+        if let Some(cycle) = self.tracker.observe(&ctx, &source) {
+            on_cycle(&cycle);
+        }
+        Ok(Some(Step { ctx, debug_info }))
     }
 
     /// Records the result of a step.
     fn after_step(
         &mut self,
         next: Result<Option<ResumeContext>, ExecutionError>,
-        described: bool,
     ) -> Result<bool, ExecutionError> {
         match next {
             Ok(next) => {
-                self.cycle += usize::from(described);
                 let running = next.is_some();
                 self.state = next.map_or(State::Finished, State::Ready);
                 Ok(running)
@@ -265,4 +249,33 @@ impl Stepper {
             }
         }
     }
+}
+
+/// What one step runs: the context it consumes and the debug info to run it with.
+struct Step {
+    ctx: ResumeContext,
+    debug_info: Option<Arc<PackageDebugInfo>>,
+}
+
+/// Packages a processor that ran to its end into the output a full execution returns, with
+/// `stack` as the outputs.
+///
+/// `into_parts` gives the advice provider and the memory but drops the deferred state, so the
+/// precompile witness is exported from a clone of it first.
+pub(crate) fn execution_output(
+    processor: FastProcessor,
+    stack: StackOutputs,
+) -> Result<ExecutionOutput, ExecutionError> {
+    let precompile_witness = processor
+        .deferred_state()
+        .clone()
+        .into_witness()
+        .map_err(|_| ExecutionError::Internal("failed to export deferred execution witness"))?;
+    let (advice, memory) = processor.into_parts();
+    Ok(ExecutionOutput {
+        stack,
+        advice,
+        memory,
+        precompile_witness,
+    })
 }

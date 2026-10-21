@@ -2289,19 +2289,7 @@ impl DapExecutor {
             let stack = StackOutputs::new(&stack_top)
                 .unwrap_or_else(|_| StackOutputs::new(&[]).expect("empty stack outputs"));
 
-            // The deferred state is only borrowable here, so clone it before consuming the
-            // processor; export mirrors `FastProcessor::into_execution_output`.
-            let precompile_witness =
-                processor.deferred_state().clone().into_witness().map_err(|_| {
-                    ExecutionError::Internal("failed to export deferred execution witness")
-                })?;
-            let (advice, memory) = processor.into_parts();
-            return Ok(ExecutionOutput {
-                stack,
-                advice,
-                memory,
-                precompile_witness,
-            });
+            return super::stepper::execution_output(processor, stack);
         } // end outer restart loop
     }
 }

@@ -24,6 +24,7 @@ use super::*;
 use crate::{
     exec::{Executor, Stepper},
     profiling::{Instrument, OutputResult, OutputWriter, ProfilerConfig},
+    test_utils::block_on,
 };
 
 /// Two procedures, an if/else, and a loop guarded by the split the assembler wraps around every
@@ -163,19 +164,6 @@ impl From<&CycleInfo<'_>> for Record {
     }
 }
 
-/// Drives `future` to completion on the current thread.
-///
-/// Only for futures that make progress on every poll, as those of a synchronous host do.
-fn block_on<F: Future>(future: F) -> F::Output {
-    let mut future = pin!(future);
-    let mut cx = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(output) = future.as_mut().poll(&mut cx) {
-            return output;
-        }
-    }
-}
-
 /// The node starts, their parents, and the operation hits of the fixture, for a run that takes
 /// the `if` and loops, and for one that takes the `else` and skips the loop.
 #[test]
@@ -308,9 +296,10 @@ fn external_loop_body_does_not_pile_up_open_nodes() {
         deepest = deepest.max(stepper.open_source_nodes());
     }
     assert_eq!(body_starts, iterations as usize);
-    // The entry join, its prologue or body block, the loop guard, the loop, the body: nothing
-    // accumulates across iterations.
-    assert!(deepest <= 5, "{deepest} nodes open at the deepest point");
+    // The entry join, its prologue or body block, the loop guard, the loop; the body is an
+    // external node, which leaves a boundary, not a node. Nothing accumulates across
+    // iterations.
+    assert_eq!(deepest, 4, "nodes open at the deepest point");
     assert_eq!(stepper.open_source_nodes(), 0);
     // The callee root's start runs in the same step as the external node's start and is
     // never described: the first record in the library is already inside the root.
@@ -379,8 +368,9 @@ fn external_siblings_under_a_foreign_root_have_no_parent() {
         .unwrap()
     {
         if open_after_return.take().is_some() {
-            // Back in the program after the libraries: only the program's own nodes are open.
-            assert!(stepper.open_source_nodes() <= 2, "{}", stepper.open_source_nodes());
+            // Back in the program after the libraries, on the finish of the program's root:
+            // nothing of the libraries is open any more.
+            assert_eq!(stepper.open_source_nodes(), 0);
         }
     }
     // `f`'s own root is never described, so `a` and `b` get no parent rather than each other.
@@ -500,8 +490,10 @@ fn a_dropped_step_is_not_a_finished_program() {
     let source_manager = Arc::new(DefaultSourceManager::default());
     let event_name = "miden-debug::test::yield";
     let event_id = miden_core::events::EventId::from_name(event_name).as_u64();
+    // The event id comes from the inputs, so the stack is a valid output while the step is
+    // pending: only the state can refuse the output.
     let package = miden_assembly::Assembler::new(source_manager)
-        .assemble_program("program", format!("begin push.{event_id} emit drop end"))
+        .assemble_program("program", "begin emit end")
         .map(Arc::<Package>::from)
         .unwrap();
     // The host answers the event itself, after yielding once.
@@ -509,8 +501,8 @@ fn a_dropped_step_is_not_a_finished_program() {
         inner: DefaultHost::default(),
         yielded: false,
     };
-    let mut stepper =
-        Stepper::for_package(FastProcessor::new(StackInputs::default()), package).unwrap();
+    let inputs = StackInputs::new(&[Felt::new(event_id).unwrap()]).unwrap();
+    let mut stepper = Stepper::for_package(FastProcessor::new(inputs), package).unwrap();
     let mut cx = Context::from_waker(Waker::noop());
     loop {
         let mut step = pin!(stepper.step(&mut host, |_| {}));
@@ -559,7 +551,7 @@ fn instruments_receive_the_record_before_the_cycle_runs() {
     let mut executor = Executor::new(Vec::new());
     executor.with_profiler_config(ProfilerConfig {
         instruments: vec![Box::new(RecordingInstrument(records.clone()))],
-        reports_dir: None,
+        ..Default::default()
     });
     let mut exec = executor.into_debug(package, source_manager);
     let mut outcome = Ok(None);
@@ -667,7 +659,7 @@ fn bare_program_first_record_has_the_supplied_debug_info() {
 
     let mut processor = FastProcessor::new(StackInputs::new(&inputs(1, 3)).unwrap());
     let ctx = processor.get_initial_resume_context(&package.unwrap_program()).unwrap();
-    let mut stepper = Stepper::new(processor, ctx).with_debug_info(debug_info);
+    let mut stepper = Stepper::new(processor, ctx).with_debug_info(debug_info.clone());
     let mut from_program = Vec::new();
     stepper
         .run_sync(&mut DefaultHost::default(), |cycle| from_program.push(Record::from(cycle)))
@@ -677,10 +669,194 @@ fn bare_program_first_record_has_the_supplied_debug_info() {
     assert!(first.has_debug_info, "{first:?}");
     assert!(first.source_node.is_some(), "{first:?}");
     assert!(first.node_start.is_some_and(|start| start.parent.is_none()), "{first:?}");
-    assert_eq!(from_program.len(), from_package.len());
-    for (i, (program, package)) in from_program.iter().zip(&from_package).enumerate() {
-        assert_eq!(program, package, "record {i}");
+    assert_eq!(from_program, from_package);
+
+    // The async path attributes the first cycle the same way.
+    let mut processor = FastProcessor::new(StackInputs::new(&inputs(1, 3)).unwrap());
+    let ctx = processor.get_initial_resume_context(&package.unwrap_program()).unwrap();
+    let mut stepper = Stepper::new(processor, ctx).with_debug_info(debug_info.clone());
+    let mut from_async = Vec::new();
+    block_on(
+        stepper.run(&mut DefaultHost::default(), |cycle| from_async.push(Record::from(cycle))),
+    )
+    .unwrap();
+    assert_eq!(from_async, from_package);
+
+    // A context that carries debug info keeps it: a different package's debug info, supplied
+    // as pending, changes nothing.
+    let other = miden_assembly::Assembler::default()
+        .assemble_program("other", "begin push.1 drop end")
+        .map(Arc::<Package>::from)
+        .unwrap();
+    let other_info = Arc::new(other.debug_info().unwrap().unwrap());
+    let mut stepper = Stepper::for_package(
+        FastProcessor::new(StackInputs::new(&inputs(1, 3)).unwrap()),
+        package.clone(),
+    )
+    .unwrap()
+    .with_debug_info(other_info);
+    let mut with_other = Vec::new();
+    stepper
+        .run_sync(&mut DefaultHost::default(), |cycle| with_other.push(Record::from(cycle)))
+        .unwrap();
+    assert_eq!(with_other, from_package);
+}
+
+/// A forest without debug info between two with some: the boundary of the stripped forest's
+/// external start is pushed although the start has no source node, so the leaf's loop is
+/// popped on return and the next call's loop neither chains nor names itself.
+#[test]
+fn a_boundary_is_kept_for_a_forest_without_debug_info() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let leaf: Arc<Package> = Arc::from(
+        miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_library(
+                "lib",
+                "namespace lib::loops pub proc drain while.true push.0 end end",
+                None::<String>,
+            )
+            .unwrap(),
+    );
+    let mid: Arc<Package> = Arc::from(
+        miden_assembly::Assembler::new(source_manager.clone())
+            .with_profile(&miden_project::Profile::release())
+            .with_package(leaf.clone(), Linkage::Dynamic)
+            .unwrap()
+            .assemble_library(
+                "mid",
+                "namespace mid::glue use lib::loops pub proc f exec.loops::drain \
+                 exec.loops::drain end",
+                None::<String>,
+            )
+            .unwrap(),
+    );
+    assert!(mid.debug_info().unwrap().is_none());
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .with_package(mid.clone(), Linkage::Dynamic)
+        .unwrap()
+        .assemble_program("program", "use mid::glue begin exec.glue::f end")
+        .map(Arc::<Package>::from)
+        .unwrap();
+
+    let mut executor = Executor::new(vec![Felt::ONE, Felt::ONE]);
+    executor.with_package(leaf.clone()).unwrap();
+    executor.with_package(mid.clone()).unwrap();
+    let (mut stepper, mut host) = executor.into_stepper(package, source_manager);
+    let mut loop_starts = Vec::new();
+    let mut open_counts = Vec::new();
+    while stepper
+        .step_sync(&mut host, |cycle| {
+            if let Some(start) = cycle.node_start
+                && Arc::ptr_eq(cycle.forest, leaf.mast_forest())
+                && matches!(
+                    cycle.forest.get_node_by_id(cycle.exec_node.unwrap()),
+                    Some(MastNode::Loop(_))
+                )
+            {
+                loop_starts.push(start);
+            }
+        })
+        .unwrap()
+    {
+        open_counts.push(stepper.open_source_nodes());
     }
+    assert_eq!(loop_starts.len(), 2, "{loop_starts:?}");
+    assert!(loop_starts.iter().all(|start| start.parent.is_none()), "{loop_starts:?}");
+    // The program's root and its prologue block at most, plus the leaf's own nodes while it
+    // runs; never the first call's loop under the second call's.
+    assert!(open_counts.iter().all(|open| *open <= 4), "{open_counts:?}");
+    assert_eq!(stepper.open_source_nodes(), 0);
+}
+
+/// A procedure entered by `call` that re-enters itself through `dynexec` in the same forest:
+/// the dynamic entries name the dynamic node as the parent, not the outer `call`.
+#[test]
+fn dynamic_entries_in_the_same_forest_name_the_dynamic_node() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    // `setup` runs in its own context, stores `inner`'s hash there and enters `inner`
+    // dynamically; `inner` counts down and re-enters itself the same way while the counter is
+    // not zero: one entry through `call`, four through `dynexec`.
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program(
+            "program",
+            "proc inner dup neq.0 if.true sub.1 push.100 dynexec else nop end end proc setup \
+             procref.inner mem_storew_le.100 dropw push.3 push.100 dynexec drop end begin \
+             call.setup end",
+        )
+        .map(Arc::<Package>::from)
+        .unwrap();
+    let forest = package.mast_forest().clone();
+    let debug_info = package.debug_info().unwrap().unwrap();
+    let mut stepper = stepper(&package, 0, 0);
+    let mut starts = Vec::new();
+    stepper
+        .run_sync(&mut DefaultHost::default(), |cycle| {
+            if let Some(start) = cycle.node_start {
+                starts.push(start);
+            }
+        })
+        .unwrap();
+    // The entries of `setup` and `inner`: the starts whose parent is a call or a dynamic node.
+    let entries: Vec<_> = starts
+        .iter()
+        .filter_map(|start| {
+            let parent = debug_info.source_node(start.parent?)?;
+            match forest.get_node_by_id(parent.exec_node)? {
+                MastNode::Call(_) => Some("call"),
+                MastNode::Dyn(_) => Some("dyn"),
+                _ => None,
+            }
+        })
+        .collect();
+    let calls = entries.iter().filter(|kind| **kind == "call").count();
+    let dyns = entries.iter().filter(|kind| **kind == "dyn").count();
+    assert_eq!((calls, dyns), (1, 4), "{entries:?}");
+    assert_eq!(stepper.open_source_nodes(), 0);
+}
+
+/// A dynamic call into another package: the callee's root start is described, with no
+/// parent, and the dynamic node's finish pops what the callee left open.
+#[test]
+fn dynamic_calls_into_another_forest_are_bounded() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let library: Arc<Package> = Arc::from(
+        miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_library("lib", "namespace lib::m pub proc f push.7 drop end", None::<String>)
+            .unwrap(),
+    );
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .with_package(library.clone(), Linkage::Dynamic)
+        .unwrap()
+        .assemble_program(
+            "program",
+            "use lib::m begin procref.m::f mem_storew_le.100 dropw push.100 dyncall drop push.100 \
+             dyncall drop end",
+        )
+        .map(Arc::<Package>::from)
+        .unwrap();
+    let mut executor = Executor::new(Vec::new());
+    executor.with_package(library.clone()).unwrap();
+    let (mut stepper, mut host) = executor.into_stepper(package, source_manager);
+    let mut roots = Vec::new();
+    let mut deepest = 0;
+    while stepper
+        .step_sync(&mut host, |cycle| {
+            if let Some(start) = cycle.node_start
+                && Arc::ptr_eq(cycle.forest, library.mast_forest())
+            {
+                roots.push(start);
+            }
+        })
+        .unwrap()
+    {
+        deepest = deepest.max(stepper.open_source_nodes());
+    }
+    assert_eq!(roots.len(), 2, "{roots:?}");
+    assert!(roots.iter().all(|start| start.parent.is_none()), "{roots:?}");
+    // The program's root join and its blocks, the dynamic node, and the callee's root and its
+    // block: the first call leaves nothing behind for the second.
+    assert_eq!(deepest, 5);
+    assert_eq!(stepper.open_source_nodes(), 0);
 }
 
 /// A failed program is stopped but has no output to export.
@@ -702,14 +878,18 @@ fn into_output_is_refused_after_a_failure() {
     );
     assert!(stepper.stopped());
     assert!(stepper.failed());
-    // A failed program is not stepped again, and the cycle that failed is not counted.
+    // A failed program is not stepped again, stays failed, and the cycle that failed is not
+    // counted.
     assert!(stepper.step_sync(&mut DefaultHost::default(), |_| {}).is_err());
+    assert!(stepper.failed() && stepper.stopped());
     assert!(stepper.run_sync(&mut DefaultHost::default(), |_| {}).is_err());
     let clock = u32::from(stepper.processor().state().clock()) as usize;
     assert_eq!(stepper.cycle(), clock);
     assert!(stepper.into_output().is_err());
 }
 
+/// `exec` of a MASM procedure is recorded as an inline call: the frames name the procedure
+/// while its body runs and are empty at the program's own level.
 #[test]
 fn inline_frames_name_the_inlined_procedure() {
     let (package, _) = fixture();
@@ -736,6 +916,8 @@ fn inline_frames_name_the_inlined_procedure() {
     );
 }
 
+/// The async path produces the sync path's records, refuses the output while running, and
+/// exports the processor's own outputs once finished.
 #[test]
 fn stepper_async_step_and_output() {
     let (package, _) = fixture();

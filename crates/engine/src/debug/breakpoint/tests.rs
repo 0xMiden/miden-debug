@@ -15,6 +15,27 @@ fn unqualified_function_breakpoints_match_path_suffixes() {
 }
 
 #[test]
+fn function_breakpoints_match_rust_source_names_without_losing_linkage_names() {
+    let linkage = "::package::_ZN3foo5inner17h0123456789abcdefE";
+    for name in ["in inner", "in foo::inner", "in *_ZN3foo5inner17h0123456789abcdefE"] {
+        assert!(name.parse::<BreakpointType>().unwrap().should_break_in(linkage), "{name}");
+    }
+    assert!(
+        "in ::package::foo::inner"
+            .parse::<BreakpointType>()
+            .unwrap()
+            .should_break_in(linkage)
+    );
+    assert!(
+        "in inner"
+            .parse::<BreakpointType>()
+            .unwrap()
+            .should_break_in("_ZN3foo5inner17h0123456789abcdefE")
+    );
+    assert!(!"in other_inner".parse::<BreakpointType>().unwrap().should_break_in(linkage));
+}
+
+#[test]
 fn qualified_function_breakpoints_match_exact_suffixes() {
     let breakpoint = "in fibonacci::entrypoint".parse::<BreakpointType>().unwrap();
 

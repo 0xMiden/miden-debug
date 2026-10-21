@@ -29,6 +29,38 @@ fn run(
 }
 
 #[test]
+fn repeated_calls_at_one_site_have_distinct_invocation_identities() {
+    for invocation in ["call.inner", "exec.inner"] {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let source = format!(
+            "proc inner push.7 drop end begin push.2 dup neq.0 while.true {invocation} sub.1 dup \
+             neq.0 end drop end"
+        );
+        let package = Arc::from(
+            Assembler::new(source_manager.clone())
+                .assemble_program("program", source)
+                .unwrap(),
+        );
+        let mut executor = crate::Executor::new(Vec::new()).into_debug(package, source_manager);
+        let mut activations = Vec::new();
+        while !executor.stopped {
+            executor.step().unwrap();
+            if executor.stopped
+                || executor.current_op != Some(Operation::Push(miden_core::Felt::from(7u32)))
+            {
+                continue;
+            }
+            let frames = executor.callstack.logical_frames("");
+            let current = frames.last().unwrap();
+            assert!(current.name().ends_with("::inner"));
+            activations.push(current.invocation_id().expect("physical invocation"));
+        }
+        assert_eq!(activations.len(), 2, "{invocation}");
+        assert_ne!(activations[0], activations[1], "{invocation}");
+    }
+}
+
+#[test]
 fn caller_source_inline_frames_survive_calls_and_clear_on_return() {
     for invocation in ["call.target", "dynexec"] {
         let source_manager = Arc::new(DefaultSourceManager::default());

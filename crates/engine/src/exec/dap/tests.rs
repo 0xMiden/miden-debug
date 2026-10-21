@@ -114,6 +114,55 @@ fn function_breakpoint_waits_for_entry_variables() {
     assert_eq!(variable.info.value_location(), &DebugVarLocation::Const(Felt::from(5u32)));
 }
 
+#[test]
+fn function_breakpoints_match_rust_symbols_without_source_path_fallback() {
+    let symbol = "_ZN3foo5inner17h0123456789abcdefE";
+    for pattern in ["inner", "foo::inner", "*_ZN3foo5inner17h0123456789abcdefE"] {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let package = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program(
+                "program",
+                format!("proc {symbol} push.7 drop end begin exec.{symbol} push.9 drop end"),
+            )
+            .unwrap();
+        let mut host = DebuggerHost::new(source_manager);
+        let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+        let mut processor = FastProcessor::new(StackInputs::default());
+        let mut resume =
+            Some(processor.get_initial_resume_context_for_package(package.into()).unwrap());
+        let mut cycle = 0;
+        let mut asmop = None;
+        let mut variables = DapDebugVarState::new();
+        let function = [StoredFunctionBreakpoint {
+            procedure_pattern: procedure_pattern(pattern).unwrap(),
+            source_pattern: crate::glob::Glob::new("__never_a_source_path__")
+                .unwrap()
+                .compile_matcher(),
+        }];
+
+        assert!(
+            matches!(
+                step_until_breakpoint(
+                    &mut processor,
+                    &mut wrapper,
+                    &mut resume,
+                    &mut cycle,
+                    &mut asmop,
+                    &ContinueBreakpoints {
+                        source: &[],
+                        function: &function,
+                        source_path_prefixes: &[],
+                    },
+                    &mut variables,
+                ),
+                StepResult::Breakpoint(_)
+            ),
+            "{pattern}"
+        );
+        assert!(asmop.as_ref().unwrap().context_name().ends_with(symbol), "{pattern}");
+    }
+}
+
 impl EventHandler for PushSeven {
     fn on_event(&self, _process: &ProcessorState<'_>) -> Result<Vec<AdviceMutation>, EventError> {
         Ok(vec![AdviceMutation::extend_advice_stack(
@@ -460,6 +509,134 @@ fn dap_recovers_exec_callers_without_duplicate_inline_frames() {
     assert!(inner_cycles >= 2);
 }
 
+fn assert_serialized_dap_stacktraces(
+    source: &str,
+    expected_traces: &[&[&str]],
+    expected_output: u32,
+) {
+    use miden_core::serde::{Deserializable, Serializable};
+
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program("program", source)
+        .unwrap();
+    let package = Package::read_from_bytes(&package.to_bytes()).unwrap();
+    let mut host = DebuggerHost::new(source_manager);
+    let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+    let mut processor = FastProcessor::new(StackInputs::new(&[Felt::from(5u32)]).unwrap());
+    let mut resume =
+        Some(processor.get_initial_resume_context_for_package(package.into()).unwrap());
+    let mut cycle = 0;
+    let mut asmop = None;
+    let mut variables = DapDebugVarState::new();
+
+    loop {
+        let context = resume.take().expect("fixture must reach the callee");
+        resume = advance_one(
+            &mut processor,
+            &mut wrapper,
+            context,
+            &mut cycle,
+            &mut asmop,
+            &mut variables,
+        )
+        .unwrap();
+        if asmop.as_ref().is_some_and(|op| op.op().as_ref() == "mul") {
+            break;
+        }
+    }
+
+    for (index, expected) in expected_traces.iter().enumerate() {
+        if index > 0 {
+            let previous = wrapper.recovered.current_invocation().unwrap();
+            let target = wrapper.recovered.return_target(wrapper.call_depth);
+            assert!(target.is_recovered());
+            assert!(matches!(
+                step_out(
+                    &mut processor,
+                    &mut wrapper,
+                    &mut resume,
+                    &mut cycle,
+                    &mut asmop,
+                    &mut variables,
+                ),
+                StepResult::Stepped
+            ));
+            assert!(target.has_returned(&wrapper.recovered, wrapper.call_depth));
+            assert!(!wrapper.recovered.invocation_ids().any(|id| id == previous));
+            assert!(asmop.is_some(), "step-out must stop at a caller operation");
+        }
+        let frames = presented_frames(&wrapper, asmop.as_ref(), cycle);
+        let names = frames.iter().map(|frame| frame.name.as_ref()).collect::<Vec<_>>();
+        assert_eq!(names, *expected, "unexpected stack after {index} step-outs");
+        for frame in &frames {
+            assert_eq!(frame.inline, frame.name.starts_with("[inlined] "));
+            assert_eq!(frame.invocation.is_some(), !frame.inline);
+        }
+        if index == 0 {
+            assert_eq!(frames[0].line, 2);
+            assert!(frames[0].source_path.is_some());
+        }
+    }
+
+    while let Some(context) = resume.take() {
+        resume = advance_one(
+            &mut processor,
+            &mut wrapper,
+            context,
+            &mut cycle,
+            &mut asmop,
+            &mut variables,
+        )
+        .unwrap();
+    }
+    assert_eq!(processor.state().get_stack_state()[0], Felt::from(expected_output));
+}
+
+#[test]
+fn dap_stacktrace_preserves_inline_tail_context_without_inventing_physical_wrappers() {
+    assert_serialized_dap_stacktraces(
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/lit/call_frames_tail.masm")),
+        &[
+            &["[inferred] $exec::inner", "[inlined] ::$exec::outer", "$exec::$main"],
+            &["$exec::$main"],
+        ],
+        16,
+    );
+}
+
+#[test]
+fn dap_stacktrace_distinguishes_adjacent_invocations_from_package_metadata() {
+    assert_serialized_dap_stacktraces(
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/lit/call_frames_siblings.masm"
+        )),
+        &[
+            &["[inferred] $exec::leaf", "$exec::$main"],
+            &["[inferred] $exec::leaf", "$exec::$main"],
+            &["$exec::$main"],
+        ],
+        46,
+    );
+}
+
+#[test]
+fn dap_stacktrace_tracks_dynamic_calls_from_package_metadata() {
+    assert_serialized_dap_stacktraces(
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/lit/call_frames_dyncall.masm"
+        )),
+        &[
+            &["$exec::inner", "[inferred] $exec::outer", "$exec::$main"],
+            &["[inferred] $exec::outer", "$exec::$main"],
+            &["$exec::$main"],
+        ],
+        26,
+    );
+}
+
 #[test]
 fn dap_step_out_returns_from_uninstrumented_invocations() {
     for invocation in ["exec.inner", "call.inner", "push.100 dynexec"] {
@@ -576,6 +753,66 @@ fn dap_step_out_unwinds_recursive_activations_and_finishes_the_root() {
         ),
         StepResult::Terminated
     ));
+}
+
+#[test]
+fn dap_step_out_skips_tail_only_recursive_callers_until_a_caller_operation() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program(
+            "program",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/lit/call_frames_recursive.masm"
+            )),
+        )
+        .unwrap();
+    let mut processor = FastProcessor::new(StackInputs::new(&[Felt::from(3u32)]).unwrap());
+    let mut host = DebuggerHost::new(source_manager);
+    let mut wrapper = DapHostWrapper::new(&mut host, None, None);
+    let mut resume =
+        Some(processor.get_initial_resume_context_for_package(package.into()).unwrap());
+    let mut cycle = 0;
+    let mut asmop = None;
+    let mut variables = DapDebugVarState::new();
+    loop {
+        assert!(matches!(
+            step_one(
+                &mut processor,
+                &mut wrapper,
+                &mut resume,
+                &mut cycle,
+                &mut asmop,
+                &mut variables,
+            ),
+            StepResult::Stepped
+        ));
+        if asmop.as_ref().is_some_and(|op| op.op().as_ref() == "push.7") {
+            break;
+        }
+    }
+    let frames = presented_frames(&wrapper, asmop.as_ref(), cycle);
+    assert_eq!(frames.len(), 5);
+    let root = frames.last().unwrap().invocation.unwrap();
+    let target = wrapper.recovered.return_target(wrapper.call_depth);
+
+    assert!(matches!(
+        step_out(
+            &mut processor,
+            &mut wrapper,
+            &mut resume,
+            &mut cycle,
+            &mut asmop,
+            &mut variables,
+        ),
+        StepResult::Stepped
+    ));
+    assert!(target.has_returned(&wrapper.recovered, wrapper.call_depth));
+    let frames = presented_frames(&wrapper, asmop.as_ref(), cycle);
+    assert_eq!(frames.len(), 1, "tail-only callers have no operation to stop at");
+    assert_eq!(frames[0].invocation, Some(root));
+    assert_eq!(frames[0].name.as_ref(), "$exec::$main");
+    assert_eq!(asmop.as_ref().unwrap().op().as_ref(), "push.1");
 }
 
 #[test]

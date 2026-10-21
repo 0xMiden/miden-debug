@@ -193,11 +193,10 @@ impl Stepper {
         // a later context without debug info belongs to a library and must not inherit it.
         let pending = self.pending_debug_info.take();
         let debug_info = ctx.debug_info().or(pending);
-        // After the last cycle the processor hands back a context with nothing left to run;
-        // the step that consumes it only finalizes the execution.
-        if ctx.continuation_stack().peek_continuation().is_some() {
-            let source = SourceContext::with_debug_info(&ctx, debug_info.clone());
-            on_cycle(&self.tracker.observe(&ctx, &source));
+        let source = SourceContext::with_debug_info(&ctx, debug_info.clone());
+        // `None` for the finalization step after the last cycle, which is no cycle to describe.
+        if let Some(cycle) = self.tracker.observe(&ctx, &source) {
+            on_cycle(&cycle);
             self.cycle += 1;
         }
         Some((ctx, debug_info))

@@ -140,7 +140,8 @@ fn source_node(package: &Package, pred: impl Fn(&MastNode) -> bool) -> Vec<u32> 
 #[derive(Debug, PartialEq, Eq)]
 struct Record {
     exec_node: Option<MastNodeId>,
-    has_debug_info: bool,
+    /// The node count of the debug info, which tells one package's from another's.
+    debug_info_nodes: Option<usize>,
     source_node: Option<u32>,
     op: Option<Operation>,
     op_idx: Option<u32>,
@@ -153,7 +154,7 @@ impl From<&CycleInfo<'_>> for Record {
     fn from(cycle: &CycleInfo<'_>) -> Self {
         Self {
             exec_node: cycle.exec_node,
-            has_debug_info: cycle.debug_info.is_some(),
+            debug_info_nodes: cycle.debug_info.map(|info| info.nodes().len()),
             source_node: cycle.source_node.map(u32::from),
             op: cycle.op,
             op_idx: cycle.op_idx,
@@ -296,9 +297,8 @@ fn external_loop_body_does_not_pile_up_open_nodes() {
         deepest = deepest.max(stepper.open_source_nodes());
     }
     assert_eq!(body_starts, iterations as usize);
-    // The entry join, its prologue or body block, the loop guard, the loop; the body is an
-    // external node, which leaves a boundary, not a node. Nothing accumulates across
-    // iterations.
+    // The body is an external node, which leaves a boundary, not a node; the deepest point
+    // is reached on every iteration and nothing accumulates across them.
     assert_eq!(deepest, 4, "nodes open at the deepest point");
     assert_eq!(stepper.open_source_nodes(), 0);
     // The callee root's start runs in the same step as the external node's start and is
@@ -378,9 +378,16 @@ fn external_siblings_under_a_foreign_root_have_no_parent() {
     assert_eq!(in_mid.len(), 2, "{external_starts:?}");
     assert!(in_mid.iter().all(|(_, start)| start.parent.is_none()), "{external_starts:?}");
     // The program's own external start has the program's root as its parent.
+    let root = package
+        .debug_info()
+        .unwrap()
+        .unwrap()
+        .unique_source_root_for_exec_node(package.unwrap_program().entrypoint())
+        .unwrap()
+        .unwrap();
     let in_program: Vec<_> = external_starts.iter().filter(|(in_mid, _)| !*in_mid).collect();
     assert_eq!(in_program.len(), 1);
-    assert!(in_program[0].1.parent.is_some());
+    assert_eq!(in_program[0].1.parent, Some(root));
     assert_eq!(stepper.open_source_nodes(), 0);
 }
 
@@ -518,8 +525,11 @@ fn a_dropped_step_is_not_a_finished_program() {
     assert!(stepper.into_output().is_err());
 }
 
-/// An instrument that keeps the operation of every record it receives.
-struct RecordingInstrument(Rc<RefCell<Vec<Option<Operation>>>>);
+/// An instrument that keeps the operation of every record it receives and notes its turn.
+struct RecordingInstrument {
+    ops: Rc<RefCell<Vec<Option<Operation>>>>,
+    order: Rc<RefCell<Vec<&'static str>>>,
+}
 
 impl Instrument for RecordingInstrument {
     fn name(&self) -> &'static str {
@@ -529,7 +539,8 @@ impl Instrument for RecordingInstrument {
     fn on_operation_execution_cycle(&mut self, _op: Operation, _proc: Option<&str>) {}
 
     fn on_cycle(&mut self, cycle: &CycleInfo<'_>) {
-        self.0.borrow_mut().push(cycle.op);
+        self.ops.borrow_mut().push(cycle.op);
+        self.order.borrow_mut().push("instrument");
     }
 
     fn write_report_to(&self, _writer: &mut dyn OutputWriter) -> OutputResult<()> {
@@ -550,7 +561,10 @@ fn instruments_receive_the_record_before_the_cycle_runs() {
     let order = Rc::new(RefCell::new(Vec::new()));
     let mut executor = Executor::new(Vec::new());
     executor.with_profiler_config(ProfilerConfig {
-        instruments: vec![Box::new(RecordingInstrument(records.clone()))],
+        instruments: vec![Box::new(RecordingInstrument {
+            ops: records.clone(),
+            order: order.clone(),
+        })],
         ..Default::default()
     });
     let mut exec = executor.into_debug(package, source_manager);
@@ -571,8 +585,11 @@ fn instruments_receive_the_record_before_the_cycle_runs() {
     assert!(matches!(records.last(), Some(Some(Operation::Assert(_)))), "{records:?}");
     assert_eq!(records.len(), exec.cycle + 1, "every cycle plus the failing one");
     let order = order.borrow();
-    assert_eq!(order.len(), 2 * records.len());
-    assert!(order.chunks(2).all(|pair| pair == ["observer", "on_cycle"]), "{order:?}");
+    assert_eq!(order.len(), 3 * records.len());
+    assert!(
+        order.chunks(3).all(|turn| turn == ["observer", "instrument", "on_cycle"]),
+        "{order:?}"
+    );
 }
 
 /// The pending debug info of a bare-program stepper is spent on the first step: a library
@@ -580,13 +597,12 @@ fn instruments_receive_the_record_before_the_cycle_runs() {
 #[test]
 fn a_library_without_debug_info_does_not_inherit_the_pending_one() {
     let source_manager = Arc::new(DefaultSourceManager::default());
-    let library: Arc<Package> = Arc::from(
-        miden_assembly::Assembler::new(source_manager.clone())
-            .with_profile(&miden_project::Profile::release())
-            .assemble_library("lib", "namespace lib::m pub proc f push.3 drop end", None::<String>)
-            .unwrap(),
-    );
-    assert!(library.debug_info().unwrap().is_none(), "the release profile strips debug info");
+    let mut library = *miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_library("lib", "namespace lib::m pub proc f push.3 drop end", None::<String>)
+        .unwrap();
+    library.strip_debug_info().unwrap();
+    let library = Arc::new(library);
+    assert!(library.debug_info().unwrap().is_none());
     let package: Arc<Package> = Arc::from(
         miden_assembly::Assembler::new(source_manager.clone())
             .with_package(library.clone(), Linkage::Dynamic)
@@ -613,8 +629,14 @@ fn a_library_without_debug_info_does_not_inherit_the_pending_one() {
         })
         .unwrap();
     assert!(!in_library.is_empty() && !in_program.is_empty());
-    assert!(in_program.iter().all(|record| record.has_debug_info), "{in_program:?}");
-    assert!(in_library.iter().all(|record| !record.has_debug_info), "{in_library:?}");
+    assert!(
+        in_program.iter().all(|record| record.debug_info_nodes.is_some()),
+        "{in_program:?}"
+    );
+    assert!(
+        in_library.iter().all(|record| record.debug_info_nodes.is_none()),
+        "{in_library:?}"
+    );
 }
 
 /// The stepper can be held across an await inside a `Send` future.
@@ -624,8 +646,6 @@ fn stepper_is_send() {
     assert_send::<Stepper>();
 }
 
-/// `exec` of a MASM procedure is recorded as an inline call: the frames name the procedure
-/// while its body runs and are empty at the program's own level.
 /// The step that consumes the empty context left after the last cycle describes nothing: the
 /// records match the VM clock, not the number of steps.
 #[test]
@@ -666,7 +686,7 @@ fn bare_program_first_record_has_the_supplied_debug_info() {
         .unwrap();
 
     let first = &from_program[0];
-    assert!(first.has_debug_info, "{first:?}");
+    assert_eq!(first.debug_info_nodes, Some(debug_info.nodes().len()), "{first:?}");
     assert!(first.source_node.is_some(), "{first:?}");
     assert!(first.node_start.is_some_and(|start| start.parent.is_none()), "{first:?}");
     assert_eq!(from_program, from_package);
@@ -717,19 +737,17 @@ fn a_boundary_is_kept_for_a_forest_without_debug_info() {
             )
             .unwrap(),
     );
-    let mid: Arc<Package> = Arc::from(
-        miden_assembly::Assembler::new(source_manager.clone())
-            .with_profile(&miden_project::Profile::release())
-            .with_package(leaf.clone(), Linkage::Dynamic)
-            .unwrap()
-            .assemble_library(
-                "mid",
-                "namespace mid::glue use lib::loops pub proc f exec.loops::drain \
-                 exec.loops::drain end",
-                None::<String>,
-            )
-            .unwrap(),
-    );
+    let mut mid = *miden_assembly::Assembler::new(source_manager.clone())
+        .with_package(leaf.clone(), Linkage::Dynamic)
+        .unwrap()
+        .assemble_library(
+            "mid",
+            "namespace mid::glue use lib::loops pub proc f exec.loops::drain exec.loops::drain end",
+            None::<String>,
+        )
+        .unwrap();
+    mid.strip_debug_info().unwrap();
+    let mid = Arc::new(mid);
     assert!(mid.debug_info().unwrap().is_none());
     let package = miden_assembly::Assembler::new(source_manager.clone())
         .with_package(mid.clone(), Linkage::Dynamic)
@@ -762,56 +780,135 @@ fn a_boundary_is_kept_for_a_forest_without_debug_info() {
     }
     assert_eq!(loop_starts.len(), 2, "{loop_starts:?}");
     assert!(loop_starts.iter().all(|start| start.parent.is_none()), "{loop_starts:?}");
-    // The program's root and its prologue block at most, plus the leaf's own nodes while it
-    // runs; never the first call's loop under the second call's.
-    assert!(open_counts.iter().all(|open| *open <= 4), "{open_counts:?}");
+    // Never the first call's loop under the second call's: the deepest point is the same on
+    // both calls.
+    assert_eq!(open_counts.iter().max(), Some(&3), "{open_counts:?}");
     assert_eq!(stepper.open_source_nodes(), 0);
 }
 
 /// A procedure entered by `call` that re-enters itself through `dynexec` in the same forest:
-/// the dynamic entries name the dynamic node as the parent, not the outer `call`.
+/// the open `call` node lists the procedure's root, so only the hand-over on the dynamic
+/// boundary names the dynamic node as the parent of the dynamic entries.
 #[test]
 fn dynamic_entries_in_the_same_forest_name_the_dynamic_node() {
     let source_manager = Arc::new(DefaultSourceManager::default());
-    // `setup` runs in its own context, stores `inner`'s hash there and enters `inner`
-    // dynamically; `inner` counts down and re-enters itself the same way while the counter is
-    // not zero: one entry through `call`, four through `dynexec`.
+    // `f` gets the counter on top of its own hash, stores the hash in its context, and
+    // re-enters itself dynamically while the counter is not zero: one entry through `call`,
+    // two through `dynexec`.
     let package = miden_assembly::Assembler::new(source_manager.clone())
         .assemble_program(
             "program",
-            "proc inner dup neq.0 if.true sub.1 push.100 dynexec else nop end end proc setup \
-             procref.inner mem_storew_le.100 dropw push.3 push.100 dynexec drop end begin \
-             call.setup end",
+            "proc f movdn.4 mem_storew_le.100 movup.4 dup neq.0 if.true sub.1 push.100 dynexec \
+             else nop end end begin procref.f push.2 call.f drop dropw end",
         )
         .map(Arc::<Package>::from)
         .unwrap();
     let forest = package.mast_forest().clone();
     let debug_info = package.debug_info().unwrap().unwrap();
+    let root = debug_info
+        .functions()
+        .iter()
+        .find(|function| {
+            debug_info.get_string(function.name_idx).is_some_and(|n| n.ends_with("::f"))
+        })
+        .and_then(|function| function.source_node.into_option())
+        .expect("f has a root");
     let mut stepper = stepper(&package, 0, 0);
-    let mut starts = Vec::new();
+    let mut entries = Vec::new();
     stepper
         .run_sync(&mut DefaultHost::default(), |cycle| {
-            if let Some(start) = cycle.node_start {
-                starts.push(start);
+            if let Some(start) = cycle.node_start
+                && start.node == root
+            {
+                let kind = start
+                    .parent
+                    .and_then(|parent| debug_info.source_node(parent))
+                    .and_then(|parent| forest.get_node_by_id(parent.exec_node))
+                    .map(|node| match node {
+                        MastNode::Call(_) => "call",
+                        MastNode::Dyn(_) => "dyn",
+                        _ => "other",
+                    });
+                entries.push(kind);
             }
         })
         .unwrap();
-    // The entries of `setup` and `inner`: the starts whose parent is a call or a dynamic node.
-    let entries: Vec<_> = starts
-        .iter()
-        .filter_map(|start| {
-            let parent = debug_info.source_node(start.parent?)?;
-            match forest.get_node_by_id(parent.exec_node)? {
-                MastNode::Call(_) => Some("call"),
-                MastNode::Dyn(_) => Some("dyn"),
-                _ => None,
-            }
-        })
-        .collect();
-    let calls = entries.iter().filter(|kind| **kind == "call").count();
-    let dyns = entries.iter().filter(|kind| **kind == "dyn").count();
-    assert_eq!((calls, dyns), (1, 4), "{entries:?}");
+    assert_eq!(entries, [Some("call"), Some("dyn"), Some("dyn")]);
     assert_eq!(stepper.open_source_nodes(), 0);
+}
+
+/// A library procedure whose root is itself a dynamic node, calling back into the program:
+/// the program's external boundary is popped on the return, not on the callback, so the
+/// target's root has no parent and nothing of the callback stays open.
+#[test]
+fn a_callback_through_a_trampoline_does_not_pop_the_boundary_early() {
+    for trampoline in ["dynexec", "push.100 dynexec"] {
+        let source_manager = Arc::new(DefaultSourceManager::default());
+        let library: Arc<Package> = Arc::from(
+            miden_assembly::Assembler::new(source_manager.clone())
+                .assemble_library(
+                    "lib",
+                    format!("namespace lib::t pub proc trampoline {trampoline} end"),
+                    None::<String>,
+                )
+                .unwrap(),
+        );
+        // The first variant takes the address from the caller's stack.
+        let address = if trampoline == "dynexec" {
+            "push.100 "
+        } else {
+            ""
+        };
+        let package = miden_assembly::Assembler::new(source_manager.clone())
+            .with_package(library.clone(), Linkage::Dynamic)
+            .unwrap()
+            .assemble_program(
+                "program",
+                format!(
+                    "use lib::t proc target push.1 drop end begin procref.target \
+                     mem_storew_le.100 dropw {address}exec.t::trampoline push.9 drop end"
+                ),
+            )
+            .map(Arc::<Package>::from)
+            .unwrap();
+        let mut executor = Executor::new(Vec::new());
+        executor.with_package(library.clone()).unwrap();
+        executor.with_package(package.clone()).unwrap();
+        let (mut stepper, mut host) = executor.into_stepper(package.clone(), source_manager);
+        let mut starts = Vec::new();
+        let mut open_after_callback = Vec::new();
+        let mut seen_callback = false;
+        while stepper
+            .step_sync(&mut host, |cycle| {
+                let in_program = Arc::ptr_eq(cycle.forest, package.mast_forest());
+                if let Some(start) = cycle.node_start {
+                    let external = cycle
+                        .forest
+                        .get_node_by_id(cycle.exec_node.unwrap())
+                        .is_some_and(|node| matches!(node, MastNode::External(_)));
+                    starts.push((in_program, external, start));
+                }
+                if cycle.op == Some(Operation::Push(Felt::new(9).unwrap())) {
+                    seen_callback = true;
+                }
+            })
+            .unwrap()
+        {
+            if seen_callback {
+                open_after_callback.push(stepper.open_source_nodes());
+            }
+        }
+        let external = starts.iter().position(|(in_program, external, _)| *in_program && *external);
+        let external = external.unwrap_or_else(|| panic!("{trampoline}: no external start"));
+        // The first start back in the program after the external one is the target's root.
+        let target = starts[external + 1..]
+            .iter()
+            .find(|(in_program, ..)| *in_program)
+            .unwrap_or_else(|| panic!("{trampoline}: no callback start in {starts:?}"));
+        assert_eq!(target.2.parent, None, "{trampoline}: {starts:?}");
+        assert!(seen_callback, "{trampoline}");
+        assert_eq!(stepper.open_source_nodes(), 0, "{trampoline}");
+    }
 }
 
 /// A dynamic call into another package: the callee's root start is described, with no
@@ -853,8 +950,7 @@ fn dynamic_calls_into_another_forest_are_bounded() {
     }
     assert_eq!(roots.len(), 2, "{roots:?}");
     assert!(roots.iter().all(|start| start.parent.is_none()), "{roots:?}");
-    // The program's root join and its blocks, the dynamic node, and the callee's root and its
-    // block: the first call leaves nothing behind for the second.
+    // The deepest point is reached on both calls: the first leaves nothing behind.
     assert_eq!(deepest, 5);
     assert_eq!(stepper.open_source_nodes(), 0);
 }
@@ -869,13 +965,18 @@ fn into_output_is_refused_after_a_failure() {
     let mut stepper =
         Stepper::for_package(FastProcessor::new(StackInputs::default()), package).unwrap();
     let mut last = None;
+    let mut records = 0;
     stepper
-        .run_sync(&mut DefaultHost::default(), |cycle| last = cycle.op)
+        .run_sync(&mut DefaultHost::default(), |cycle| {
+            last = cycle.op;
+            records += 1;
+        })
         .unwrap_err();
     assert!(
         matches!(last, Some(Operation::Assert(_))),
         "the failing cycle is described: {last:?}"
     );
+    assert_eq!(records, stepper.cycle() + 1, "the failing cycle is described, not counted");
     assert!(stepper.stopped());
     assert!(stepper.failed());
     // A failed program is not stepped again, stays failed, and the cycle that failed is not

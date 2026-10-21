@@ -314,8 +314,7 @@ impl DebugExecutor {
 
     /// Advance the program state until `breakpoint` is hit.
     ///
-    /// If the program has already reached its termination state, it returns the same result
-    /// as the previous time it was called.
+    /// Once the program is stopped, successfully or not, it returns `Ok(())` without stepping.
     pub fn step_until(
         &mut self,
         breakpoint: BreakpointType,

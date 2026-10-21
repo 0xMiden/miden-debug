@@ -148,6 +148,11 @@ impl Executor {
 
     /// Convert this [Executor] into a [DebugExecutor], which captures much more information
     /// about the program being executed, and must be stepped manually.
+    ///
+    /// Panics when `package` is not a program, the advice inputs do not fit the options, an
+    /// event handler cannot be registered, or the initial resume context cannot be built: the
+    /// package's advice map conflicts with the processor's, or its debug info cannot be used
+    /// with its program.
     pub fn into_debug(
         mut self,
         package: Arc<Package>,
@@ -206,8 +211,10 @@ impl Executor {
     /// this the cheap way to step a program to its end while observing every cycle. The profiler
     /// configuration is not used; observe the cycles through the stepper's callback instead.
     ///
-    /// Panics, as [`Executor::into_debug`] does, when the advice inputs do not fit the options,
-    /// the package has no usable entry point, or an event handler cannot be registered.
+    /// Panics, as [`Executor::into_debug`] does, when `package` is not a program, the advice
+    /// inputs do not fit the options, an event handler cannot be registered, or
+    /// [`Stepper::for_package`] fails: the package's advice map conflicts with the processor's,
+    /// or its debug info cannot be used with its program.
     pub fn into_stepper(
         mut self,
         package: Arc<Package>,

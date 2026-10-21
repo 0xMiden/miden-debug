@@ -64,35 +64,49 @@ pub struct NodeStart {
     /// The source node that starts.
     pub node: DebugSourceNodeId,
     /// The innermost open source node of the same forest that lists `node` as a child, or the
-    /// innermost open node of that forest when none does. `None` when nothing is open since
-    /// the forest was entered, which is the case for the children of a root entered from
-    /// another package, whose own start is never described.
+    /// innermost open node of that forest when none does. A root entered dynamically from the
+    /// same forest gets the dynamic node. `None` when nothing is open since the forest was
+    /// entered: a root entered dynamically from another package, and the children of a root
+    /// entered through an external node, whose own start is never described.
     pub parent: Option<DebugSourceNodeId>,
 }
 
 /// Keeps the open source nodes between steps so a node start can name its parent.
 ///
 /// A start pushes, a finish pops through the node, and a loop's per-iteration finish pops the
-/// body while keeping the loop. A start that leaves the forest, through an external or a
-/// dynamic node, pushes a boundary instead: whatever the callee's forest leaves open, such as
-/// the children of a root whose start was never described, is popped with the boundary on the
-/// first cycle back in this forest, and a parent is only ever looked for above the innermost
-/// boundary. One tracker follows one execution from start to end; it must see every cycle, in
-/// order.
+/// body while keeping the loop. A start whose callee may run in another forest, an external
+/// or a dynamic node, also pushes a boundary: whatever the callee's forest leaves open, such
+/// as the children of a root whose start was never described, is popped with the boundary on
+/// the first cycle back in this forest, and a parent is only ever looked for above the
+/// innermost boundary. One tracker follows one execution from start to end; it must see every
+/// cycle, in order.
 #[derive(Debug, Default)]
 pub struct SourceTracker {
     /// Open nodes and forest boundaries, innermost last.
     open: Vec<Entry>,
+    /// Positions of the boundaries in `open`, innermost last.
+    boundaries: Vec<usize>,
 }
 
 /// One entry of the open stack.
 #[derive(Debug)]
-struct Entry {
-    /// The forest the entry belongs to. Forests are told apart by the address of their shared
-    /// allocation; the clone keeps the address from being reused while the entry is open.
-    forest: Arc<MastForest>,
-    /// The open node, or `None` for the boundary left by a start that runs in another forest.
-    node: Option<DebugSourceNodeId>,
+enum Entry {
+    /// A source node that started and has not finished.
+    Node {
+        /// The forest the node belongs to. Forests are told apart by the address of their
+        /// shared allocation; the clone keeps the address from being reused while the entry
+        /// is open.
+        forest: Arc<MastForest>,
+        node: DebugSourceNodeId,
+    },
+    /// The boundary left by a start whose callee may run in another forest.
+    Boundary {
+        /// The forest that left through the boundary.
+        forest: Arc<MastForest>,
+        /// The dynamic node that left, when the boundary is a dynamic node's; an external
+        /// node leaves no entry of its own.
+        dynamic: Option<DebugSourceNodeId>,
+    },
 }
 
 impl SourceTracker {
@@ -101,9 +115,9 @@ impl SourceTracker {
         Self::default()
     }
 
-    /// Number of source nodes currently open.
+    /// Number of source nodes currently open; boundaries are not counted.
     pub fn open_nodes(&self) -> usize {
-        self.open.iter().filter(|entry| entry.node.is_some()).count()
+        self.open.iter().filter(|entry| matches!(entry, Entry::Node { .. })).count()
     }
 
     /// Describes the cycle that will consume `ctx`, whose source metadata is `source`, and
@@ -128,40 +142,58 @@ impl SourceTracker {
             !matches!(next, Continuation::EnterForest { .. }),
             "a resume context never starts with a forest switch"
         );
-        self.return_to(forest);
-        let node_start = match (next, cycle.source_node_id) {
-            (Continuation::StartNode(exec_node), Some(node)) => {
-                let parent =
-                    source.debug_info().and_then(|info| self.parent_of(forest, info, node));
-                // An external node has no finish in this forest: its callee runs elsewhere
-                // and execution comes back to the next continuation. A dynamic node has one,
-                // but its callee may run elsewhere too. Both leave a boundary above them.
-                match forest.get_node_by_id(*exec_node) {
-                    Some(MastNode::External(_)) => self.push(forest, None),
+        let returned_from = self.return_to(forest);
+        let node_start = match next {
+            Continuation::StartNode(exec_node) => {
+                // The boundary does not depend on the node having a source node: a forest
+                // without debug info still calls into forests that have some.
+                let kind = forest.get_node_by_id(*exec_node);
+                let node = cycle.source_node_id;
+                let start = node.map(|node| {
+                    // A same-forest dynamic callee pops its boundary on its first cycle,
+                    // which is its root's start: the dynamic node is the parent, whatever
+                    // else the frame holds.
+                    let parent = returned_from.or_else(|| {
+                        source.debug_info().and_then(|info| self.parent_of(forest, info, node))
+                    });
+                    NodeStart { node, parent }
+                });
+                match kind {
+                    // An external node has no finish in this forest: its callee runs
+                    // elsewhere and execution comes back to the next continuation.
+                    Some(MastNode::External(_)) => self.push_boundary(forest, None),
+                    // A dynamic node has a finish, but its callee may run elsewhere too.
                     Some(MastNode::Dyn(_)) => {
-                        self.push(forest, Some(node));
-                        self.push(forest, None);
+                        if let Some(node) = node {
+                            self.push_node(forest, node);
+                        }
+                        self.push_boundary(forest, node);
                     }
-                    _ => self.push(forest, Some(node)),
+                    _ => {
+                        if let Some(node) = node {
+                            self.push_node(forest, node);
+                        }
+                    }
                 }
-                Some(NodeStart { node, parent })
+                start
             }
-            (
-                Continuation::FinishJoin(_)
-                | Continuation::FinishSplit(_)
-                | Continuation::FinishCall(_)
-                | Continuation::FinishDyn(_)
-                | Continuation::FinishBasicBlock(_),
-                Some(node),
-            ) => {
-                self.close(forest, node, false);
+            Continuation::FinishJoin(_)
+            | Continuation::FinishSplit(_)
+            | Continuation::FinishCall(_)
+            | Continuation::FinishDyn(_)
+            | Continuation::FinishBasicBlock(_) => {
+                if let Some(node) = cycle.source_node_id {
+                    self.close(forest, node, false);
+                }
                 None
             }
             // A loop's finish runs once per iteration and rechecks the condition, so the loop
-            // stays open. Its body is done, though: a body that is an external node never gets
-            // a finish in this forest, so it is popped here or it would pile up per iteration.
-            (Continuation::FinishLoop(_), Some(node)) => {
-                self.close(forest, node, true);
+            // stays open; its body, done with this iteration, is popped. The loop itself is
+            // popped by the finish of the node that holds it, or by a boundary.
+            Continuation::FinishLoop(_) => {
+                if let Some(node) = cycle.source_node_id {
+                    self.close(forest, node, true);
+                }
                 None
             }
             _ => None,
@@ -180,32 +212,59 @@ impl SourceTracker {
         })
     }
 
-    fn push(&mut self, forest: &Arc<MastForest>, node: Option<DebugSourceNodeId>) {
-        self.open.push(Entry {
+    /// Opens `node` of `forest`.
+    fn push_node(&mut self, forest: &Arc<MastForest>, node: DebugSourceNodeId) {
+        self.open.push(Entry::Node {
             forest: forest.clone(),
             node,
         });
     }
 
-    /// The entries above the innermost boundary: what has been opened since the current
-    /// forest was entered, or since the start when it never left.
-    fn frame(&self) -> &[Entry] {
-        let start = self.open.iter().rposition(|entry| entry.node.is_none()).map_or(0, |p| p + 1);
-        &self.open[start..]
+    /// Marks that `forest` leaves through `dynamic`, or through an external node.
+    fn push_boundary(&mut self, forest: &Arc<MastForest>, dynamic: Option<DebugSourceNodeId>) {
+        self.boundaries.push(self.open.len());
+        self.open.push(Entry::Boundary {
+            forest: forest.clone(),
+            dynamic,
+        });
+    }
+
+    /// Position of the first entry above the innermost boundary: the start of the current
+    /// frame, what has been opened since the current forest was entered, or since the start
+    /// when it never left.
+    fn frame_start(&self) -> usize {
+        self.boundaries.last().map_or(0, |position| position + 1)
+    }
+
+    /// Pops everything from `position` on, boundaries included.
+    fn truncate(&mut self, position: usize) {
+        self.open.truncate(position);
+        while self.boundaries.last().is_some_and(|boundary| *boundary >= position) {
+            self.boundaries.pop();
+        }
     }
 
     /// Pops the innermost boundary and everything above it once execution is back in the
-    /// forest that left through it.
+    /// forest that left through it. Returns the dynamic node that left, if it was one.
     ///
     /// A callee that is in the same forest as its caller pops the boundary on its first
     /// cycle, so it opens its nodes in the caller's frame; that only loses the boundary's
     /// cleanup for a self-referencing external node, which the assembler does not emit.
-    fn return_to(&mut self, forest: &Arc<MastForest>) {
-        if let Some(position) = self.open.iter().rposition(|entry| entry.node.is_none())
-            && Arc::ptr_eq(&self.open[position].forest, forest)
-        {
-            self.open.truncate(position);
+    fn return_to(&mut self, forest: &Arc<MastForest>) -> Option<DebugSourceNodeId> {
+        let position = *self.boundaries.last()?;
+        let Entry::Boundary {
+            forest: left,
+            dynamic,
+        } = &self.open[position]
+        else {
+            unreachable!("boundary positions point at boundaries")
+        };
+        if !Arc::ptr_eq(left, forest) {
+            return None;
         }
+        let dynamic = *dynamic;
+        self.truncate(position);
+        dynamic
     }
 
     /// The innermost open node of `forest` that lists `child` among its children, or the
@@ -222,12 +281,11 @@ impl SourceTracker {
         debug_info: &PackageDebugInfo,
         child: DebugSourceNodeId,
     ) -> Option<DebugSourceNodeId> {
-        let same_forest = self
-            .frame()
-            .iter()
-            .rev()
-            .filter(|entry| Arc::ptr_eq(&entry.forest, forest))
-            .filter_map(|entry| entry.node);
+        let same_forest =
+            self.open[self.frame_start()..].iter().rev().filter_map(|entry| match entry {
+                Entry::Node { forest: open, node } if Arc::ptr_eq(open, forest) => Some(*node),
+                _ => None,
+            });
         let lists_child = |node: &DebugSourceNodeId| {
             debug_info
                 .source_node(*node)
@@ -239,12 +297,13 @@ impl SourceTracker {
     /// Pops the open nodes above `node` of `forest`, and `node` itself unless `keep` is set.
     /// Leaves the stack alone when the node is not open in the current frame.
     fn close(&mut self, forest: &Arc<MastForest>, node: DebugSourceNodeId, keep: bool) {
-        let frame_start = self.open.len() - self.frame().len();
-        let position = self.open[frame_start..]
-            .iter()
-            .rposition(|entry| entry.node == Some(node) && Arc::ptr_eq(&entry.forest, forest));
+        let frame_start = self.frame_start();
+        let position = self.open[frame_start..].iter().rposition(|entry| {
+            matches!(entry, Entry::Node { forest: open, node: open_node }
+                if *open_node == node && Arc::ptr_eq(open, forest))
+        });
         if let Some(position) = position {
-            self.open.truncate(frame_start + position + usize::from(keep));
+            self.truncate(frame_start + position + usize::from(keep));
         }
     }
 }

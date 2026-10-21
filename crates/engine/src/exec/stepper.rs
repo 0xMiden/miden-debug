@@ -57,7 +57,8 @@ impl Stepper {
     /// Attributes the execution to `debug_info` when the resume context carries none, which
     /// is the case for a context built from a bare program.
     ///
-    /// Only the first step uses it; a context that already has debug info keeps its own.
+    /// The first cycle is resolved against it and the processor installs it on the first
+    /// step; a context that already has debug info keeps its own.
     pub fn with_debug_info(mut self, debug_info: Arc<PackageDebugInfo>) -> Self {
         self.pending_debug_info = Some(debug_info);
         self
@@ -184,7 +185,7 @@ impl Stepper {
         // After the last cycle the processor hands back a context with nothing left to run;
         // the step that consumes it only finalizes the execution.
         if ctx.continuation_stack().peek_continuation().is_some() {
-            let source = SourceContext::new(&ctx);
+            let source = SourceContext::with_debug_info(&ctx, debug_info.clone());
             on_cycle(&self.tracker.observe(&ctx, &source));
             self.cycle += 1;
         }

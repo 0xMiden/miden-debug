@@ -317,6 +317,36 @@ fn finalization_step_produces_no_record() {
     assert_eq!(steps, clock + 1);
 }
 
+/// A stepper over a bare program resolves its first cycle against the supplied debug info, so
+/// the root's start is not lost, and the records equal those of the package entry.
+#[test]
+fn bare_program_first_record_has_the_supplied_debug_info() {
+    let (package, _) = fixture();
+    let debug_info = Arc::new(package.debug_info().unwrap().unwrap());
+
+    let mut from_package = Vec::new();
+    stepper(&package, 1, 3)
+        .run_sync(&mut DefaultHost::default(), |cycle| from_package.push(Record::from(cycle)))
+        .unwrap();
+
+    let mut processor = FastProcessor::new(StackInputs::new(&inputs(1, 3)).unwrap());
+    let ctx = processor.get_initial_resume_context(&package.unwrap_program()).unwrap();
+    let mut stepper = Stepper::new(processor, ctx).with_debug_info(debug_info);
+    let mut from_program = Vec::new();
+    stepper
+        .run_sync(&mut DefaultHost::default(), |cycle| from_program.push(Record::from(cycle)))
+        .unwrap();
+
+    let first = &from_program[0];
+    assert!(first.has_debug_info, "{first:?}");
+    assert!(first.source_node.is_some(), "{first:?}");
+    assert!(first.node_start.is_some_and(|start| start.parent.is_none()), "{first:?}");
+    assert_eq!(from_program.len(), from_package.len());
+    for (i, (program, package)) in from_program.iter().zip(&from_package).enumerate() {
+        assert_eq!(program, package, "record {i}");
+    }
+}
+
 #[test]
 fn inline_frames_name_the_inlined_procedure() {
     let (package, _) = fixture();

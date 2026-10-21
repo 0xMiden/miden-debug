@@ -41,7 +41,7 @@ enum State {
     /// The context the next step consumes.
     Ready(ResumeContext),
     /// A step took the context and has not returned; stays if that step's future was dropped
-    /// or if it unwound through the callback or the host.
+    /// or if it unwound through the callback, the source resolution, or the host.
     Stepping,
     /// The program terminated successfully.
     Finished,
@@ -64,9 +64,10 @@ impl Stepper {
         }
     }
 
-    /// Creates a stepper over the program of `package`, with its debug info when it has any.
+    /// Creates a stepper over the program of `package`, with its debug info when it has any,
+    /// starting at the entry-point source node the package names.
     ///
-    /// `package` must be executable.
+    /// Panics when `package` is not executable.
     pub fn for_package(
         mut processor: FastProcessor,
         package: Arc<Package>,
@@ -80,16 +81,23 @@ impl Stepper {
     ///
     /// The first cycle is resolved against it and the processor installs it on the first
     /// step; a context that already has debug info keeps its own, and so does every later
-    /// context, such as one of a library without debug info. Must be called before the first
-    /// step.
+    /// context, such as one of a library without debug info. Execution then starts from the
+    /// unique source root of the entry point: the step API has no way to start from a given
+    /// entry-point source node, only [`Self::for_package`] honors the one a package names.
+    ///
+    /// Panics when a step has already run.
     pub fn with_debug_info(mut self, debug_info: Arc<PackageDebugInfo>) -> Self {
-        debug_assert_eq!(self.cycle(), 0, "debug info is attributed from the first step");
+        assert!(
+            matches!(self.state, State::Ready(_)) && self.cycle() == 0,
+            "debug info is attributed from the first step"
+        );
         self.pending_debug_info = Some(debug_info);
         self
     }
 
-    /// Number of VM cycles completed so far, the processor's clock; a failing cycle is not
-    /// counted.
+    /// Number of VM cycles completed so far, the processor's clock. A cycle whose operation
+    /// fails is not counted; one that completes and then trips the cycle or continuation-stack
+    /// limit is.
     pub fn cycle(&self) -> usize {
         u32::from(self.processor.state().clock()) as usize
     }
@@ -118,8 +126,9 @@ impl Stepper {
     ///
     /// Returns whether the program is still running. Returns the same `Ok(false)` once the
     /// program has finished. A failing step returns its error and stops the program; stepping
-    /// again after that, or after a step whose future was dropped before it completed, is an
-    /// error. The step that finalizes a finished program runs no cycle and is not described.
+    /// again after that, or after a step that did not complete (its future dropped, or a
+    /// panic unwound through it), is an error. The step that finalizes a finished program
+    /// runs no cycle and is not described.
     pub fn step_sync(
         &mut self,
         host: &mut impl SyncHost,
@@ -180,7 +189,7 @@ impl Stepper {
     /// The outputs of the finished program, as a full execution would have returned them.
     ///
     /// Fails unless the program ran to its end: while it is running, after a failed step, and
-    /// after a step whose future was dropped before it completed.
+    /// after a step that did not complete.
     pub fn into_output(self) -> Result<ExecutionOutput, ExecutionError> {
         match self.state {
             State::Finished => {}
@@ -217,7 +226,7 @@ impl Stepper {
             }
             State::Stepping => {
                 return Err(ExecutionError::Internal(
-                    "a step was dropped before it completed; the execution is lost",
+                    "a step did not complete; the execution is lost",
                 ));
             }
         };

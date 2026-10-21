@@ -141,8 +141,7 @@ impl DebugExecutor {
 
     /// Advance the program state by one cycle.
     ///
-    /// If the program has already reached its termination state, it returns the same result
-    /// as the previous time it was called.
+    /// Once the program has terminated, successfully or not, it returns `Ok(None)`.
     ///
     /// Returns the call frame exited this cycle, if any
     pub fn step(&mut self) -> Result<Option<CallFrame>, ExecutionError> {

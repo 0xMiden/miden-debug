@@ -85,14 +85,20 @@ impl SourceContext {
     }
 }
 
+/// What the next continuation executes, as far as the forest and the debug info tell.
 #[derive(Clone, Copy)]
 pub(crate) struct CurrentCycleInfo {
+    /// The operation the cycle executes; `None` on a control-flow cycle.
     pub op: Option<Operation>,
     /// The MAST node the cycle works on; `None` for a forest switch and when there is no
     /// continuation to run.
     pub exec_node: Option<MastNodeId>,
+    /// The source occurrence of the node, when the debug info has one.
     pub source_node_id: Option<DebugSourceNodeId>,
+    /// The padded index of the operation within its basic block; on a `RESPAN` cycle the
+    /// index of the next batch's first operation.
     pub op_idx: Option<usize>,
+    /// The control-flow operation of the cycle, when it is one the call stack tracks.
     pub control_flow_kind: Option<ControlFlowOp>,
 }
 

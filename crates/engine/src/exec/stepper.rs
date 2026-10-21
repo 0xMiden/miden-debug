@@ -67,7 +67,8 @@ impl Stepper {
     /// Creates a stepper over the program of `package`, with its debug info when it has any,
     /// starting at the entry-point source node the package names.
     ///
-    /// Panics when `package` is not executable.
+    /// Fails when the package's advice map conflicts with the processor's or its debug info
+    /// does not match its program. Panics when `package` is not executable.
     pub fn for_package(
         mut processor: FastProcessor,
         package: Arc<Package>,
@@ -81,9 +82,10 @@ impl Stepper {
     ///
     /// The first cycle is resolved against it and the processor installs it on the first
     /// step; a context that already has debug info keeps its own, and so does every later
-    /// context, such as one of a library without debug info. Execution then starts from the
-    /// unique source root of the entry point: the step API has no way to start from a given
-    /// entry-point source node, only [`Self::for_package`] honors the one a package names.
+    /// context, such as one of a library without debug info. Source attribution then starts
+    /// from the unique source root of the entry point, and the first step fails when that
+    /// root is ambiguous: the step API has no way to start from a given entry-point source
+    /// node, only [`Self::for_package`] honors the one a package names.
     ///
     /// Panics when a step has already run.
     pub fn with_debug_info(mut self, debug_info: Arc<PackageDebugInfo>) -> Self {

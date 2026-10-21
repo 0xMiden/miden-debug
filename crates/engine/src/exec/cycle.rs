@@ -72,7 +72,7 @@ pub struct NodeStart {
     pub node: DebugSourceNodeId,
     /// The innermost open source node of the same forest that lists `node` as a child, or the
     /// innermost open node of that forest when none does. A root entered through a dynamic
-    /// node of the same forest that has a source node gets that dynamic node. `None` when
+    /// node of the same forest gets that dynamic node, when it has a source node. `None` when
     /// nothing is open since the forest was entered: a root entered dynamically from another
     /// package, and the children of a root entered through an external node, whose own start
     /// is never described.
@@ -86,7 +86,7 @@ pub struct NodeStart {
 /// or a dynamic node, pushes a boundary (the dynamic node itself is pushed below it, so that
 /// its finish still finds it): whatever the callee leaves open, such as the children of a
 /// root whose start was never described, is popped with the boundary once the continuation
-/// stack has unwound to where the caller continues, and a parent is only ever looked for
+/// stack has unwound to the boundary's depth, and a parent is only ever looked for
 /// above the innermost boundary. One tracker follows one execution from start to end; it must
 /// see every cycle, in order.
 #[derive(Debug, Default)]
@@ -114,14 +114,11 @@ enum Entry {
         /// The dynamic node that left, when the boundary is a dynamic node's with a source
         /// node; an external node leaves no entry of its own.
         dynamic: Option<DebugSourceNodeId>,
-        /// The continuation-stack depth at which the caller continues after the callee: one
-        /// less than at the start for an external node, which the step replaces by the
-        /// callee's entry; one more for a dynamic node, whose finish stays and whose callee
-        /// root, when it is in the same forest, sits on top of it.
-        returns_at: usize,
-        /// The depth at which a same-forest callee's root starts, when the boundary is a
-        /// dynamic node's: that start takes the dynamic node as its parent.
-        hands_over_at: Option<usize>,
+        /// The deepest continuation stack at which the boundary is behind the execution.
+        /// Every cycle of the callee runs deeper, with one exception the threshold is chosen
+        /// to include: the root start of a dynamic node's same-forest callee, which takes the
+        /// dynamic node as its parent.
+        unwound_at: usize,
     },
 }
 
@@ -130,8 +127,9 @@ enum Entry {
 enum Leaving {
     /// An external node: no finish follows in this forest.
     External,
-    /// A dynamic node: its finish follows in this forest once the callee returns.
-    Dynamic,
+    /// A dynamic node, with its source node when it has one: its finish follows in this
+    /// forest once the callee returns.
+    Dynamic(Option<DebugSourceNodeId>),
 }
 
 impl SourceTracker {
@@ -188,9 +186,7 @@ impl SourceTracker {
                 match kind {
                     // An external node has no finish in this forest: its callee runs
                     // elsewhere and execution comes back to the next continuation.
-                    Some(MastNode::External(_)) => {
-                        self.push_boundary(Leaving::External, None, depth)
-                    }
+                    Some(MastNode::External(_)) => self.push_boundary(Leaving::External, depth),
                     // A dynamic node has a finish, but its callee may run elsewhere too. The
                     // node goes below the boundary: the boundary is popped first, and the
                     // finish then closes the node in the caller's frame.
@@ -198,7 +194,7 @@ impl SourceTracker {
                         if let Some(node) = node {
                             self.push_node(forest, node);
                         }
-                        self.push_boundary(Leaving::Dynamic, node, depth);
+                        self.push_boundary(Leaving::Dynamic(node), depth);
                     }
                     _ => {
                         if let Some(node) = node {
@@ -255,23 +251,22 @@ impl SourceTracker {
         });
     }
 
-    /// Marks that the forest leaves through a node of kind `leaving`, `dynamic` when it is a
-    /// dynamic node with a source node, with the continuation stack `depth` deep.
-    fn push_boundary(
-        &mut self,
-        leaving: Leaving,
-        dynamic: Option<DebugSourceNodeId>,
-        depth: usize,
-    ) {
-        let (returns_at, hands_over_at) = match leaving {
-            Leaving::External => (depth - 1, None),
-            Leaving::Dynamic => (depth + 1, Some(depth + 1)),
+    /// Marks that the forest leaves through `leaving`, with the continuation stack `depth`
+    /// deep, `depth` counting the leaving node itself.
+    fn push_boundary(&mut self, leaving: Leaving, depth: usize) {
+        let (dynamic, unwound_at) = match leaving {
+            // The step replaces the external node by the callee's entry, so the caller
+            // continues one below it. `depth >= 1`: the node is on the stack.
+            Leaving::External => (None, depth - 1),
+            // The step replaces the dynamic node by its finish, which stays at `depth`; a
+            // same-forest callee root starts right on top of it and a cross-forest one two
+            // above, behind a forest switch.
+            Leaving::Dynamic(node) => (node, depth + 1),
         };
         self.boundaries.push(self.open.len());
         self.open.push(Entry::Boundary {
             dynamic,
-            returns_at,
-            hands_over_at,
+            unwound_at,
         });
     }
 
@@ -290,27 +285,31 @@ impl SourceTracker {
         }
     }
 
-    /// Pops every boundary whose callee the continuation stack, `depth` deep now, has
-    /// unwound past, with everything above it. Returns the dynamic node whose same-forest
-    /// callee root this cycle starts, if it is one.
+    /// Pops every boundary the continuation stack, `depth` deep now, has unwound to, with
+    /// everything above it. Returns the dynamic node whose same-forest callee root this cycle
+    /// starts, if it is one.
     ///
-    /// The depth alone tells a return from a callback into the same forest: a callee always
-    /// runs deeper than where its caller continues.
+    /// The depth alone tells a return from a callback into the same forest, since a callee
+    /// runs below its boundary's threshold. A program the assembler built pops at most one
+    /// boundary per cycle; the loop covers a host that answers a dynamic node with a forest
+    /// whose root is itself external, where the callee's boundary and the caller's unwind in
+    /// the same cycle.
     fn return_to(&mut self, depth: usize) -> Option<DebugSourceNodeId> {
         let mut handed_over = None;
         while let Some(position) = self.boundaries.last().copied() {
             let Entry::Boundary {
                 dynamic,
-                returns_at,
-                hands_over_at,
+                unwound_at,
             } = &self.open[position]
             else {
                 unreachable!("boundary positions point at boundaries")
             };
-            if depth > *returns_at {
+            if depth > *unwound_at {
                 break;
             }
-            handed_over = (*hands_over_at == Some(depth)).then_some(*dynamic).flatten();
+            // Only a same-forest callee root starts exactly at the threshold; a cycle deeper
+            // than the boundary's own node is not one.
+            handed_over = (depth == *unwound_at).then_some(*dynamic).flatten();
             self.truncate(position);
         }
         handed_over

@@ -206,8 +206,8 @@ impl Executor {
     /// this the cheap way to step a program to its end while observing every cycle. The profiler
     /// configuration is not used; observe the cycles through the stepper's callback instead.
     ///
-    /// Panics like [`Executor::into_debug`] when the advice inputs do not fit the options, the
-    /// package has no usable entry point, or an event handler cannot be registered.
+    /// Panics, as [`Executor::into_debug`] does, when the advice inputs do not fit the options,
+    /// the package has no usable entry point, or an event handler cannot be registered.
     pub fn into_stepper(
         mut self,
         package: Arc<Package>,

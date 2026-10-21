@@ -27,7 +27,7 @@ pub struct Stepper {
     /// Debug info to attribute the first step to when the context was built without it.
     pending_debug_info: Option<Arc<PackageDebugInfo>>,
     tracker: SourceTracker,
-    /// Number of steps taken so far.
+    /// Number of VM cycles executed so far.
     cycle: usize,
 }
 
@@ -63,7 +63,7 @@ impl Stepper {
         self
     }
 
-    /// Number of steps taken so far.
+    /// Number of VM cycles executed so far.
     pub fn cycle(&self) -> usize {
         self.cycle
     }
@@ -86,7 +86,8 @@ impl Stepper {
     /// Executes one step with a synchronous host, describing its cycle to `on_cycle` first.
     ///
     /// Returns whether the program is still running. Returns the same `Ok(false)` once the
-    /// program has terminated; an error terminates it.
+    /// program has terminated; an error terminates it. The step that finalizes a finished
+    /// program runs no cycle and is not described.
     pub fn step_sync(
         &mut self,
         host: &mut impl SyncHost,
@@ -168,8 +169,9 @@ impl Stepper {
         })
     }
 
-    /// Takes the resume context, describes its cycle to `on_cycle`, and returns the context with
-    /// the debug info the step should run with. `None` once the program has terminated.
+    /// Takes the resume context, describes its cycle to `on_cycle` if it has one, and returns
+    /// the context with the debug info the step should run with. `None` once the program has
+    /// terminated.
     fn before_step(
         &mut self,
         on_cycle: impl FnOnce(&CycleInfo<'_>),
@@ -179,9 +181,13 @@ impl Stepper {
         // a later context without debug info belongs to a library and must not inherit it.
         let pending = self.pending_debug_info.take();
         let debug_info = ctx.debug_info().or(pending);
-        let source = SourceContext::new(&ctx);
-        on_cycle(&self.tracker.observe(&ctx, &source));
-        self.cycle += 1;
+        // After the last cycle the processor hands back a context with nothing left to run;
+        // the step that consumes it only finalizes the execution.
+        if ctx.continuation_stack().peek_continuation().is_some() {
+            let source = SourceContext::new(&ctx);
+            on_cycle(&self.tracker.observe(&ctx, &source));
+            self.cycle += 1;
+        }
         Some((ctx, debug_info))
     }
 

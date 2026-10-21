@@ -219,15 +219,21 @@ impl Executor {
         (stepper, host)
     }
 
+    /// The host with the linked packages loaded.
+    fn new_host(&self, source_manager: Arc<dyn SourceManager>) -> DebuggerHost<dyn SourceManager> {
+        let mut host = DebuggerHost::new(source_manager);
+        for lib in self.registry.all() {
+            host.load_package(lib);
+        }
+        host
+    }
+
     /// The host with the linked packages and the registered event handlers.
     fn build_host(
         &mut self,
         source_manager: Arc<dyn SourceManager>,
     ) -> DebuggerHost<dyn SourceManager> {
-        let mut host = DebuggerHost::new(source_manager);
-        for lib in self.registry.all() {
-            host.load_package(lib);
-        }
+        let mut host = self.new_host(source_manager);
         for (event, handler) in core::mem::take(&mut self.event_handlers) {
             host.register_event_handler(event, handler)
                 .expect("failed to register debug executor event handler");
@@ -257,10 +263,8 @@ impl Executor {
 
         log::debug!("creating debug executor with event replay");
 
-        let mut host = DebuggerHost::new(source_manager.clone());
-        for lib in self.registry.all() {
-            host.load_package(lib);
-        }
+        // Replay feeds the recorded mutations, so the live event handlers are not registered.
+        let mut host = self.new_host(source_manager);
         for forest in extra_mast_forests {
             host.load_mast_forest(forest);
         }

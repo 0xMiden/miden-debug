@@ -36,7 +36,7 @@ use miden_processor::{
 
 use super::{
     EventMutationRecorder, MastForestRecorder, RecordingHost, ReplaySnapshot,
-    ReplaySnapshotRecorder, ReplaySnapshotWrite, source::SourceContext,
+    ReplaySnapshotRecorder, ReplaySnapshotWrite, poll_immediately, source::SourceContext,
     state::should_wait_for_entry_variables,
 };
 use crate::{
@@ -266,8 +266,6 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
         self.inner.on_trace(process)
     }
 }
-
-use super::poll_immediately;
 
 macro_rules! write_with_format_type {
     ($out:ident, $read_expr:ident, $value:expr) => {

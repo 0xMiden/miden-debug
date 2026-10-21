@@ -53,6 +53,7 @@ pub use self::{
 
 /// Resolves a future that is expected to complete on its first poll, as the futures of a
 /// synchronous host do; a future that yields is a bug in the caller.
+#[cfg(any(test, feature = "dap"))]
 pub(crate) fn poll_immediately<T>(future: impl Future<Output = T>) -> T {
     use core::task::{Context, Poll, Waker};
 

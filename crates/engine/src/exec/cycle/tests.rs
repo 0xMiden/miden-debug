@@ -22,7 +22,7 @@ use miden_processor::{
 
 use super::*;
 use crate::{
-    exec::{Executor, Stepper, poll_immediately as block_on},
+    exec::{Executor, Stepper, poll_immediately},
     profiling::{Instrument, OutputResult, OutputWriter, ProfilerConfig},
 };
 
@@ -688,7 +688,7 @@ fn bare_program_first_record_has_the_supplied_debug_info() {
     let ctx = processor.get_initial_resume_context(&package.unwrap_program()).unwrap();
     let mut stepper = Stepper::new(processor, ctx).with_debug_info(debug_info.clone());
     let mut from_async = Vec::new();
-    block_on(
+    poll_immediately(
         stepper.run(&mut DefaultHost::default(), |cycle| from_async.push(Record::from(cycle))),
     )
     .unwrap();
@@ -1049,7 +1049,7 @@ fn stepper_async_step_and_output() {
 
     let mut stepper = stepper(&package, 1, 3);
     let mut from_async = Vec::new();
-    block_on(
+    poll_immediately(
         stepper.run(&mut DefaultHost::default(), |cycle| from_async.push(Record::from(cycle))),
     )
     .unwrap();
@@ -1057,7 +1057,7 @@ fn stepper_async_step_and_output() {
     assert_eq!(from_async.len(), stepper.cycle());
     assert_eq!(from_async, from_sync, "the async path resolves cycles like the sync one");
     // Stepping a finished program is a no-op.
-    assert!(!block_on(stepper.step(&mut DefaultHost::default(), |_| {})).unwrap());
+    assert!(!poll_immediately(stepper.step(&mut DefaultHost::default(), |_| {})).unwrap());
     let output = stepper.into_output().unwrap();
 
     let expected = FastProcessor::new(StackInputs::new(&inputs(1, 3)).unwrap())

@@ -88,7 +88,7 @@ impl SourceContext {
 #[derive(Clone, Copy)]
 pub(crate) struct CurrentCycleInfo {
     pub op: Option<Operation>,
-    /// The MAST node the cycle works on; `None` when the cycle only switches forests.
+    /// The MAST node the cycle works on; `None` when there is no continuation to run.
     pub exec_node: Option<MastNodeId>,
     pub source_node_id: Option<DebugSourceNodeId>,
     pub op_idx: Option<usize>,

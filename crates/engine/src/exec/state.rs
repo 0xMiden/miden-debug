@@ -173,7 +173,7 @@ impl DebugExecutor {
     /// One step: the internal observer sees the source context after the call stack and the
     /// declarations were brought up to date, then the instruments and `on_cycle` receive the
     /// cycle record, then the processor runs the cycle.
-    fn step_impl(
+    pub(crate) fn step_impl(
         &mut self,
         observe: impl FnOnce(&Self, &SourceContext),
         on_cycle: impl FnOnce(&CycleInfo<'_>),
@@ -216,10 +216,8 @@ impl DebugExecutor {
         );
         observe(self, &source);
 
-        // After the last cycle the processor hands back a context with nothing left to run;
-        // that step only finalizes the execution and is no cycle to describe.
-        if resume_ctx.continuation_stack().peek_continuation().is_some() {
-            let cycle = self.source_tracker.observe(&resume_ctx, &source);
+        // `None` for the finalization step after the last cycle, which is no cycle to describe.
+        if let Some(cycle) = self.source_tracker.observe(&resume_ctx, &source) {
             self.profiler.on_cycle(&cycle);
             on_cycle(&cycle);
         }

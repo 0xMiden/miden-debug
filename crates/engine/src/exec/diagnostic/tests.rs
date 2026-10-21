@@ -1,21 +1,9 @@
 use alloc::string::ToString;
-use core::{
-    future::Future,
-    task::{Context, Poll, Waker},
-};
 
 use miden_assembly::{Assembler, DefaultSourceManager};
 
 use super::*;
-use crate::exec::DebuggerHost;
-
-fn ready<F: Future>(future: F) -> F::Output {
-    let mut future = core::pin::pin!(future);
-    match future.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("synchronous test host unexpectedly yielded"),
-    }
-}
+use crate::{exec::DebuggerHost, test_utils::block_on as ready};
 
 #[test]
 fn trace_handler_errors_preserve_the_registered_name_through_diagnostics() {

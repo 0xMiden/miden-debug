@@ -1,6 +1,7 @@
 mod advice;
 mod collect_trace;
 mod config;
+mod cycle;
 #[cfg(feature = "dap")]
 mod dap;
 #[cfg(feature = "dap")]
@@ -16,6 +17,7 @@ mod recording_host;
 mod snapshot;
 pub(crate) mod source;
 mod state;
+mod stepper;
 mod trace;
 
 #[cfg(feature = "std")]
@@ -27,6 +29,7 @@ pub use self::{
     },
     collect_trace::{CallTraceReplay, replay_call_trace},
     config::ExecutionConfig,
+    cycle::{CycleInfo, NodeStart, SourceTracker},
     diagnostic::DiagnosticExecutor,
     event::Event,
     executor::Executor,
@@ -38,6 +41,7 @@ pub use self::{
         ReplaySnapshotWriteError,
     },
     state::DebugExecutor,
+    stepper::Stepper,
     trace::ExecutionTrace,
 };
 #[cfg(feature = "dap")]

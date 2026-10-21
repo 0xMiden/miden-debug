@@ -6,29 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.19.0]
+
 ### Added
 
-- `replay_call_trace` builds the call tree of a recorded `ReplaySnapshot` by replaying it and tracking frame-start/frame-end events, exposing each call's arguments and result via `CallTrace` ([#125](https://github.com/0xMiden/miden-debug/issues/125)).
-- `RecordingHost`, extracted from `DapHostWrapper`, wraps a live host to record the advice mutations and MAST forests required for replay.
-- Locals are tracked per live physical invocation, including recursive calls and suspended callers. REPL/TUI frame selection, DAP scopes and evaluation, and Python frame snapshots inspect the owning invocation's values. Inline-frame and lexical-scope locals remain deferred.
-- Rust scripting integrations can inspect individual logical frames with `ScriptDebugger::frame_at`; the existing `frame` API continues to inspect the executing invocation.
+- Rust integrations can use `replay_call_trace` to build a call tree from a `ReplaySnapshot`, including call timing, arguments, and returned field elements when debug information is available. Calls must have frame-start/frame-end markers. Failed executions return a partial trace alongside the error; missing metadata leaves call details unknown rather than attributing them to a later callee.
+- `RecordingHost` lets Rust integrations record a host's advice mutations and loaded code for replay.
+- Rust scripts can inspect individual logical stack frames with `ScriptDebugger::frame_at`.
 
 ### Changed
 
-- Debugger and DAP stack traces use Miden VM's recovered call frames, preserving caller locations and source inline contexts across nested calls and package boundaries. Inferred frames are labeled separately from source-level inline frames.
-- Flamegraphs sample recovered source stacks, including labeled inferred and inline frames, with event-frame fallback when source metadata is unavailable.
+- Debugger and DAP stack traces recover callers and source inline frames across nested calls, recursion, and package boundaries. Inferred frames are labeled separately from inline frames, and event-based frames remain available when source metadata is missing.
 
 ### Fixed
 
-- Function breakpoints match Rust source names as well as mangled linkage names.
-- Local `finish` and DAP step-out follow recovered invocation identities, including recursive and uninstrumented calls, while retaining frame-event fallback for stripped packages. Pending local return breakpoints remain associated with their original invocation when another breakpoint interrupts execution.
-- Stack traces retain event frames when a source-aware caller enters a stripped callee.
+- Function breakpoints now match demangled Rust source names as well as mangled linkage names in local and DAP sessions.
 
 ### Migration and breaking changes
 
-- Switch to published Miden VM v0.36.1 crates. Rust integrations exchanging VM, package, or debug-info types with the debugger must use matching v0.36.1 dependencies.
-- Temporarily patch the VM crates to the sibling `../miden-vm` checkout for invocation recovery through generated locals instructions and merged blocks. The patch can be removed once that fix is published.
-- DAP scope references are now allocated per stopped frame and expire on resume. Rust clients must use `DapClient::scopes(frame_id)` instead of the removed `SCOPE_STACK` and `SCOPE_MEMORY` constants; `evaluate_in_frame` supports explicit frame selection.
+- The debugger now uses Miden VM 0.36.2 instead of 0.35.0. Rust integrations exchanging VM, package, or debug-info types with the debugger must use matching 0.36.2 dependencies.
+- REPL/TUI variable commands now inspect the selected physical invocation, including suspended and recursive callers, instead of using the executing frame's values. Select the executing physical frame for its current values. Inline frames have no separate locals or lexical scopes. Unreadable values now display as `<unavailable>` instead of a storage-location expression.
+- Flamegraphs now attribute cycles to recovered source stacks, including uninstrumented callers and `[inferred]`/`[inlined]` frames. Tools comparing folded stacks must account for the additional frames and changed labels; VM cycle accounting is unchanged.
+- Local `finish` and DAP step-out now follow the current invocation through recursive and uninstrumented calls. With source metadata, they stop at a caller assembly operation after return; frame events remain the fallback when metadata is unavailable. Scripts relying on the previous stop cycle must account for this. A pending local return breakpoint remains tied to its original invocation when another breakpoint interrupts execution.
+- DAP frame IDs and variable references now expire on resume or restart; fetch `stackTrace` and `scopes` again after each stop. Rust clients must replace the removed `SCOPE_STACK` and `SCOPE_MEMORY` constants with scope references returned by `DapClient::scopes(frame_id)`. Operand Stack and Memory scopes are available only for the executing physical frame; inspect callers through their Local Variables and Other Locals scopes or `evaluate` with `frameId`. Other Locals contains compiler-generated and source-hidden variables.
+- Python `miden.thread.frames()` now returns all logical frames in innermost-first order. Frames returned by it and `miden.thread.selected_frame()` are snapshots that retain their values after execution resumes; fetch them again after each stop for current values. `miden.frame` and breakpoint callback frames still inspect the executing invocation.
+- `LogicalStackFrame::physical_index()` now returns `Option<usize>` instead of `usize`. Rust callers must handle `None` for recovered source frames without an event-frame index.
+- DAP, recording, and diagnostic execution now invoke the wrapped host's trace handlers and propagate their errors. Integrations using trace handlers must account for their side effects and for execution failing when a handler returns an error.
+- With the DAP crate's `integration_testing` feature, generated `Source` and `ExceptionDetails` fixtures now leave `sources` and `inner_exception` unset to prevent stack overflows. Tests needing nested sources or exceptions must populate those fields explicitly.
 
 ## [0.18.0]
 

@@ -238,9 +238,10 @@ fn debug_executor_and_stepper_produce_the_same_records() {
         exec.step_with(|cycle| from_executor.push(Record::from(cycle))).unwrap();
     }
 
-    // Both describe every step once.
+    // Both describe every cycle once and the finalization step not at all.
     assert_eq!(from_stepper.len(), from_executor.len());
     assert_eq!(from_stepper.len(), stepper.cycle());
+    assert_eq!(from_executor.len(), exec.cycle);
     for (i, (stepper, executor)) in from_stepper.iter().zip(&from_executor).enumerate() {
         assert_eq!(stepper, executor, "record {i}");
     }
@@ -293,6 +294,27 @@ fn external_loop_body_does_not_pile_up_open_nodes() {
     // Root join, loop guard, loop, body: nothing accumulates across iterations.
     assert!(deepest <= 6, "{deepest} nodes open at the deepest point");
     assert_eq!(stepper.open_source_nodes(), 0);
+}
+
+/// `exec` of a MASM procedure is recorded as an inline call: the frames name the procedure
+/// while its body runs and are empty at the program's own level.
+/// The step that consumes the empty context left after the last cycle describes nothing: the
+/// records match the VM clock, not the number of steps.
+#[test]
+fn finalization_step_produces_no_record() {
+    let (package, _) = fixture();
+    let mut stepper = stepper(&package, 1, 3);
+    let mut host = DefaultHost::default();
+    let mut records = 0;
+    let mut steps = 0;
+    while stepper.step_sync(&mut host, |_| records += 1).unwrap() {
+        steps += 1;
+    }
+    steps += 1;
+    let clock = u32::from(stepper.processor().state().clock()) as usize;
+    assert_eq!(records, clock);
+    assert_eq!(stepper.cycle(), clock);
+    assert_eq!(steps, clock + 1);
 }
 
 #[test]

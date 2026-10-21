@@ -152,7 +152,8 @@ impl DebugExecutor {
     /// Advance the program state by one cycle, describing the cycle to `on_cycle` first.
     ///
     /// `on_cycle` runs before the cycle executes, after the profiler's instruments received the
-    /// same record, so it sees a cycle that fails too. Otherwise like [`Self::step`].
+    /// same record, so it sees a cycle that fails too. The step that finalizes a finished
+    /// program runs no cycle and is not described. Otherwise like [`Self::step`].
     pub fn step_with(
         &mut self,
         on_cycle: impl FnOnce(&CycleInfo<'_>),
@@ -215,10 +216,13 @@ impl DebugExecutor {
         );
         observe(self, &source);
 
-        let cycle = self.source_tracker.observe(&resume_ctx, &source);
-        self.profiler.on_cycle(&cycle);
-        on_cycle(&cycle);
-        drop(cycle);
+        // After the last cycle the processor hands back a context with nothing left to run;
+        // that step only finalizes the execution and is no cycle to describe.
+        if resume_ctx.continuation_stack().peek_continuation().is_some() {
+            let cycle = self.source_tracker.observe(&resume_ctx, &source);
+            self.profiler.on_cycle(&cycle);
+            on_cycle(&cycle);
+        }
 
         // Execute one step
         let step_result = if let Some(debug_info) = source.debug_info() {

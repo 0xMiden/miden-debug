@@ -23,9 +23,10 @@ use crate::debug::{ControlFlowOp, InlineCallFrame};
 
 /// What the next step will execute, resolved to source.
 ///
-/// Produced once per step and handed to instruments before the step runs, so a cycle that
-/// fails is described like any other. Every reference borrows the resume context the step is
-/// about to consume.
+/// Produced once per VM cycle and handed to instruments before the cycle runs, so a cycle that
+/// fails is described like any other. The finalization step that follows the last cycle
+/// produces no record. Every reference borrows the resume context the step is about to
+/// consume.
 #[derive(Debug)]
 pub struct CycleInfo<'a> {
     /// The forest the step executes in.
@@ -88,7 +89,8 @@ impl SourceTracker {
     /// Describes the cycle that will consume `ctx`, whose source metadata is `source`, and
     /// records its effect on the open nodes.
     ///
-    /// Must be called exactly once before each step.
+    /// Must be called exactly once before each VM cycle, and not for the finalization step
+    /// whose context has no continuation left.
     pub(crate) fn observe<'a>(
         &mut self,
         ctx: &'a ResumeContext,

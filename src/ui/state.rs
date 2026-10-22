@@ -160,7 +160,7 @@ impl RemoteState {
     ) -> Result<Self, Report> {
         use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
-        use miden_debug_engine::{SourceTracker, debug::DebugVarTracker, profiling::Profiler};
+        use miden_debug_engine::{Stepper, debug::DebugVarTracker, profiling::Profiler};
         use miden_processor::{ContextId, FastProcessor};
 
         use crate::exec::DebuggerHost;
@@ -168,11 +168,20 @@ impl RemoteState {
         let ui_state = client.handshake().map_err(Report::msg)?;
         let snapshot = convert_ui_state(&ui_state, source_manager);
 
+        // The remote session shows the server's state through an executor that never steps;
+        // its stepper holds an empty program so that it has a processor and a context.
+        let placeholder = miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_program("remote", "begin nop end")
+            .map_err(Report::msg)?;
+        let stepper = Stepper::for_package(
+            FastProcessor::new(StackInputs::default()),
+            Arc::from(placeholder),
+        )
+        .map_err(Report::msg)?;
         let debug_vars = DebugVarTracker::new(Rc::new(RefCell::new(Default::default())));
         let executor = DebugExecutor {
-            processor: FastProcessor::new(StackInputs::default()),
+            stepper,
             host: DebuggerHost::new(source_manager.clone()),
-            resume_ctx: None,
             current_stack: snapshot.current_stack,
             current_op: None,
             current_asmop: None,
@@ -188,7 +197,6 @@ impl RemoteState {
             cycle: snapshot.cycle,
             stopped: false,
             profiler: Profiler::default(),
-            source_tracker: SourceTracker::new(),
         };
 
         Ok(Self {
@@ -858,7 +866,7 @@ impl State {
         source_path: &str,
     ) -> Option<u32> {
         let executor = self.executor();
-        let ctx = executor.resume_ctx.as_ref()?;
+        let ctx = executor.resume_ctx()?;
         let mast_forest = ctx.current_forest();
         let debug_info = ctx.debug_info()?;
 
@@ -1046,7 +1054,7 @@ impl State {
         let executor = self.executor();
         let cycle = miden_processor::trace::RowIndex::from(executor.cycle);
         let context = executor.current_context;
-        let memory = executor.processor.memory();
+        let memory = executor.processor().memory();
         let read_element = |addr: u32| -> Option<Felt> {
             memory
                 .read_element(context, Felt::new(addr as u64).expect("value exceeds field modulus"))
@@ -1221,7 +1229,7 @@ impl State {
                 {
                     return None;
                 }
-                let resolved = tracker.resolve(invocation, name, &executor.processor)?;
+                let resolved = tracker.resolve(invocation, name, executor.processor())?;
                 let source = snapshot.info.location().and_then(|loc| {
                     let loc = self.resolve_op_location(loc)?;
                     Some(DebugVariableSource {

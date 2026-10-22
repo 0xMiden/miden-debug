@@ -18,6 +18,8 @@ pub(crate) struct SourceContext {
 }
 
 impl SourceContext {
+    /// Selects the cycle metadata against the context's own debug info.
+    #[cfg(any(test, feature = "dap"))]
     pub fn new(context: &ResumeContext) -> Self {
         Self::with_debug_info(context, context.debug_info())
     }

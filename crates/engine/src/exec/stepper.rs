@@ -13,6 +13,21 @@ use super::{
     source::SourceContext,
 };
 
+/// What a step is about to run, shown to the engine's own consumers before the cycle.
+///
+/// The debug executor brings its call stack and declarations up to date from it; the public
+/// callbacks only see the cycle record.
+pub(crate) struct Described<'a> {
+    /// The processor, before the cycle.
+    pub processor: &'a FastProcessor,
+    /// The context the step consumes.
+    pub ctx: &'a ResumeContext,
+    /// The cycle's source metadata.
+    pub source: &'a SourceContext,
+    /// The cycle record; `None` for the finalization step, which runs no cycle.
+    pub cycle: Option<&'a CycleInfo<'a>>,
+}
+
 /// Steps a processor one cycle at a time and describes each cycle before it runs.
 ///
 /// Unlike [`DebugExecutor`](crate::DebugExecutor) it owns no host and keeps no state for
@@ -120,6 +135,20 @@ impl Stepper {
         &self.processor
     }
 
+    /// The processor, wherever the program is in its life.
+    pub fn into_processor(self) -> FastProcessor {
+        self.processor
+    }
+
+    /// The context the next step consumes; `None` once the program is stopped or a step did
+    /// not complete.
+    pub fn resume_ctx(&self) -> Option<&ResumeContext> {
+        match &self.state {
+            State::Ready(ctx) => Some(ctx),
+            _ => None,
+        }
+    }
+
     /// Number of source nodes currently open.
     pub fn open_source_nodes(&self) -> usize {
         self.tracker.open_nodes()
@@ -137,7 +166,23 @@ impl Stepper {
         host: &mut impl SyncHost,
         on_cycle: impl FnOnce(&CycleInfo<'_>),
     ) -> Result<bool, ExecutionError> {
-        let Some(Step { ctx, debug_info }) = self.before_step(on_cycle)? else {
+        self.step_sync_described(host, |described| {
+            if let Some(cycle) = described.cycle {
+                on_cycle(cycle);
+            }
+        })
+    }
+
+    /// Executes one step with a synchronous host, showing `describe` what it is about to run
+    /// first: the finalization step included, with no cycle record.
+    ///
+    /// Otherwise like [`Self::step_sync`].
+    pub(crate) fn step_sync_described(
+        &mut self,
+        host: &mut impl SyncHost,
+        describe: impl FnOnce(&Described<'_>),
+    ) -> Result<bool, ExecutionError> {
+        let Some(Step { ctx, debug_info }) = self.before_step(describe)? else {
             return Ok(false);
         };
         let next = match debug_info {
@@ -157,7 +202,12 @@ impl Stepper {
         host: &mut impl Host,
         on_cycle: impl FnOnce(&CycleInfo<'_>),
     ) -> Result<bool, ExecutionError> {
-        let Some(Step { ctx, debug_info }) = self.before_step(on_cycle)? else {
+        let describe = |described: &Described<'_>| {
+            if let Some(cycle) = described.cycle {
+                on_cycle(cycle);
+            }
+        };
+        let Some(Step { ctx, debug_info }) = self.before_step(describe)? else {
             return Ok(false);
         };
         let next = match debug_info {
@@ -211,11 +261,11 @@ impl Stepper {
         execution_output(self.processor, stack)
     }
 
-    /// Takes the resume context, describes its cycle to `on_cycle` if it has one, and returns
+    /// Takes the resume context, shows `describe` what the step is about to run, and returns
     /// what the step needs. `None` once the program has finished.
     fn before_step(
         &mut self,
-        on_cycle: impl FnOnce(&CycleInfo<'_>),
+        describe: impl FnOnce(&Described<'_>),
     ) -> Result<Option<Step>, ExecutionError> {
         let ctx = match core::mem::replace(&mut self.state, State::Stepping) {
             State::Ready(ctx) => ctx,
@@ -238,9 +288,13 @@ impl Stepper {
         let pending = self.pending_debug_info.take();
         let debug_info = ctx.debug_info().or(pending);
         let source = SourceContext::with_debug_info(&ctx, debug_info.clone());
-        if let Some(cycle) = self.tracker.observe(&ctx, &source) {
-            on_cycle(&cycle);
-        }
+        let cycle = self.tracker.observe(&ctx, &source);
+        describe(&Described {
+            processor: &self.processor,
+            ctx: &ctx,
+            source: &source,
+            cycle: cycle.as_ref(),
+        });
         Ok(Some(Step { ctx, debug_info }))
     }
 

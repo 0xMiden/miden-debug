@@ -13,13 +13,11 @@ use miden_processor::{
 
 pub(crate) use super::source::{CurrentCycleInfo, extract_current_op};
 use super::{
-    DebuggerHost, ExecutionTrace,
-    cycle::{CycleInfo, SourceTracker},
-    source::SourceContext,
+    DebuggerHost, ExecutionTrace, cycle::CycleInfo, source::SourceContext, stepper::Stepper,
 };
 use crate::{
     Breakpoint, BreakpointType, OperationMatcher,
-    debug::{CallFrame, CallStack, DebugVarTracker, StepInfo},
+    debug::{CallFrame, CallStack, ControlFlowOp, DebugVarTracker, InlineCallFrame, StepInfo},
     profiling::Profiler,
 };
 
@@ -30,12 +28,11 @@ use crate::{
 /// This is used by the debugger to execute programs, and provide all of the functionality made
 /// available by the TUI.
 pub struct DebugExecutor {
-    /// The underlying [FastProcessor] being driven
-    pub processor: FastProcessor,
+    /// The stepper that runs the program: it owns the processor and the resume context, and
+    /// describes every cycle before it runs
+    pub stepper: Stepper,
     /// The host providing debugging callbacks
     pub host: DebuggerHost<dyn miden_assembly_syntax::debuginfo::SourceManager>,
-    /// The resume context for the next step (None if program has finished)
-    pub resume_ctx: Option<ResumeContext>,
 
     // State from last step (replaces VmState fields)
     /// The current operand stack state
@@ -63,20 +60,21 @@ pub struct DebugExecutor {
     pub last_debug_var_count: usize,
     /// A sliding window of the last 5 operations successfully executed by the VM
     pub recent: VecDeque<Operation>,
-    /// The current clock cycle
+    /// The current clock cycle: the stepper's, mirrored after each step so that a session that
+    /// stands in for a remote execution can show its own
     pub cycle: usize,
-    /// Whether or not execution has terminated
+    /// Whether or not execution has terminated. Set by a step that finishes or fails the
+    /// program; a session that stands in for a remote execution sets it itself. Once set, a
+    /// step does nothing
     pub stopped: bool,
     /// The profiler used by this executor
     pub profiler: Profiler,
-    /// Keeps the open source nodes between steps, so a cycle that starts a node names its parent
-    pub source_tracker: SourceTracker,
 }
 
 impl super::query::DebugQuery for DebugExecutor {
     #[inline]
     fn state(&self) -> miden_processor::ProcessorState<'_> {
-        self.processor.state()
+        self.stepper.processor().state()
     }
 
     fn current_context(&self) -> ContextId {
@@ -84,7 +82,7 @@ impl super::query::DebugQuery for DebugExecutor {
     }
 
     fn current_clock(&self) -> RowIndex {
-        self.processor.state().clock()
+        self.stepper.processor().state().clock()
     }
 }
 
@@ -93,7 +91,17 @@ impl DebugExecutor {
     ///
     /// This returns the entire stack, not just the top 16 elements
     pub fn stack(&self) -> &[Felt] {
-        self.processor.stack()
+        self.stepper.processor().stack()
+    }
+
+    /// The processor being driven.
+    pub fn processor(&self) -> &FastProcessor {
+        self.stepper.processor()
+    }
+
+    /// The resume context for the next step; `None` once the program has finished.
+    pub fn resume_ctx(&self) -> Option<&ResumeContext> {
+        self.stepper.resume_ctx()
     }
 }
 
@@ -134,7 +142,7 @@ pub(crate) fn should_wait_for_entry_variables(
 impl DebugExecutor {
     /// Returns whether a function breakpoint should wait for pending entry-block declarations.
     pub fn should_wait_for_entry_variables(&self, procedure: &str) -> bool {
-        self.resume_ctx.as_ref().is_some_and(|resume_ctx| {
+        self.stepper.resume_ctx().is_some_and(|resume_ctx| {
             should_wait_for_entry_variables(resume_ctx, procedure, &self.debug_vars, self.cycle)
         })
     }
@@ -145,38 +153,40 @@ impl DebugExecutor {
     ///
     /// Returns the call frame exited this cycle, if any
     pub fn step(&mut self) -> Result<Option<CallFrame>, ExecutionError> {
-        self.step_impl(|_, _| {}, |_| {})
+        self.step_impl(|_| {}, |_| {})
     }
 
     /// Advance the program state by one cycle, describing the cycle to `on_cycle` first.
     ///
     /// `on_cycle` runs before the cycle executes, after the profiler's instruments received the
     /// same record, so it sees a cycle that fails too. The step that finalizes a finished
-    /// program runs no cycle and is not described. Unlike [`Stepper`](crate::Stepper), a step
+    /// program runs no cycle and is not described. Unlike the [`Stepper`] it drives, a step
     /// after a failure is not an error: it returns `Ok(None)` like a step after the end.
     /// Otherwise like [`Self::step`].
     pub fn step_with(
         &mut self,
         on_cycle: impl FnOnce(&CycleInfo<'_>),
     ) -> Result<Option<CallFrame>, ExecutionError> {
-        self.step_impl(|_, _| {}, on_cycle)
+        self.step_impl(|_| {}, on_cycle)
     }
 
-    /// Observe the current source context, recovered frames, and declarations before a cycle.
-    /// The observer also runs when that cycle fails, but never after execution has stopped.
+    /// Observe the executor before a cycle, once the call stack and the declarations were
+    /// brought up to date for it. The observer also runs when that cycle fails, and for the
+    /// finalization step, but never after execution has stopped.
     pub(crate) fn step_with_observer(
         &mut self,
-        observe: impl FnOnce(&Self, &SourceContext),
+        observe: impl FnOnce(&Observation<'_>),
     ) -> Result<Option<CallFrame>, ExecutionError> {
         self.step_impl(observe, |_| {})
     }
 
-    /// One step: the internal observer sees the source context after the call stack and the
-    /// declarations were brought up to date, then the instruments and `on_cycle` receive the
-    /// cycle record, then the processor runs the cycle.
+    /// One step through the stepper: before the cycle runs, the call stack and the declarations
+    /// are brought up to date, the internal observer sees them with the source context, then
+    /// the instruments and `on_cycle` receive the cycle record; after it, the state for
+    /// inspection is refreshed from the processor.
     pub(crate) fn step_impl(
         &mut self,
-        observe: impl FnOnce(&Self, &SourceContext),
+        observe: impl FnOnce(&Observation<'_>),
         on_cycle: impl FnOnce(&CycleInfo<'_>),
     ) -> Result<Option<CallFrame>, ExecutionError> {
         if self.stopped {
@@ -184,59 +194,64 @@ impl DebugExecutor {
             return Ok(None);
         }
 
-        let resume_ctx = match self.resume_ctx.take() {
-            Some(ctx) => ctx,
-            None => {
-                self.stopped = true;
-                self.last_debug_var_count = 0;
-                return Ok(None);
+        // What the step was about to run, kept past the cycle for the state it leaves behind.
+        let mut described = None;
+        let next_cycle = RowIndex::from((self.cycle + 1) as u32);
+        let step_result = self.stepper.step_sync_described(&mut self.host, |step| {
+            let source = step.source;
+            let CurrentCycleInfo {
+                op,
+                control_flow_kind,
+                ..
+            } = source.cycle;
+            let debug_var_infos = source.debug_vars();
+            let asmop = source.asmop();
+            self.callstack.observe_source_context(
+                step.ctx,
+                source.source_operation(),
+                asmop.as_ref(),
+            );
+            let debug_var_count = debug_var_infos.len();
+            self.debug_vars.observe_execution(
+                self.callstack.invocation_ids(),
+                self.callstack.current_invocation(),
+                step.processor,
+                next_cycle,
+                debug_var_infos,
+            );
+            observe(&Observation {
+                callstack: &self.callstack,
+                debug_vars: &self.debug_vars,
+                processor: step.processor,
+                current_stack: &self.current_stack,
+                current_context: self.current_context,
+                source,
+            });
+            if let Some(cycle) = step.cycle {
+                self.profiler.on_cycle(cycle);
+                on_cycle(cycle);
             }
-        };
-
-        let source = SourceContext::new(&resume_ctx);
-        let CurrentCycleInfo {
-            op,
-            control_flow_kind,
-            ..
-        } = source.cycle;
-        let debug_var_infos = source.debug_vars();
-        let source_asmop = source.asmop();
-        self.callstack.observe_source_context(
-            &resume_ctx,
-            source.source_operation(),
-            source_asmop.as_ref(),
-        );
-
-        let debug_var_count = debug_var_infos.len();
-        self.debug_vars.observe_execution(
-            self.callstack.invocation_ids(),
-            self.callstack.current_invocation(),
-            &self.processor,
-            RowIndex::from((self.cycle + 1) as u32),
-            debug_var_infos,
-        );
-        observe(self, &source);
-
-        // `None` for the finalization step after the last cycle, which is no cycle to describe.
-        if let Some(cycle) = self.source_tracker.observe(&resume_ctx, &source) {
-            self.profiler.on_cycle(&cycle);
-            on_cycle(&cycle);
-        }
-
-        // Execute one step
-        let step_result = if let Some(debug_info) = source.debug_info() {
-            self.processor
-                .step_with_package_debug_info_sync(&mut self.host, resume_ctx, debug_info)
-        } else {
-            self.processor.step_sync(&mut self.host, resume_ctx)
-        };
+            described = Some(DescribedStep {
+                op,
+                control_flow_kind,
+                asmop,
+                debug_var_count,
+                inline_frames: source.inline_frames().to_vec(),
+            });
+        });
         match step_result {
-            Ok(Some(new_ctx)) => {
-                self.resume_ctx = Some(new_ctx);
-                self.cycle += 1;
+            Ok(true) => {
+                let DescribedStep {
+                    op,
+                    control_flow_kind,
+                    asmop: source_asmop,
+                    debug_var_count,
+                    inline_frames,
+                } = described.expect("a running step was described");
+                self.cycle = self.stepper.cycle();
 
                 // Query processor state
-                let state = self.processor.state();
+                let state = self.stepper.processor().state();
                 let ctx = state.ctx();
                 self.current_stack = state.get_stack_state();
 
@@ -267,7 +282,7 @@ impl DebugExecutor {
                     asmop: self.current_asmop.as_ref(),
                     clk: RowIndex::from(self.cycle as u32),
                     ctx: self.current_context,
-                    inline_frames: source.inline_frames(),
+                    inline_frames: &inline_frames,
                 };
                 let exited = self.callstack.next(&step_info);
 
@@ -275,12 +290,12 @@ impl DebugExecutor {
 
                 Ok(exited)
             }
-            Ok(None) => {
+            Ok(false) => {
                 // Program completed: no invocation remains available for inspection.
                 self.debug_vars.reset();
                 self.stopped = true;
                 self.last_debug_var_count = 0;
-                let state = self.processor.state();
+                let state = self.stepper.processor().state();
                 self.current_stack = state.get_stack_state();
 
                 // Capture the final stack as StackOutputs (truncate to 16 elements)
@@ -353,7 +368,7 @@ impl DebugExecutor {
             };
 
             if let Some(op) = op
-                && breakpoint.should_break_for(&op, &self.processor.state())
+                && breakpoint.should_break_for(&op, &self.stepper.processor().state())
             {
                 return Ok(());
             }
@@ -402,10 +417,56 @@ impl DebugExecutor {
     /// Consume the [DebugExecutor], converting it into an [ExecutionTrace] at the current cycle.
     pub fn into_execution_trace(self) -> ExecutionTrace {
         ExecutionTrace {
-            processor: self.processor,
+            processor: self.stepper.into_processor(),
             outputs: self.stack_outputs,
         }
     }
+}
+
+/// The executor as its internal observer sees it before a cycle: the trackers brought up to
+/// date for the cycle, and the state the previous cycle left.
+pub(crate) struct Observation<'a> {
+    /// The call stack, with the cycle's recovered frames.
+    pub callstack: &'a CallStack,
+    /// The declarations, with the cycle's.
+    pub debug_vars: &'a DebugVarTracker,
+    /// The processor, before the cycle.
+    pub processor: &'a FastProcessor,
+    /// The operand stack after the previous cycle.
+    pub current_stack: &'a [Felt],
+    /// The memory context after the previous cycle.
+    pub current_context: ContextId,
+    /// The cycle's source metadata.
+    pub source: &'a SourceContext,
+}
+
+impl super::query::DebugQuery for Observation<'_> {
+    fn state(&self) -> miden_processor::ProcessorState<'_> {
+        self.processor.state()
+    }
+
+    fn current_context(&self) -> ContextId {
+        self.current_context
+    }
+
+    fn current_clock(&self) -> RowIndex {
+        self.processor.state().clock()
+    }
+}
+
+/// What a step was about to run, read from the source context before the cycle and needed for
+/// the state the cycle leaves behind.
+struct DescribedStep {
+    /// The operation the cycle executes, if it executes one.
+    op: Option<Operation>,
+    /// The control-flow kind of the cycle.
+    control_flow_kind: Option<ControlFlowOp>,
+    /// The assembly operation the cycle belongs to.
+    asmop: Option<AssemblyOp>,
+    /// Number of declarations observed for the cycle.
+    debug_var_count: usize,
+    /// The inline call frames active for the cycle, innermost first.
+    inline_frames: Vec<InlineCallFrame>,
 }
 
 #[cfg(test)]

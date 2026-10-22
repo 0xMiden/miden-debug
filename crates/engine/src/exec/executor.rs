@@ -27,7 +27,7 @@ use miden_processor::{
 use miden_utils_sync::RwLock;
 
 use super::{
-    DebugExecutor, DebuggerHost, Event, ExecutionConfig, ExecutionTrace, SourceTracker, Stepper,
+    DebugExecutor, DebuggerHost, Event, ExecutionConfig, ExecutionTrace, Stepper,
     event::{FRAME_END_EVENT, FRAME_START_EVENT, PRINTLN_EVENT},
     query::read_memory_bytes,
 };
@@ -170,20 +170,18 @@ impl Executor {
         let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
             Rc::new(Default::default());
 
-        let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
+        let processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
             .expect("advice inputs should fit advice map limits");
 
         let root_context = ContextId::root();
-        let resume_ctx = processor
-            .get_initial_resume_context_for_package(package)
-            .expect("failed to get initial resume context");
+        let stepper =
+            Stepper::for_package(processor, package).expect("failed to get initial resume context");
 
         let callstack = CallStack::new(events);
         let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
-            processor,
+            stepper,
             host,
-            resume_ctx: Some(resume_ctx),
             current_stack: vec![],
             current_op: None,
             current_asmop: None,
@@ -199,7 +197,6 @@ impl Executor {
             cycle: 0,
             stopped: false,
             profiler: Profiler::from_config(self.profiler_config),
-            source_tracker: SourceTracker::new(),
         }
     }
 
@@ -293,20 +290,18 @@ impl Executor {
         let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
         register_builtin_event_handlers(&mut host, Some(Arc::clone(&events)));
 
-        let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
+        let processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
             .expect("advice inputs should fit advice map limits");
 
         let root_context = ContextId::root();
-        let resume_ctx = processor
-            .get_initial_resume_context_for_package(package)
-            .expect("failed to get initial resume context");
+        let stepper =
+            Stepper::for_package(processor, package).expect("failed to get initial resume context");
 
         let callstack = CallStack::new(events);
         let debug_vars = DebugVarTracker::new(debug_var_events);
         DebugExecutor {
-            processor,
+            stepper,
             host,
-            resume_ctx: Some(resume_ctx),
             current_stack: vec![],
             current_op: None,
             current_asmop: None,
@@ -322,7 +317,6 @@ impl Executor {
             cycle: 0,
             stopped: false,
             profiler: Profiler::from_config(self.profiler_config),
-            source_tracker: SourceTracker::new(),
         }
     }
 

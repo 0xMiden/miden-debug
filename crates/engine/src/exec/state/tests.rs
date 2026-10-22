@@ -1049,3 +1049,26 @@ fn a_step_over_a_finished_stepper_changes_nothing() {
     assert_eq!(exec.current_stack, stack);
     assert_eq!(exec.stack_outputs, outputs);
 }
+
+/// An executor over a stepper that ran to its end elsewhere starts its clock at the cycles that
+/// stepper ran, not at zero, so a stand-in shows where the execution stopped.
+#[test]
+fn an_executor_over_a_finished_stepper_starts_at_its_clock() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let program = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program("program", "begin push.1 push.2 add drop end")
+        .map(Arc::<Package>::from)
+        .unwrap();
+    let (mut stepper, mut host) =
+        Executor::new(Vec::new()).into_stepper(program, source_manager).unwrap();
+    stepper.run_sync(&mut host, |_| {}).unwrap();
+    let cycles = stepper.cycle();
+    assert!(cycles > 0);
+    let exec = DebugExecutor::new(
+        Stepper::finished(stepper.into_processor()),
+        host,
+        Arc::new(Default::default()),
+        Profiler::default(),
+    );
+    assert_eq!(exec.cycle, cycles);
+}

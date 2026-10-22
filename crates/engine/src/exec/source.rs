@@ -122,13 +122,16 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
         continuation_stack.iter_continuations_for_next_clock_with_source_node_ids()
     {
         let exec_node = cont.exec_node();
-        let source_node_inferred = source_node_id.is_none();
-        let source_node_id = source_node_id.or_else(|| {
+        let tracked = source_node_id;
+        // The processor tracks no source node before the first step of a context built from a
+        // bare program, and none for an invocation whose entry root it could not pick; the
+        // node's unique source root stands in, and the record says so.
+        let source_node_id = tracked.or_else(|| {
             exec_node.zip(debug_info).and_then(|(exec_node, di)| {
                 di.unique_source_root_for_exec_node(exec_node).ok().flatten()
             })
         });
-        let source_node_inferred = source_node_inferred && source_node_id.is_some();
+        let source_node_inferred = tracked.is_none() && source_node_id.is_some();
         match cont {
             Continuation::ResumeBasicBlock {
                 node_id,

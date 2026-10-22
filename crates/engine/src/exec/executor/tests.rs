@@ -272,7 +272,7 @@ fn into_stepper_keeps_the_event_handlers() {
         .register_event_handler(EventName::from_string(event_name.to_string()), Arc::new(handler))
         .expect("failed to register event handler");
 
-    let (mut stepper, mut host) = executor.into_stepper(program, source_manager);
+    let (mut stepper, mut host) = executor.into_stepper(program, source_manager).unwrap();
     let mut cycles = 0;
     stepper.run_sync(&mut host, |_| cycles += 1).expect("stepping failed");
     assert_eq!(cycles, stepper.cycle());

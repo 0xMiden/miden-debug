@@ -158,10 +158,8 @@ impl RemoteState {
         mut client: crate::exec::DapClient,
         source_manager: &Arc<dyn SourceManager>,
     ) -> Result<Self, Report> {
-        use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
-
-        use miden_debug_engine::{Stepper, debug::DebugVarTracker, profiling::Profiler};
-        use miden_processor::{ContextId, FastProcessor};
+        use miden_debug_engine::{Stepper, profiling::Profiler};
+        use miden_processor::FastProcessor;
 
         use crate::exec::DebuggerHost;
 
@@ -171,26 +169,15 @@ impl RemoteState {
         // The remote session shows the server's state through an executor that steps nothing
         // of its own: its stepper is finished from the start.
         let stepper = Stepper::finished(FastProcessor::new(StackInputs::default()));
-        let debug_vars = DebugVarTracker::new(Rc::new(RefCell::new(Default::default())));
-        let executor = DebugExecutor {
+        let mut executor = DebugExecutor::new(
             stepper,
-            host: DebuggerHost::new(source_manager.clone()),
-            current_stack: snapshot.current_stack,
-            current_op: None,
-            current_asmop: None,
-            stack_outputs: Default::default(),
-            contexts: BTreeSet::new(),
-            root_context: ContextId::root(),
-            current_context: ContextId::root(),
-            callstack: snapshot.callstack,
-            current_proc: None,
-            debug_vars,
-            last_debug_var_count: 0,
-            recent: VecDeque::new(),
-            cycle: snapshot.cycle,
-            stopped: false,
-            profiler: Profiler::default(),
-        };
+            DebuggerHost::new(source_manager.clone()),
+            Arc::new(Default::default()),
+            Profiler::default(),
+        );
+        executor.current_stack = snapshot.current_stack;
+        executor.callstack = snapshot.callstack;
+        executor.cycle = snapshot.cycle;
 
         Ok(Self {
             client: std::cell::RefCell::new(client),

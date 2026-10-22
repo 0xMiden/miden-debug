@@ -67,7 +67,7 @@ enum State {
     /// A step took the context and has not returned; stays if that step's future was dropped
     /// or if it unwound through the callback, the source resolution, or the host.
     Stepping,
-    /// The program terminated successfully.
+    /// The program terminated successfully, or there never was one to run.
     Finished,
     /// A step failed; the program is stopped and has no output.
     Failed,
@@ -88,8 +88,9 @@ impl Stepper {
         }
     }
 
-    /// Creates a stepper that has nothing left to run: it holds `processor` and is stopped from
-    /// the start, so a step finalizes at once and describes nothing.
+    /// Creates a stepper that has nothing to run: it holds `processor` and is stopped from the
+    /// start, so a step returns at once without running or describing anything, and its output
+    /// is the untouched processor's.
     ///
     /// For a stand-in, such as a session that shows an execution running elsewhere and must
     /// not run anything of its own.
@@ -126,7 +127,7 @@ impl Stepper {
     /// root is ambiguous: the step API has no way to start from a given entry-point source
     /// node, only [`Self::for_package`] honors the one a package names.
     ///
-    /// Panics when a step has already run.
+    /// Panics unless the stepper is ready to run its first step.
     pub fn with_debug_info(mut self, debug_info: Arc<PackageDebugInfo>) -> Self {
         assert!(
             matches!(self.state, State::Ready(_)) && self.cycle() == 0,
@@ -182,8 +183,8 @@ impl Stepper {
     /// Returns whether the program is still running. Returns the same `Ok(false)` once the
     /// program has finished. A failing step returns its error and stops the program; stepping
     /// again after that, or after a step that did not complete (its future dropped, or a
-    /// panic unwound through it), is an error. The step that finalizes a finished program
-    /// runs no cycle and is not described.
+    /// panic unwound through it), is an error, and the latter fails the program. The step that
+    /// finalizes a finished program runs no cycle and is not described.
     pub fn step_sync(
         &mut self,
         host: &mut impl SyncHost,
@@ -266,7 +267,8 @@ impl Stepper {
         Ok(())
     }
 
-    /// The outputs of the finished program, as a full execution would have returned them.
+    /// The outputs of the finished program, as a full execution would have returned them; for
+    /// a stepper created finished, the untouched processor's.
     ///
     /// Fails unless the program ran to its end: while it is running, after a failed step, and
     /// after a step that did not complete.
@@ -304,7 +306,10 @@ impl Stepper {
                 self.state = State::Failed;
                 return Err(ExecutionError::Internal("the program failed; it cannot be stepped"));
             }
+            // The execution is lost; the program counts as failed from here on, so that a
+            // caller looping until the program stops is not kept waiting.
             State::Stepping => {
+                self.state = State::Failed;
                 return Err(ExecutionError::Internal(
                     "a step did not complete; the execution is lost",
                 ));

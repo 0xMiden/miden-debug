@@ -48,6 +48,14 @@ pub struct CycleInfo<'a> {
     pub exec_node: Option<MastNodeId>,
     /// The source occurrence of `exec_node`, when the package has debug info.
     pub source_node: Option<DebugSourceNodeId>,
+    /// Whether `source_node` is the unique source root of `exec_node` rather than the
+    /// occurrence the processor tracks. The processor tracks none for a context built from a
+    /// bare program before its first step, where it adopts that very root on the step, and
+    /// none at all for an invocation whose entry root it could not pick, where the root is a
+    /// guess: a block that is both a procedure's root and an arm elsewhere is attributed to
+    /// the procedure whichever ran. A consumer that must not guess skips inferred records
+    /// past the first cycle.
+    pub source_node_inferred: bool,
     /// The operation the step executes; `None` on a control-flow cycle.
     pub op: Option<Operation>,
     /// The padded index of `op` within its basic block, the index the debug-info rows are
@@ -235,6 +243,7 @@ impl SourceTracker {
             debug_info: source.debug_info(),
             exec_node: cycle.exec_node,
             source_node: cycle.source_node_id,
+            source_node_inferred: cycle.source_node_inferred,
             op: cycle.op,
             op_idx: cycle.op_idx.map(|idx| idx as u32),
             control: cycle.control_flow_kind,

@@ -97,6 +97,11 @@ pub(crate) struct CurrentCycleInfo {
     pub exec_node: Option<MastNodeId>,
     /// The source occurrence of the node, when the debug info has one.
     pub source_node_id: Option<DebugSourceNodeId>,
+    /// Whether `source_node_id` is the unique source root of the node rather than the
+    /// occurrence the processor tracks: the processor tracks none for a context built from a
+    /// bare program before its first step, and none at all for an invocation whose entry root
+    /// it could not pick.
+    pub source_node_inferred: bool,
     /// The padded index of the operation within its basic block; on a `RESPAN` cycle the
     /// index of the next batch's first operation.
     pub op_idx: Option<usize>,
@@ -117,11 +122,13 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
         continuation_stack.iter_continuations_for_next_clock_with_source_node_ids()
     {
         let exec_node = cont.exec_node();
+        let source_node_inferred = source_node_id.is_none();
         let source_node_id = source_node_id.or_else(|| {
             exec_node.zip(debug_info).and_then(|(exec_node, di)| {
                 di.unique_source_root_for_exec_node(exec_node).ok().flatten()
             })
         });
+        let source_node_inferred = source_node_inferred && source_node_id.is_some();
         match cont {
             Continuation::ResumeBasicBlock {
                 node_id,
@@ -142,6 +149,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                     op,
                     exec_node,
                     source_node_id,
+                    source_node_inferred,
                     op_idx: Some(global_idx),
                     control_flow_kind: None,
                 };
@@ -160,6 +168,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                         op: None,
                         exec_node,
                         source_node_id,
+                        source_node_inferred,
                         op_idx: Some(global_idx),
                         control_flow_kind: Some(ControlFlowOp::Respan),
                     };
@@ -176,6 +185,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                     op: None,
                     exec_node,
                     source_node_id,
+                    source_node_inferred,
                     op_idx: None,
                     control_flow_kind,
                 };
@@ -190,6 +200,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                     op: None,
                     exec_node,
                     source_node_id,
+                    source_node_inferred,
                     op_idx: None,
                     control_flow_kind: Some(ControlFlowOp::End),
                 };
@@ -199,6 +210,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                     op: None,
                     exec_node,
                     source_node_id,
+                    source_node_inferred,
                     op_idx: None,
                     control_flow_kind: None,
                 };
@@ -209,6 +221,7 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
         op: None,
         exec_node: None,
         source_node_id: None,
+        source_node_inferred: false,
         op_idx: None,
         control_flow_kind: None,
     }

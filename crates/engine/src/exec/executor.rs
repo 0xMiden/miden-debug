@@ -209,9 +209,10 @@ impl Executor {
         host
     }
 
-    /// The host with the linked packages and the registered event handlers, which it takes out
-    /// of `self`, recording the advice mutations of the event handlers when
-    /// [`Self::with_event_advice_mutations_recording`] turned that on.
+    /// The host with the linked packages and the registered event handlers, recording the
+    /// advice mutations of the event handlers when
+    /// [`Self::with_event_advice_mutations_recording`] turned that on. The event handlers are
+    /// taken out of `self`, which is left with none.
     fn build_host(
         &mut self,
         source_manager: Arc<dyn SourceManager>,

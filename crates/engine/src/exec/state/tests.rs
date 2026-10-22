@@ -1022,3 +1022,28 @@ fn source_inlining_with_the_physical_procedure_name_is_preserved() {
     }
     assert!(checked);
 }
+
+/// An executor over a finished stepper, as a session that stands in for a remote execution
+/// builds it, never steps: a step stops it and leaves the state it displays untouched, even
+/// when `stopped` was not set.
+#[test]
+fn a_step_over_a_finished_stepper_changes_nothing() {
+    use miden_processor::StackInputs;
+
+    let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
+    let mut exec = DebugExecutor::new(
+        Stepper::finished(FastProcessor::new(StackInputs::default())),
+        DebuggerHost::new(source_manager),
+        Arc::new(Default::default()),
+        Profiler::default(),
+    );
+    let stack = vec![Felt::new(7).unwrap(), Felt::new(8).unwrap()];
+    exec.current_stack = stack.clone();
+    exec.cycle = 42;
+    exec.stopped = false;
+    assert!(matches!(exec.step(), Ok(None)));
+    assert!(exec.stopped);
+    assert_eq!(exec.cycle, 42);
+    assert_eq!(exec.current_stack, stack);
+    assert_eq!(exec.stack_outputs, StackOutputs::default());
+}

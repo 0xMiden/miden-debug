@@ -65,8 +65,8 @@ pub struct DebugExecutor {
     pub recent: VecDeque<Operation>,
     /// The current clock cycle: the stepper's, mirrored after each step so that a session that
     /// stands in for a remote execution can show its own. After a cycle that completes and
-    /// then trips a limit it is one ahead of the other fields, which show the last described
-    /// cycle
+    /// then trips a limit it counts that cycle, which the other fields do not show: they keep
+    /// the state after the cycle before it
     pub cycle: usize,
     /// Whether or not execution has terminated. Set by a step that finishes or fails the
     /// program, or finds the stepper already stopped; a session that stands in for a remote
@@ -104,8 +104,8 @@ impl DebugExecutor {
         self.stepper.processor()
     }
 
-    /// The resume context for the next step; `None` once the program is stopped, successfully
-    /// or not, or a step did not complete.
+    /// The resume context for the next step; `None` once the stepper is stopped, successfully
+    /// or not, has nothing to run, or a step did not complete.
     pub fn resume_ctx(&self) -> Option<&ResumeContext> {
         self.stepper.resume_ctx()
     }
@@ -115,7 +115,8 @@ impl DebugExecutor {
     ///
     /// [`Executor::into_debug`](crate::Executor::into_debug) builds one over a package; a
     /// session that shows an execution running elsewhere builds one over
-    /// [`Stepper::finished`] and sets the state it displays.
+    /// [`Stepper::finished`] and sets the state it displays. `stepper` must not have stepped
+    /// yet, or be finished: the call stack and the declarations start empty.
     pub fn new(
         stepper: Stepper,
         host: DebuggerHost<dyn miden_assembly_syntax::debuginfo::SourceManager>,
@@ -124,6 +125,7 @@ impl DebugExecutor {
     ) -> Self {
         let root_context = ContextId::root();
         let debug_var_events = alloc::rc::Rc::new(core::cell::RefCell::new(Default::default()));
+        let cycle = stepper.cycle();
         Self {
             stepper,
             host,
@@ -139,7 +141,7 @@ impl DebugExecutor {
             debug_vars: DebugVarTracker::new(debug_var_events),
             last_debug_var_count: 0,
             recent: VecDeque::with_capacity(5),
-            cycle: 0,
+            cycle,
             stopped: false,
             profiler,
         }
@@ -233,8 +235,8 @@ impl DebugExecutor {
         on_cycle: impl FnOnce(&CycleInfo<'_>),
     ) -> Result<Option<CallFrame>, ExecutionError> {
         // A stepper that is stopped, because it was created so for a stand-in or because a
-        // caller reset `stopped` after the program ended, has nothing to run: nothing of the
-        // state for inspection changes.
+        // caller reset `stopped` after the program finished or failed, has nothing to run:
+        // the state for inspection stays as it is.
         if self.stopped || self.stepper.stopped() {
             self.stopped = true;
             self.last_debug_var_count = 0;
@@ -340,9 +342,15 @@ impl DebugExecutor {
 
                 Ok(exited)
             }
-            // The finalization step; `None` cannot come back since a stopped stepper returned
-            // above, and is treated the same.
-            Ok(Some(Stepped { running: false, .. })) | Ok(None) => {
+            // A stopped stepper returned above, so no step comes back empty; were one to, the
+            // state for inspection would be left alone the same way.
+            Ok(None) => {
+                self.stopped = true;
+                self.last_debug_var_count = 0;
+                Ok(None)
+            }
+            // The finalization step.
+            Ok(Some(Stepped { running: false, .. })) => {
                 // Program completed: no invocation remains available for inspection.
                 self.debug_vars.reset();
                 self.stopped = true;

@@ -157,16 +157,8 @@ impl Executor {
 
         log::debug!("creating debug executor");
 
-        let mut host = self.build_host(source_manager);
-        let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
-        register_builtin_event_handlers(&mut host, Some(Arc::clone(&events)));
-
-        let processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
-            .expect("advice inputs should fit advice map limits");
-
-        let stepper =
-            Stepper::for_package(processor, package).expect("failed to get initial resume context");
-        DebugExecutor::new(stepper, host, events, Profiler::from_config(self.profiler_config))
+        let host = self.build_host(source_manager);
+        self.debug_executor(host, package)
     }
 
     /// Convert this [Executor] into a [Stepper] over `package` and the host to drive it with.
@@ -194,10 +186,34 @@ impl Executor {
         let mut host = self.build_host(source_manager);
         register_builtin_event_handlers(&mut host, None);
 
-        let processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
-            .expect("advice inputs should fit advice map limits");
-        let stepper = Stepper::for_package(processor, package)?;
+        let stepper = Stepper::for_package(self.processor(), package)?;
         Ok((stepper, host))
+    }
+
+    /// The processor over the inputs and options.
+    ///
+    /// Panics when the advice inputs do not fit the options' advice-map limit, as every
+    /// conversion of the executor does.
+    fn processor(&mut self) -> FastProcessor {
+        let stack = core::mem::take(&mut self.stack);
+        let advice = core::mem::take(&mut self.advice);
+        FastProcessor::new_with_options(stack, advice, self.options)
+            .expect("advice inputs should fit advice map limits")
+    }
+
+    /// A debug executor over `package` and `host`, with the builtin event handlers feeding its
+    /// call stack. Panics when the initial context cannot be built; a debug session has no
+    /// use for a program it cannot start.
+    fn debug_executor(
+        mut self,
+        mut host: DebuggerHost<dyn SourceManager>,
+        package: Arc<Package>,
+    ) -> DebugExecutor {
+        let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
+        register_builtin_event_handlers(&mut host, Some(Arc::clone(&events)));
+        let stepper = Stepper::for_package(self.processor(), package)
+            .expect("failed to get initial resume context");
+        DebugExecutor::new(stepper, host, events, Profiler::from_config(self.profiler_config))
     }
 
     /// The host with the linked packages loaded.
@@ -255,15 +271,7 @@ impl Executor {
         }
         host.set_event_replay(event_replay);
 
-        let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
-        register_builtin_event_handlers(&mut host, Some(Arc::clone(&events)));
-
-        let processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
-            .expect("advice inputs should fit advice map limits");
-
-        let stepper =
-            Stepper::for_package(processor, package).expect("failed to get initial resume context");
-        DebugExecutor::new(stepper, host, events, Profiler::from_config(self.profiler_config))
+        self.debug_executor(host, package)
     }
 
     /// Execute the given program until termination, producing a trace

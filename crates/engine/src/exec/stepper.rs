@@ -64,12 +64,14 @@ pub struct Stepper {
 enum State {
     /// The context the next step consumes.
     Ready(ResumeContext),
-    /// A step took the context and has not returned; stays if that step's future was dropped
-    /// or if it unwound through the callback, the source resolution, or the host.
+    /// A step took the context and has not returned; stays, until the next step fails the
+    /// program, if that step's future was dropped or if it unwound through the callback, the
+    /// source resolution, or the host.
     Stepping,
     /// The program terminated successfully, or there never was one to run.
     Finished,
-    /// A step failed; the program is stopped and has no output.
+    /// A step failed, or did not complete and the next step found the execution lost; the
+    /// program is stopped and has no output.
     Failed,
 }
 
@@ -144,12 +146,14 @@ impl Stepper {
         u32::from(self.processor.state().clock()) as usize
     }
 
-    /// Whether the program has terminated, successfully or not.
+    /// Whether the program has terminated, successfully or not. A program whose step did not
+    /// complete has not, until the next step finds the execution lost.
     pub fn stopped(&self) -> bool {
         matches!(self.state, State::Finished | State::Failed)
     }
 
-    /// Whether a step failed. A failed program is stopped and has no output.
+    /// Whether the program failed: a step failed, or a step did not complete and a later one
+    /// found the execution lost. A failed program is stopped and has no output.
     pub fn failed(&self) -> bool {
         matches!(self.state, State::Failed)
     }
@@ -183,7 +187,8 @@ impl Stepper {
     /// Returns whether the program is still running. Returns the same `Ok(false)` once the
     /// program has finished. A failing step returns its error and stops the program; stepping
     /// again after that, or after a step that did not complete (its future dropped, or a
-    /// panic unwound through it), is an error, and the latter fails the program. The step that
+    /// panic unwound through it), is an error; the step after an incomplete one also fails the
+    /// program. The step that
     /// finalizes a finished program runs no cycle and is not described.
     pub fn step_sync(
         &mut self,
@@ -270,8 +275,8 @@ impl Stepper {
     /// The outputs of the finished program, as a full execution would have returned them; for
     /// a stepper created finished, the untouched processor's.
     ///
-    /// Fails unless the program ran to its end: while it is running, after a failed step, and
-    /// after a step that did not complete.
+    /// Fails while the program is running, after a failed step, and after a step that did not
+    /// complete.
     pub fn into_output(self) -> Result<ExecutionOutput, ExecutionError> {
         match self.state {
             State::Finished => {}
@@ -357,7 +362,7 @@ struct Step {
     debug_info: Option<Arc<PackageDebugInfo>>,
 }
 
-/// Packages a processor that ran to its end into the output a full execution returns, with
+/// Packages a processor that has nothing left to run into the output a full execution returns, with
 /// `stack` as the outputs.
 pub(crate) fn execution_output(
     processor: FastProcessor,

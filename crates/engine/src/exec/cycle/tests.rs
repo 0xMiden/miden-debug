@@ -1175,6 +1175,35 @@ fn inline_frames_name_the_inlined_procedure() {
     );
 }
 
+/// A stepper built from a bare program resolves its first cycle against the pending debug info
+/// before the processor tracks any source node, so that record's node is inferred from the
+/// entry's unique root; every later record, and every record of a stepper built from the
+/// package, carries the node the processor tracks.
+#[test]
+fn only_the_first_cycle_of_a_bare_program_has_an_inferred_source_node() {
+    let (package, _) = fixture();
+    let debug_info = Arc::new(package.debug_info().unwrap().unwrap().clone());
+    let mut processor = FastProcessor::new(StackInputs::new(&inputs(1, 3)).unwrap());
+    let ctx = processor.get_initial_resume_context(&package.unwrap_program()).unwrap();
+    let mut bare = Stepper::new(processor, ctx).with_debug_info(debug_info);
+    let mut inferred = Vec::new();
+    bare.run_sync(&mut DefaultHost::default(), |cycle| {
+        inferred.push((cycle.source_node.is_some(), cycle.source_node_inferred))
+    })
+    .unwrap();
+    assert_eq!(inferred[0], (true, true), "{inferred:?}");
+    assert!(inferred[1..].iter().all(|flags| *flags == (true, false)), "{inferred:?}");
+
+    let mut from_package = Vec::new();
+    stepper(&package, 1, 3)
+        .run_sync(&mut DefaultHost::default(), |cycle| {
+            from_package.push(cycle.source_node_inferred)
+        })
+        .unwrap();
+    assert_eq!(from_package.len(), inferred.len());
+    assert!(from_package.iter().all(|inferred| !inferred), "{from_package:?}");
+}
+
 /// The async path produces the sync path's records, refuses the output while running, and
 /// exports the processor's own outputs once finished.
 #[test]

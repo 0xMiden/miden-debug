@@ -144,10 +144,10 @@ impl Executor {
     /// Convert this [Executor] into a [DebugExecutor], which captures much more information
     /// about the program being executed, and must be stepped manually.
     ///
-    /// Panics when `package` is not a program, the advice inputs do not fit the options, an
-    /// event handler cannot be registered, or the initial resume context cannot be built: the
-    /// package's advice map conflicts with the processor's, or its debug info cannot be used
-    /// with its program.
+    /// Panics when `package` is not a program, the advice inputs do not fit the options'
+    /// advice budget, an event handler cannot be registered, or the initial resume context
+    /// cannot be built: the package's advice map conflicts with the advice inputs or, added to
+    /// them, exceeds the budget, or its debug info cannot be used with its program.
     pub fn into_debug(
         mut self,
         package: Arc<Package>,
@@ -187,34 +187,41 @@ impl Executor {
         let mut host = self.build_host(source_manager);
         register_builtin_event_handlers(&mut host, None);
 
-        let stepper = Stepper::for_package(self.processor(), package)?;
+        let (stepper, _) = self.stepper(package)?;
         Ok((stepper, host))
     }
 
-    /// The processor over the inputs and options.
+    /// The stepper over `package` with the inputs and options, and the profiler configuration,
+    /// which outlives the conversion. Consumes the executor once the host is built.
     ///
-    /// Panics when the advice inputs do not fit the options' advice-map limit, as every
-    /// conversion of the executor does.
-    fn processor(&mut self) -> FastProcessor {
-        let stack = core::mem::take(&mut self.stack);
-        let advice = core::mem::take(&mut self.advice);
-        FastProcessor::new_with_options(stack, advice, self.options)
-            .expect("advice inputs should fit advice map limits")
+    /// Fails as [`Stepper::for_package`] does. Panics when the advice inputs do not fit the
+    /// options' advice budget, as every conversion of the executor does.
+    fn stepper(self, package: Arc<Package>) -> Result<(Stepper, ProfilerConfig), ExecutionError> {
+        let Self {
+            stack,
+            advice,
+            options,
+            profiler_config,
+            ..
+        } = self;
+        let processor = FastProcessor::new_with_options(stack, advice, options)
+            .expect("advice inputs should fit advice map limits");
+        Ok((Stepper::for_package(processor, package)?, profiler_config))
     }
 
     /// A debug executor over `package` and `host`, with the builtin event handlers feeding its
-    /// call stack. Panics when the initial context cannot be built; a debug session has no
-    /// use for a program it cannot start.
+    /// call stack. Panics as [`Self::stepper`] does, and when the initial context cannot be
+    /// built: a debug session has no use for a program it cannot start.
     fn debug_executor(
-        mut self,
+        self,
         mut host: DebuggerHost<dyn SourceManager>,
         package: Arc<Package>,
     ) -> DebugExecutor {
         let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
         register_builtin_event_handlers(&mut host, Some(Arc::clone(&events)));
-        let stepper = Stepper::for_package(self.processor(), package)
-            .expect("failed to get initial resume context");
-        DebugExecutor::new(stepper, host, events, Profiler::from_config(self.profiler_config))
+        let (stepper, profiler_config) =
+            self.stepper(package).expect("failed to get initial resume context");
+        DebugExecutor::new(stepper, host, events, Profiler::from_config(profiler_config))
     }
 
     /// The host with the linked packages loaded.

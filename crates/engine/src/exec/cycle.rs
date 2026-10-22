@@ -98,8 +98,9 @@ pub struct NodeStart {
 /// its finish still finds it): whatever the callee leaves open, such as the children of a
 /// root whose start was never described, is popped with the boundary once the continuation
 /// stack has unwound to the boundary's depth, and a parent is only ever looked for
-/// above the innermost boundary. One tracker follows one execution from start to end; it must
-/// see every cycle, in order.
+/// above the innermost boundary. The finalization step after the last cycle pops whatever is
+/// left. One tracker follows one execution from start to end; it must see every cycle, in
+/// order.
 #[derive(Debug, Default)]
 pub(crate) struct SourceTracker {
     /// Open nodes and forest boundaries, innermost last.
@@ -156,7 +157,7 @@ impl SourceTracker {
 
     /// Describes the cycle that will consume `ctx`, whose source metadata is `source`, and
     /// records its effect on the open nodes. `None` for the finalization step after the last
-    /// cycle, whose context has no continuation left.
+    /// cycle, whose context has no continuation left and which pops every open node.
     ///
     /// Must be called exactly once before each step.
     pub(crate) fn observe<'a>(
@@ -232,7 +233,7 @@ impl SourceTracker {
             }
             // A loop's finish runs once per iteration and rechecks the condition, so the loop
             // stays open; its body, done with this iteration, is popped. The loop itself is
-            // popped by the finish of the node that holds it, or by a boundary.
+            // popped by the finish of the node that holds it, by a boundary, or at the end.
             Continuation::FinishLoop(_) => {
                 if let Some(node) = cycle.source_node_id {
                     self.close(forest, node, true);
@@ -343,8 +344,8 @@ impl SourceTracker {
     /// The second rule covers a node whose parent is open but does not list it, which happens
     /// when the debug info and the forest disagree. It never returns a loop: a loop's only
     /// child is its body, which the first rule finds, and a loop that exited stays open until
-    /// its parent's finish or a boundary pops it, so under a root whose start was never
-    /// described a `do ... while` loop would otherwise be handed to its sibling.
+    /// its parent's finish, a boundary, or the end pops it, so under a root whose start was
+    /// never described a `do ... while` loop would otherwise be handed to its sibling.
     fn parent_of(
         &self,
         forest: &Arc<MastForest>,

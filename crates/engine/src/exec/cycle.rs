@@ -82,11 +82,11 @@ pub struct NodeStart {
     /// The source node that starts.
     pub node: DebugSourceNodeId,
     /// The innermost open source node of the same forest that lists `node` as a child, or the
-    /// innermost open node of that forest when none does. A root entered through a dynamic
-    /// node of the same forest gets that dynamic node, when it has a source node. `None` when
-    /// nothing is open since the forest was entered: a root entered dynamically from another
-    /// package, and the children of a root entered through an external node, whose own start
-    /// is never described.
+    /// innermost open node of that forest that is not a loop when none does. A root entered
+    /// through a dynamic node of the same forest gets that dynamic node, when it has a source
+    /// node. `None` when no such node is open since the forest was entered: a root entered
+    /// dynamically from another package, and the children of a root entered through an
+    /// external node, whose own start is never described.
     pub parent: Option<DebugSourceNodeId>,
 }
 
@@ -165,8 +165,13 @@ impl SourceTracker {
         source: &'a SourceContext,
     ) -> Option<CycleInfo<'a>> {
         // After the last cycle the processor hands back a context with nothing left to run;
-        // the step that consumes it only finalizes the execution.
-        let next = ctx.continuation_stack().peek_continuation()?;
+        // the step that consumes it only finalizes the execution. Whatever is still open, a
+        // root loop that no parent's finish pops or the boundary of an external entry node,
+        // is closed with it.
+        let Some(next) = ctx.continuation_stack().peek_continuation() else {
+            self.truncate(0);
+            return None;
+        };
         let forest = ctx.current_forest();
         let cycle = source.cycle;
 
@@ -301,13 +306,14 @@ impl SourceTracker {
     /// everything above it. Returns the dynamic node whose same-forest callee root this cycle
     /// starts, if it is one.
     ///
-    /// The depth alone tells a return from a callback into the same forest, since a callee
-    /// runs deeper than its boundary's threshold.
+    /// The depth alone tells a return from a callback into the same forest, since every cycle
+    /// of a callee runs deeper than its boundary's threshold except the same-forest root start
+    /// the threshold includes.
     ///
     /// Two boundaries unwind in the same cycle only under a host that answers a dynamic node
     /// with a forest whose root is itself external: the callee's boundary and the caller's.
     /// The engine's own host never does, since it resolves a digest straight to the leaf
-    /// forest, so the loop's second iteration is not reached in the tests.
+    /// forest.
     fn return_to(&mut self, depth: usize) -> Option<DebugSourceNodeId> {
         let mut handed_over = None;
         while let Some(position) = self.boundaries.last().copied() {
@@ -330,16 +336,15 @@ impl SourceTracker {
     }
 
     /// The innermost open node of `forest` that lists `child` among its children, or the
-    /// innermost open node of that forest when none does.
+    /// innermost open node of that forest that is not a loop when none does.
     ///
     /// Only the current frame is searched, so a node of a root entered through an external
     /// node, whose start was never described, gets no parent rather than a node of the caller.
     /// The second rule covers a node whose parent is open but does not list it, which happens
-    /// when the debug info and the forest disagree; a loop that exited but is still open never
-    /// lists its sibling as a child, so the first rule skips it, and the second never returns a
-    /// loop: a loop's only child is its body, which the first rule finds, and an exited loop
-    /// stays open until its parent's finish, so under a root whose start was never described a
-    /// `do ... while` loop would otherwise be handed to its sibling.
+    /// when the debug info and the forest disagree. It never returns a loop: a loop's only
+    /// child is its body, which the first rule finds, and a loop that exited stays open until
+    /// its parent's finish or a boundary pops it, so under a root whose start was never
+    /// described a `do ... while` loop would otherwise be handed to its sibling.
     fn parent_of(
         &self,
         forest: &Arc<MastForest>,

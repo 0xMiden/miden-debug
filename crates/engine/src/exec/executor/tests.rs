@@ -313,25 +313,30 @@ fn into_stepper_returns_the_initial_context_error() {
     });
     assert!(matches!(error, AdviceError::MapKeyAlreadyPresent { .. }), "{error:?}");
 
-    // The size of the empty advice inputs, the empty Merkle store's, is read off the
-    // processor's refusal of a budget of nothing.
-    let empty = |budget| {
-        FastProcessor::new_with_options(
-            StackInputs::default(),
-            AdviceInputs::default(),
-            ExecutionOptions::default().with_max_advice_size_bytes(budget),
-        )
-    };
-    let Err(AdviceError::SizeBudgetExceeded { current: size, .. }) = empty(0) else {
-        panic!("the empty advice inputs take some of the budget");
-    };
-    // The entry takes its key's 32 bytes and its two values' eight bytes each.
-    let entry = 48;
-    let with_budget = |budget| ExecutionConfig {
-        options: ExecutionOptions::default().with_max_advice_size_bytes(budget),
+    let budget = |bytes| ExecutionConfig {
+        options: ExecutionOptions::default().with_max_advice_size_bytes(bytes),
         ..Default::default()
     };
-    let error = refusal(with_budget(size + entry - 1));
+    // The size of the empty advice inputs, the empty Merkle store's, is read off the
+    // processor's refusal of a budget of nothing.
+    let ExecutionConfig {
+        inputs,
+        advice_inputs,
+        options,
+    } = budget(0);
+    let Err(AdviceError::SizeBudgetExceeded { current: size, .. }) =
+        FastProcessor::new_with_options(inputs, advice_inputs, options)
+    else {
+        panic!("the empty advice inputs take some of the budget");
+    };
+    // The entry's size is read off the refusal of a budget the empty advice inputs fill.
+    let entry = match refusal(budget(size)) {
+        AdviceError::SizeBudgetExceeded { current, added, .. } if current == size => added,
+        error => panic!("the entry must exceed a budget the empty advice inputs fill: {error:?}"),
+    };
+    // The entry takes its key's 32 bytes and its two values' eight bytes each.
+    assert_eq!(entry, 48);
+    let error = refusal(budget(size + entry - 1));
     assert!(matches!(error, AdviceError::SizeBudgetExceeded { .. }), "{error:?}");
-    assert!(into_stepper(with_budget(size + entry)).is_ok(), "the entry fits the budget");
+    assert!(into_stepper(budget(size + entry)).is_ok(), "the entry fits the budget");
 }

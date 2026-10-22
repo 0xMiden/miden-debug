@@ -1050,8 +1050,8 @@ fn a_step_over_a_finished_stepper_changes_nothing() {
     assert_eq!(exec.stack_outputs, outputs);
 }
 
-/// An executor over a stepper that ran to its end elsewhere starts its clock at the cycles that
-/// stepper ran, not at zero, so a stand-in shows where the execution stopped.
+/// An executor over a stepper that ran to its end starts its clock at the cycles that stepper
+/// ran, not at zero: the constructor copies the stepper's clock.
 #[test]
 fn an_executor_over_a_finished_stepper_starts_at_its_clock() {
     let source_manager = Arc::new(DefaultSourceManager::default());
@@ -1064,11 +1064,6 @@ fn an_executor_over_a_finished_stepper_starts_at_its_clock() {
     stepper.run_sync(&mut host, |_| {}).unwrap();
     let cycles = stepper.cycle();
     assert!(cycles > 0);
-    let exec = DebugExecutor::new(
-        Stepper::finished(stepper.into_processor()),
-        host,
-        Arc::new(Default::default()),
-        Profiler::default(),
-    );
+    let exec = DebugExecutor::new(stepper, host, Arc::new(Default::default()), Profiler::default());
     assert_eq!(exec.cycle, cycles);
 }

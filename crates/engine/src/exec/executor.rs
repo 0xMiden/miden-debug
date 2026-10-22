@@ -172,8 +172,8 @@ impl Executor {
     /// Fails as [`Stepper::for_package`] does: the package's advice map conflicts with the
     /// advice inputs or, added to them, exceeds the options' advice budget, or its debug info
     /// cannot be used with its program. Panics, as [`Executor::into_debug`] does, when `package`
-    /// is not a program, the advice inputs do not fit the options, or an event handler cannot be
-    /// registered.
+    /// is not a program, the advice inputs do not fit the options' advice budget, or an event
+    /// handler cannot be registered.
     pub fn into_stepper(
         mut self,
         package: Arc<Package>,
@@ -192,7 +192,8 @@ impl Executor {
     }
 
     /// The stepper over `package` with the inputs and options, and the profiler configuration,
-    /// which outlives the conversion. Consumes the executor once the host is built.
+    /// which outlives the conversion. Called once the host is built, since it consumes the
+    /// executor.
     ///
     /// Fails as [`Stepper::for_package`] does. Panics when the advice inputs do not fit the
     /// options' advice budget, as every conversion of the executor does.
@@ -205,7 +206,7 @@ impl Executor {
             ..
         } = self;
         let processor = FastProcessor::new_with_options(stack, advice, options)
-            .expect("advice inputs should fit advice map limits");
+            .expect("advice inputs should fit the options' advice budget");
         Ok((Stepper::for_package(processor, package)?, profiler_config))
     }
 

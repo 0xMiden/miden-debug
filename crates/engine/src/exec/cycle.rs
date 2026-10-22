@@ -157,7 +157,8 @@ impl SourceTracker {
 
     /// Describes the cycle that will consume `ctx`, whose source metadata is `source`, and
     /// records its effect on the open nodes. `None` for the finalization step after the last
-    /// cycle, whose context has no continuation left and which pops every open node.
+    /// cycle, whose context has no continuation left and which pops whatever is left, boundaries
+    /// included.
     ///
     /// Must be called exactly once before each step.
     pub(crate) fn observe<'a>(

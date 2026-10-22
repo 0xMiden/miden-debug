@@ -116,11 +116,12 @@ impl Executor {
 
     /// Record the advice mutations produced by each event handler invocation during execution.
     ///
-    /// Recording is a private detail of the debug host created by [Executor::into_debug]: once
-    /// the program completes, take the log via [DebuggerHost::take_recorded_event_mutations] on
-    /// the [DebugExecutor]'s host, and feed it back into [Executor::into_debug_with_replay] to
-    /// debug the same execution later without the original event handlers (e.g. transaction
-    /// debugging with event replay).
+    /// Recording is a private detail of the debug host created by [Executor::into_debug] or
+    /// [Executor::into_stepper]: once the program completes, take the log via
+    /// [DebuggerHost::take_recorded_event_mutations] on that host (the [DebugExecutor]'s, or
+    /// the one returned with the stepper), and feed it back into
+    /// [Executor::into_debug_with_replay] to debug the same execution later without the
+    /// original event handlers (e.g. transaction debugging with event replay).
     ///
     /// Mutations are only recorded for live event handling; nothing is recorded while an event
     /// replay queue is being consumed.
@@ -224,7 +225,9 @@ impl Executor {
         host
     }
 
-    /// The host with the linked packages and the registered event handlers.
+    /// The host with the linked packages and the registered event handlers, which it takes out
+    /// of `self`, recording the advice mutations of the event handlers when
+    /// [`Self::with_event_advice_mutations_recording`] turned that on.
     fn build_host(
         &mut self,
         source_manager: Arc<dyn SourceManager>,

@@ -65,8 +65,8 @@ pub struct DebugExecutor {
     pub recent: VecDeque<Operation>,
     /// The current clock cycle: the stepper's, mirrored after each step so that a session that
     /// stands in for a remote execution can show its own. After a cycle that completes and
-    /// then trips a limit it counts that cycle, which the other fields do not show: they keep
-    /// the state after the cycle before it
+    /// then trips a limit it counts that cycle, while the stack, the operation, the assembly
+    /// operation and the context keep the state after the cycle before it
     pub cycle: usize,
     /// Whether or not execution has terminated. Set by a step that finishes or fails the
     /// program, or finds the stepper already stopped; a session that stands in for a remote
@@ -104,19 +104,19 @@ impl DebugExecutor {
         self.stepper.processor()
     }
 
-    /// The resume context for the next step; `None` once the stepper is stopped, successfully
-    /// or not, has nothing to run, or a step did not complete.
+    /// The context the next step consumes; `None` once the stepper is stopped, successfully or
+    /// not, or a step did not complete.
     pub fn resume_ctx(&self) -> Option<&ResumeContext> {
         self.stepper.resume_ctx()
     }
 
-    /// An executor over `stepper` and `host` at the start of the execution, whose call stack
-    /// follows the frame events written to `events`, with `profiler` receiving the cycles.
+    /// An executor over `stepper` and `host`, whose call stack follows the frame events written
+    /// to `events`, with `profiler` receiving the cycles.
     ///
-    /// [`Executor::into_debug`](crate::Executor::into_debug) builds one over a package; a
-    /// session that shows an execution running elsewhere builds one over
-    /// [`Stepper::finished`] and sets the state it displays. `stepper` must not have stepped
-    /// yet, or be finished: the call stack and the declarations start empty.
+    /// [`Executor::into_debug`](crate::Executor::into_debug) builds one over a package before
+    /// its first step; a session that shows an execution running elsewhere builds one over
+    /// [`Stepper::finished`] and sets the state it displays. The call stack and the
+    /// declarations start empty, so `stepper` must not have stepped unless it is finished.
     pub fn new(
         stepper: Stepper,
         host: DebuggerHost<dyn miden_assembly_syntax::debuginfo::SourceManager>,
@@ -342,13 +342,9 @@ impl DebugExecutor {
 
                 Ok(exited)
             }
-            // A stopped stepper returned above, so no step comes back empty; were one to, the
-            // state for inspection would be left alone the same way.
-            Ok(None) => {
-                self.stopped = true;
-                self.last_debug_var_count = 0;
-                Ok(None)
-            }
+            // The stepper comes back empty only when it was already stopped, which the guard
+            // above catches before the step.
+            Ok(None) => unreachable!("a stopped stepper is caught before the step"),
             // The finalization step.
             Ok(Some(Stepped { running: false, .. })) => {
                 // Program completed: no invocation remains available for inspection.

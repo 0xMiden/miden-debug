@@ -109,7 +109,7 @@ impl Stepper {
     /// starting at the entry-point source node the package names.
     ///
     /// Fails when the package's advice map conflicts with the processor's or, added to the
-    /// processor's advice, exceeds the options' advice budget, or when its debug info cannot be
+    /// processor's advice, exceeds the processor's advice budget, or when its debug info cannot be
     /// decoded, does not match its program, or leaves the entry point's source root ambiguous
     /// or malformed. Panics when `package` is not executable.
     pub fn for_package(
@@ -189,8 +189,7 @@ impl Stepper {
     /// program has finished. A failing step returns its error and stops the program; stepping
     /// again after that, or after a step that did not complete (its future dropped, or a
     /// panic unwound through it), is an error; the step after an incomplete one also fails the
-    /// program. The step that
-    /// finalizes a finished program runs no cycle and is not described.
+    /// program. The step that finalizes a finished program runs no cycle and is not described.
     pub fn step_sync(
         &mut self,
         host: &mut impl SyncHost,

@@ -302,16 +302,14 @@ impl SourceTracker {
     /// starts, if it is one.
     ///
     /// The depth alone tells a return from a callback into the same forest, since a callee
-    /// runs below its boundary's threshold. A program the assembler built pops at most one
-    /// boundary per cycle; the loop covers a host that answers a dynamic node with a forest
-    /// whose root is itself external, where the callee's boundary and the caller's unwind in
-    /// the same cycle.
+    /// runs deeper than its boundary's threshold.
+    ///
+    /// Two boundaries unwind in the same cycle only under a host that answers a dynamic node
+    /// with a forest whose root is itself external: the callee's boundary and the caller's.
+    /// The engine's own host never does, since it resolves a digest straight to the leaf
+    /// forest, so the loop's second iteration is not reached in the tests.
     fn return_to(&mut self, depth: usize) -> Option<DebugSourceNodeId> {
         let mut handed_over = None;
-        // With the engine's own host no program pops two boundaries in one cycle: the host
-        // resolves a digest straight to the leaf forest, and the assembler never emits a dynamic
-        // node answered by a forest whose root is external. The loop's second iteration is
-        // therefore not reachable in the tests; it is kept for hosts that behave otherwise.
         while let Some(position) = self.boundaries.last().copied() {
             let Entry::Boundary {
                 dynamic,
@@ -323,8 +321,8 @@ impl SourceTracker {
             if depth > *unwound_at {
                 break;
             }
-            // Only a same-forest callee root starts exactly at the threshold; a cycle that
-            // unwound below it is a return, not the callee's root start, and hands nothing over.
+            // Only a same-forest callee root starts exactly at the threshold; a cycle shallower
+            // than it is a return, not the callee's root start, and hands nothing over.
             handed_over = (depth == *unwound_at).then_some(*dynamic).flatten();
             self.truncate(position);
         }

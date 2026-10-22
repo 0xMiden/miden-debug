@@ -74,6 +74,41 @@ fn stepper(package: &Arc<Package>, flag: u64, n: u64) -> Stepper {
     Stepper::for_package(processor, package.clone()).unwrap()
 }
 
+/// A stepper over the bare program of `package`, with `inputs` on the stack and the package's
+/// debug info supplied for the first step.
+fn bare_stepper(package: &Package, inputs: &[Felt]) -> Stepper {
+    let debug_info = Arc::new(package.debug_info().unwrap().unwrap());
+    let mut processor = FastProcessor::new(StackInputs::new(inputs).unwrap());
+    let ctx = processor.get_initial_resume_context(&package.unwrap_program()).unwrap();
+    Stepper::new(processor, ctx).with_debug_info(debug_info)
+}
+
+/// The clock of `processor`, as a cycle count.
+fn clock(processor: &FastProcessor) -> usize {
+    u32::from(processor.state().clock()) as usize
+}
+
+/// A program that fails on its last operation, an `assert` of zero, with its source manager.
+fn failing_program() -> (Arc<Package>, Arc<DefaultSourceManager>) {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program("failing", "begin push.1 drop assert end")
+        .map(Arc::<Package>::from)
+        .unwrap();
+    (package, source_manager)
+}
+
+/// Execution options whose cycle limit and expected cycle count are both `max_cycles`.
+fn cycle_limit(max_cycles: u32) -> miden_processor::ExecutionOptions {
+    let default = miden_processor::ExecutionOptions::default();
+    miden_processor::ExecutionOptions::new(
+        Some(max_cycles),
+        max_cycles,
+        default.core_trace_fragment_size(),
+    )
+    .unwrap()
+}
+
 /// Counts derived from the records, as the coverage collector derives them.
 #[derive(Debug, Default)]
 struct Hits {
@@ -176,12 +211,13 @@ fn procedure_root(package: &Package, suffix: &str) -> DebugSourceNodeId {
 }
 
 /// An owned copy of the comparable fields of a [`CycleInfo`].
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct Record {
     exec_node: Option<MastNodeId>,
     /// The debug info the cycle was resolved against, compared by value.
     debug_info: Option<Arc<PackageDebugInfo>>,
     source_node: Option<u32>,
+    source_node_inferred: bool,
     op: Option<Operation>,
     op_idx: Option<u32>,
     control: Option<ControlFlowOp>,
@@ -195,6 +231,7 @@ impl From<&CycleInfo<'_>> for Record {
             exec_node: cycle.exec_node,
             debug_info: cycle.debug_info.cloned(),
             source_node: cycle.source_node.map(u32::from),
+            source_node_inferred: cycle.source_node_inferred,
             op: cycle.op,
             op_idx: cycle.op_idx,
             control: cycle.control,
@@ -212,6 +249,7 @@ impl core::fmt::Debug for Record {
             .field("exec_node", &self.exec_node)
             .field("debug_info_nodes", &self.debug_info.as_ref().map(|info| info.nodes().len()))
             .field("source_node", &self.source_node)
+            .field("source_node_inferred", &self.source_node_inferred)
             .field("op", &self.op)
             .field("op_idx", &self.op_idx)
             .field("control", &self.control)
@@ -595,11 +633,7 @@ impl Instrument for RecordingInstrument {
 /// included, and after the internal observer has seen the source context.
 #[test]
 fn instruments_receive_the_record_before_the_cycle_runs() {
-    let source_manager = Arc::new(DefaultSourceManager::default());
-    let package = miden_assembly::Assembler::new(source_manager.clone())
-        .assemble_program("failing", "begin push.1 drop assert end")
-        .map(Arc::<Package>::from)
-        .unwrap();
+    let (package, source_manager) = failing_program();
     let records = Rc::new(RefCell::new(Vec::new()));
     let order = Rc::new(RefCell::new(Vec::new()));
     let mut executor = Executor::new(Vec::new());
@@ -647,7 +681,7 @@ fn debug_executor_describes_every_cycle_and_stops_at_the_end() {
     }
     assert!(!records.is_empty());
     assert_eq!(records.len(), exec.cycle);
-    assert_eq!(exec.cycle, u32::from(exec.processor().state().clock()) as usize);
+    assert_eq!(exec.cycle, clock(exec.processor()));
     let mut described = false;
     assert!(exec.step_with(|_| described = true).unwrap().is_none());
     assert!(!described, "a step after the end describes nothing");
@@ -658,11 +692,7 @@ fn debug_executor_describes_every_cycle_and_stops_at_the_end() {
 /// nothing instead of failing again.
 #[test]
 fn debug_executor_stops_on_a_failing_step() {
-    let source_manager = Arc::new(DefaultSourceManager::default());
-    let package = miden_assembly::Assembler::new(source_manager.clone())
-        .assemble_program("failing", "begin push.1 drop assert end")
-        .map(Arc::<Package>::from)
-        .unwrap();
+    let (package, source_manager) = failing_program();
     let mut exec = Executor::new(Vec::new()).into_debug(package, source_manager);
     let error = loop {
         if let Err(error) = exec.step() {
@@ -672,7 +702,7 @@ fn debug_executor_stops_on_a_failing_step() {
     };
     assert!(!matches!(error, ExecutionError::Internal(_)), "{error:?}");
     assert!(exec.stopped);
-    assert_eq!(exec.cycle, u32::from(exec.processor().state().clock()) as usize);
+    assert_eq!(exec.cycle, clock(exec.processor()));
     let mut described = false;
     assert!(exec.step_with(|_| described = true).unwrap().is_none());
     assert!(!described, "a step after a failure describes nothing");
@@ -703,7 +733,8 @@ fn a_step_after_a_panic_in_the_callback_reports_the_lost_execution_once() {
 }
 
 /// The pending debug info of a bare-program stepper is spent on the first step: a library
-/// without debug info, entered later, does not inherit it.
+/// without debug info, entered later, does not inherit it, and its records, which have no
+/// source node, are not marked inferred.
 #[test]
 fn a_library_without_debug_info_does_not_inherit_the_pending_one() {
     let source_manager = Arc::new(DefaultSourceManager::default());
@@ -720,13 +751,10 @@ fn a_library_without_debug_info_does_not_inherit_the_pending_one() {
             .assemble_program("program", "use lib::m begin exec.m::f end")
             .unwrap(),
     );
-    let debug_info = Arc::new(package.debug_info().unwrap().unwrap());
     let mut executor = Executor::new(Vec::new());
     executor.with_package(library.clone()).unwrap();
     let (_, mut host) = executor.into_stepper(package.clone(), source_manager).unwrap();
-    let mut processor = FastProcessor::new(StackInputs::default());
-    let ctx = processor.get_initial_resume_context(&package.unwrap_program()).unwrap();
-    let mut stepper = Stepper::new(processor, ctx).with_debug_info(debug_info);
+    let mut stepper = bare_stepper(&package, &[]);
     let mut in_library = Vec::new();
     let mut in_program = Vec::new();
     stepper
@@ -741,6 +769,12 @@ fn a_library_without_debug_info_does_not_inherit_the_pending_one() {
     assert!(!in_library.is_empty() && !in_program.is_empty());
     assert!(in_program.iter().all(|record| record.debug_info.is_some()), "{in_program:?}");
     assert!(in_library.iter().all(|record| record.debug_info.is_none()), "{in_library:?}");
+    assert!(
+        in_library
+            .iter()
+            .all(|record| record.source_node.is_none() && !record.source_node_inferred),
+        "{in_library:?}"
+    );
 }
 
 /// The stepper can be held across an await inside a `Send` future.
@@ -763,13 +797,14 @@ fn finalization_step_produces_no_record() {
         steps += 1;
     }
     steps += 1;
-    let clock = u32::from(stepper.processor().state().clock()) as usize;
+    let clock = clock(stepper.processor());
     assert_eq!(records, clock);
     assert_eq!(steps, clock + 1);
 }
 
 /// A stepper over a bare program resolves its first cycle against the supplied debug info, so
-/// the root's start is not lost, and the records equal those of the package entry.
+/// the root's start is not lost, and the records equal those of the package entry but for the
+/// first record's source node, which is inferred rather than tracked.
 #[test]
 fn bare_program_first_record_has_the_supplied_debug_info() {
     let (package, _) = fixture();
@@ -780,11 +815,8 @@ fn bare_program_first_record_has_the_supplied_debug_info() {
         .run_sync(&mut DefaultHost::default(), |cycle| from_package.push(Record::from(cycle)))
         .unwrap();
 
-    let mut processor = FastProcessor::new(StackInputs::new(&inputs(1, 3)).unwrap());
-    let ctx = processor.get_initial_resume_context(&package.unwrap_program()).unwrap();
-    let mut stepper = Stepper::new(processor, ctx).with_debug_info(debug_info.clone());
     let mut from_program = Vec::new();
-    stepper
+    bare_stepper(&package, &inputs(1, 3))
         .run_sync(&mut DefaultHost::default(), |cycle| from_program.push(Record::from(cycle)))
         .unwrap();
 
@@ -792,18 +824,22 @@ fn bare_program_first_record_has_the_supplied_debug_info() {
     assert_eq!(first.debug_info.as_deref(), Some(&*debug_info), "{first:?}");
     assert!(first.source_node.is_some(), "{first:?}");
     assert!(first.node_start.is_some_and(|start| start.parent.is_none()), "{first:?}");
-    assert_eq!(from_program, from_package);
+    assert_eq!(from_program[1..], from_package[1..]);
+    assert!(first.source_node_inferred && !from_package[0].source_node_inferred);
+    let first_tracked = Record {
+        source_node_inferred: false,
+        ..first.clone()
+    };
+    assert_eq!(first_tracked, from_package[0]);
 
     // The async path attributes the first cycle the same way.
-    let mut processor = FastProcessor::new(StackInputs::new(&inputs(1, 3)).unwrap());
-    let ctx = processor.get_initial_resume_context(&package.unwrap_program()).unwrap();
-    let mut stepper = Stepper::new(processor, ctx).with_debug_info(debug_info.clone());
     let mut from_async = Vec::new();
     poll_immediately(
-        stepper.run(&mut DefaultHost::default(), |cycle| from_async.push(Record::from(cycle))),
+        bare_stepper(&package, &inputs(1, 3))
+            .run(&mut DefaultHost::default(), |cycle| from_async.push(Record::from(cycle))),
     )
     .unwrap();
-    assert_eq!(from_async, from_package);
+    assert_eq!(from_async, from_program);
 
     // A context that carries debug info keeps it: a different package's debug info, supplied
     // as pending, changes nothing.
@@ -1182,10 +1218,7 @@ fn inline_frames_name_the_inlined_procedure() {
 #[test]
 fn only_the_first_cycle_of_a_bare_program_has_an_inferred_source_node() {
     let (package, _) = fixture();
-    let debug_info = Arc::new(package.debug_info().unwrap().unwrap().clone());
-    let mut processor = FastProcessor::new(StackInputs::new(&inputs(1, 3)).unwrap());
-    let ctx = processor.get_initial_resume_context(&package.unwrap_program()).unwrap();
-    let mut bare = Stepper::new(processor, ctx).with_debug_info(debug_info);
+    let mut bare = bare_stepper(&package, &inputs(1, 3));
     let mut inferred = Vec::new();
     bare.run_sync(&mut DefaultHost::default(), |cycle| {
         inferred.push((cycle.source_node.is_some(), cycle.source_node_inferred))
@@ -1432,14 +1465,10 @@ fn debug_info_after_a_step_dropped_at_clock_zero_panics() {
 #[test]
 fn a_cycle_that_trips_the_limit_is_counted() {
     let (package, _) = fixture();
-    let default = miden_processor::ExecutionOptions::default();
-    let options =
-        miden_processor::ExecutionOptions::new(Some(64), 64, default.core_trace_fragment_size())
-            .unwrap();
     let processor = FastProcessor::new_with_options(
         StackInputs::new(&inputs(1, 3)).unwrap(),
         miden_processor::advice::AdviceInputs::default(),
-        options,
+        cycle_limit(64),
     )
     .unwrap();
     let mut stepper = Stepper::for_package(processor, package).unwrap();
@@ -1448,4 +1477,117 @@ fn a_cycle_that_trips_the_limit_is_counted() {
     assert!(matches!(error, ExecutionError::CycleLimitExceeded(64)), "{error:?}");
     assert_eq!(records, stepper.cycle());
     assert!(stepper.failed());
+}
+
+/// The debug executor mirrors the clock on a failing step too: a cycle that completes and
+/// then trips the cycle limit is on the clock and was described like any other.
+#[test]
+fn debug_executor_mirrors_the_clock_on_a_cycle_limit() {
+    let (package, source_manager) = fixture();
+    let mut exec = Executor::from_config(crate::exec::ExecutionConfig {
+        inputs: StackInputs::new(&inputs(1, 3)).unwrap(),
+        options: cycle_limit(64),
+        ..Default::default()
+    })
+    .into_debug(package, source_manager);
+    let mut records = Vec::new();
+    let error = loop {
+        if let Err(error) = exec.step_with(|cycle| records.push(Record::from(cycle))) {
+            break error;
+        }
+        assert!(!exec.stopped, "the fixture runs longer than the limit");
+    };
+    assert!(matches!(error, ExecutionError::CycleLimitExceeded(64)), "{error:?}");
+    assert_eq!(exec.cycle, clock(exec.processor()));
+    // The 65th cycle completed before it tripped the limit of 64.
+    assert_eq!(exec.cycle, 65);
+    assert_eq!(
+        records.len(),
+        exec.cycle,
+        "every cycle, the one that tripped the limit included"
+    );
+}
+
+/// A `do ... while` loop of a library procedure entered through an external node: the loop
+/// has exited but stays open until its parent's finish, whose start was never described, so
+/// the block after the loop has no parent rather than the loop. Nothing stays open.
+#[test]
+fn the_sibling_of_an_exited_loop_under_an_external_root_has_no_parent() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let library: Arc<Package> = Arc::from(
+        miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_library(
+                "lib",
+                "namespace lib::loops pub proc spin do sub.1 dup while neq.0 end drop push.7 drop \
+                 end",
+                None::<String>,
+            )
+            .unwrap(),
+    );
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .with_package(library.clone(), Linkage::Dynamic)
+        .unwrap()
+        .assemble_program("program", "use lib::loops begin push.3 exec.loops::spin end")
+        .map(Arc::<Package>::from)
+        .unwrap();
+    let seven = Operation::Push(Felt::new(7).unwrap());
+    let (mut stepper, mut host) = callback_stepper(&library, &package, source_manager);
+    let mut after_loop = Vec::new();
+    stepper
+        .run_sync(&mut host, |cycle| {
+            if let Some(start) = cycle.node_start
+                && Arc::ptr_eq(cycle.forest, library.mast_forest())
+                && let Some(MastNode::Block(block)) =
+                    cycle.forest.get_node_by_id(cycle.exec_node.unwrap())
+                && block.operations().any(|op| *op == seven)
+            {
+                after_loop.push(start);
+            }
+        })
+        .unwrap();
+    assert_eq!(after_loop.len(), 1, "{after_loop:?}");
+    assert_eq!(after_loop[0].parent, None, "{after_loop:?}");
+    assert_eq!(stepper.open_source_nodes(), 0);
+}
+
+/// A library procedure whose root is also the root of another procedure, so that the
+/// processor cannot pick the entry's source root and tracks no source node in it: every
+/// record of the library that has a source node says it is inferred, while the program's own
+/// records, tracked from the first cycle, do not.
+#[test]
+fn records_of_an_invocation_without_a_tracked_root_are_inferred() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let library: Arc<Package> = Arc::from(
+        miden_assembly::Assembler::new(source_manager.clone())
+            .assemble_library(
+                "lib",
+                "namespace lib::infer pub proc x push.1 drop end proc body if.true push.1 drop \
+                 else push.2 drop end end pub proc entry exec.body end",
+                None::<String>,
+            )
+            .unwrap(),
+    );
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .with_package(library.clone(), Linkage::Dynamic)
+        .unwrap()
+        .assemble_program("program", "use lib::infer begin push.1 exec.infer::entry end")
+        .map(Arc::<Package>::from)
+        .unwrap();
+    let (mut stepper, mut host) = callback_stepper(&library, &package, source_manager);
+    let mut in_library = Vec::new();
+    let mut in_program = Vec::new();
+    stepper
+        .run_sync(&mut host, |cycle| {
+            if Arc::ptr_eq(cycle.forest, library.mast_forest()) {
+                in_library.push(Record::from(cycle));
+            } else {
+                in_program.push(Record::from(cycle));
+            }
+        })
+        .unwrap();
+    let with_source: Vec<_> =
+        in_library.iter().filter(|record| record.source_node.is_some()).collect();
+    assert!(!with_source.is_empty(), "{in_library:?}");
+    assert!(with_source.iter().all(|record| record.source_node_inferred), "{in_library:?}");
+    assert!(!in_program[0].source_node_inferred, "{:?}", in_program[0]);
 }

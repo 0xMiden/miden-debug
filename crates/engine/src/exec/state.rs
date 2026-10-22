@@ -51,7 +51,8 @@ pub struct DebugExecutor {
     pub contexts: BTreeSet<ContextId>,
     /// The root context
     pub root_context: ContextId,
-    /// The current context at `cycle`
+    /// The current context: the one after the last cycle a step completed without error, which
+    /// after a limit trip is the cycle before `cycle`
     pub current_context: ContextId,
     /// The current call stack
     pub callstack: CallStack,
@@ -66,7 +67,9 @@ pub struct DebugExecutor {
     /// The current clock cycle: the stepper's, mirrored after each step so that a session that
     /// stands in for a remote execution can show its own. After a cycle that completes and
     /// then trips a limit it counts that cycle, while the stack, the operation, the assembly
-    /// operation and the context keep the state after the cycle before it
+    /// operation, the context, the recent operations, the procedure name and the contexts keep
+    /// the state after the cycle before it; the call stack, the declarations and the profiler
+    /// were already advanced for the tripping cycle
     pub cycle: usize,
     /// Whether or not execution has terminated. Set by a step that finishes or fails the
     /// program, or finds the stepper already stopped; a session that stands in for a remote
@@ -116,7 +119,7 @@ impl DebugExecutor {
     /// [`Executor::into_debug`](crate::Executor::into_debug) builds one over a package before
     /// its first step; a session that shows an execution running elsewhere builds one over
     /// [`Stepper::finished`] and sets the state it displays. The call stack and the
-    /// declarations start empty, so `stepper` must not have stepped unless it is finished.
+    /// declarations start empty, so `stepper` must not have stepped unless it is stopped.
     pub fn new(
         stepper: Stepper,
         host: DebuggerHost<dyn miden_assembly_syntax::debuginfo::SourceManager>,

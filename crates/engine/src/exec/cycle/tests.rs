@@ -89,18 +89,18 @@ fn bare_stepper(package: &Package, inputs: &[Felt]) -> Stepper {
 }
 
 /// Steps `stepper` to its end over `host`, describing each cycle to `on_cycle`, and returns the
-/// number of source nodes open after the last cycle, before the finalization step closes
-/// whatever is left. Only nodes are counted: the forest boundaries are not visible in it.
-fn run_to_end(
+/// number of source nodes open after every cycle, the last of them read before the finalization
+/// step closes whatever is left; boundaries are not counted.
+fn open_after_every_cycle(
     stepper: &mut Stepper,
     host: &mut impl miden_processor::SyncHost,
     mut on_cycle: impl FnMut(&CycleInfo<'_>),
-) -> usize {
-    let mut after_last_cycle = stepper.open_source_nodes();
+) -> Vec<usize> {
+    let mut open = Vec::new();
     while stepper.step_sync(host, &mut on_cycle).unwrap() {
-        after_last_cycle = stepper.open_source_nodes();
+        open.push(stepper.open_source_nodes());
     }
-    after_last_cycle
+    open
 }
 
 /// The clock of `processor`, as a cycle count.
@@ -153,7 +153,7 @@ fn linked_packages(
 }
 
 /// A library `leaf` assembled from `leaf`, and a library `mid` assembled from `mid` that links
-/// it dynamically, without debug info when `strip` is set.
+/// it dynamically; `mid` alone is without debug info when `strip` is set.
 fn leaf_and_mid(
     source_manager: &Arc<DefaultSourceManager>,
     leaf: &str,
@@ -413,31 +413,24 @@ fn external_loop_body_does_not_pile_up_open_nodes() {
     let iterations = 12;
     let (mut stepper, mut host) =
         linked_stepper(&[&library], &package, vec![Felt::new(iterations).unwrap()], source_manager);
-    let mut deepest = 0;
-    let mut after_last_cycle = 0;
     let mut body_starts = 0;
     let mut first_in_library = None;
-    while stepper
-        .step_sync(&mut host, |cycle| {
-            body_starts += usize::from(cycle.node_start.is_some_and(|start| {
-                cycle.forest.get_node_by_id(cycle.exec_node.unwrap()).is_some_and(|node| {
-                    matches!(node, MastNode::External(_)) && start.parent.is_some()
-                })
-            }));
-            if Arc::ptr_eq(cycle.forest, library.mast_forest()) && first_in_library.is_none() {
-                first_in_library = Some(Record::from(cycle));
-            }
-        })
-        .unwrap()
-    {
-        after_last_cycle = stepper.open_source_nodes();
-        deepest = deepest.max(after_last_cycle);
-    }
+    let open = open_after_every_cycle(&mut stepper, &mut host, |cycle| {
+        body_starts += usize::from(cycle.node_start.is_some_and(|start| {
+            cycle
+                .forest
+                .get_node_by_id(cycle.exec_node.unwrap())
+                .is_some_and(|node| matches!(node, MastNode::External(_)) && start.parent.is_some())
+        }));
+        if Arc::ptr_eq(cycle.forest, library.mast_forest()) && first_in_library.is_none() {
+            first_in_library = Some(Record::from(cycle));
+        }
+    });
     assert_eq!(body_starts, iterations as usize);
     // The body is an external node, which leaves a boundary, not a node; the deepest point
     // is reached on every iteration and nothing accumulates across them.
-    assert_eq!(deepest, 4, "nodes open at the deepest point");
-    assert_eq!(after_last_cycle, 0, "nodes open after the last cycle");
+    assert_eq!(open.iter().max(), Some(&4), "nodes open at the deepest point");
+    assert_eq!(open.last(), Some(&0), "nodes open after the last cycle");
     // The callee root's start runs in the same step as the external node's start and is
     // never described: the first record in the library is already inside the root.
     let first = first_in_library.expect("the library ran");
@@ -489,11 +482,12 @@ fn external_siblings_under_a_foreign_root_have_no_parent() {
         })
         .unwrap()
     {
-        after_last_cycle = stepper.open_source_nodes();
+        let open = stepper.open_source_nodes();
+        after_last_cycle = open;
         if open_after_return.take().is_some() {
             // Back in the program after the libraries, on the finish of the program's root:
             // nothing of the libraries is open any more.
-            assert_eq!(after_last_cycle, 0);
+            assert_eq!(open, 0);
         }
     }
     // `f`'s own root is never described, so `a` and `b` get no parent rather than each other.
@@ -534,7 +528,7 @@ fn adjacent_calls_of_a_loop_only_library_procedure_do_not_chain() {
         source_manager,
     );
     let mut starts = Vec::new();
-    let after_last_cycle = run_to_end(&mut stepper, &mut host, |cycle| {
+    let open = open_after_every_cycle(&mut stepper, &mut host, |cycle| {
         if let Some(start) = cycle.node_start
             && Arc::ptr_eq(cycle.forest, library.mast_forest())
         {
@@ -556,7 +550,7 @@ fn adjacent_calls_of_a_loop_only_library_procedure_do_not_chain() {
     let bodies: Vec<_> = starts.iter().filter(|(kind, _)| *kind == "block").collect();
     assert!(!bodies.is_empty());
     assert!(bodies.iter().all(|(_, start)| start.parent.is_some()), "{starts:?}");
-    assert_eq!(after_last_cycle, 0, "nodes open after the last cycle");
+    assert_eq!(open.last(), Some(&0), "nodes open after the last cycle");
 }
 
 /// A host that yields once before answering the first forest request or event it gets,
@@ -738,8 +732,9 @@ fn instruments_receive_the_record_before_the_cycle_runs() {
 }
 
 /// The debug executor describes every cycle of a program that runs to its end and mirrors the
-/// processor's clock; once stopped, a step describes nothing and returns no frame, and so does
-/// a step after a caller resets `stopped`, which stops the executor again.
+/// processor's clock; once stopped, a step describes nothing and returns no frame. So does a
+/// step after a caller resets `stopped`, which stops the executor again; that step pins the
+/// guard on the stepper's own state, since a weakened guard panics there.
 #[test]
 fn debug_executor_describes_every_cycle_and_stops_at_the_end() {
     let (package, source_manager) = fixture();
@@ -759,8 +754,9 @@ fn debug_executor_describes_every_cycle_and_stops_at_the_end() {
     // no-op. A guard on the flag and on a failure alone would step the finished stepper, which
     // comes back empty and reaches the executor's unreachable arm.
     exec.stopped = false;
-    let returned_frame = exec.step().map(|frame| frame.is_some());
+    let returned_frame = exec.step_with(|_| described = true).map(|frame| frame.is_some());
     assert!(matches!(returned_frame, Ok(false)), "{returned_frame:?}");
+    assert!(!described, "a step after a reset describes nothing");
     assert!(exec.stopped);
 }
 
@@ -897,7 +893,8 @@ fn open_nodes_around_the_end(
     let debug_info = Arc::new(library.debug_info().unwrap().unwrap());
     let mut stepper =
         program_stepper(&program, &[Felt::new(input).unwrap()]).with_debug_info(debug_info);
-    let after_last_cycle = run_to_end(&mut stepper, host, |_| {});
+    let open = open_after_every_cycle(&mut stepper, host, |_| {});
+    let after_last_cycle = *open.last().expect("the program runs a cycle");
     (after_last_cycle, stepper.open_source_nodes())
 }
 
@@ -1005,8 +1002,8 @@ fn a_boundary_is_kept_for_a_forest_without_debug_info() {
     let source_manager = Arc::new(DefaultSourceManager::default());
     let (leaf, mid) = leaf_and_mid(
         &source_manager,
-        "namespace lib::loops pub proc drain while.true push.0 end end",
-        "namespace mid::glue use lib::loops pub proc f exec.loops::drain exec.loops::drain end",
+        "namespace leaf::loops pub proc drain while.true push.0 end end",
+        "namespace mid::glue use leaf::loops pub proc f exec.loops::drain exec.loops::drain end",
         true,
     );
     assert!(mid.debug_info().unwrap().is_none());
@@ -1020,29 +1017,23 @@ fn a_boundary_is_kept_for_a_forest_without_debug_info() {
     let (mut stepper, mut host) =
         linked_stepper(&[&leaf, &mid], &package, vec![Felt::ONE, Felt::ONE], source_manager);
     let mut loop_starts = Vec::new();
-    let mut open_counts = Vec::new();
-    while stepper
-        .step_sync(&mut host, |cycle| {
-            if let Some(start) = cycle.node_start
-                && Arc::ptr_eq(cycle.forest, leaf.mast_forest())
-                && matches!(
-                    cycle.forest.get_node_by_id(cycle.exec_node.unwrap()),
-                    Some(MastNode::Loop(_))
-                )
-            {
-                loop_starts.push(start);
-            }
-        })
-        .unwrap()
-    {
-        open_counts.push(stepper.open_source_nodes());
-    }
+    let open = open_after_every_cycle(&mut stepper, &mut host, |cycle| {
+        if let Some(start) = cycle.node_start
+            && Arc::ptr_eq(cycle.forest, leaf.mast_forest())
+            && matches!(
+                cycle.forest.get_node_by_id(cycle.exec_node.unwrap()),
+                Some(MastNode::Loop(_))
+            )
+        {
+            loop_starts.push(start);
+        }
+    });
     assert_eq!(loop_starts.len(), 2, "{loop_starts:?}");
     assert!(loop_starts.iter().all(|start| start.parent.is_none()), "{loop_starts:?}");
     // Never the first call's loop under the second call's: the deepest point is the same on
     // both calls.
-    assert_eq!(open_counts.iter().max(), Some(&3), "{open_counts:?}");
-    assert_eq!(open_counts.last(), Some(&0), "nodes open after the last cycle");
+    assert_eq!(open.iter().max(), Some(&3), "{open:?}");
+    assert_eq!(open.last(), Some(&0), "nodes open after the last cycle");
 }
 
 /// A procedure entered by `call` that re-enters itself through `dynexec` in the same forest:
@@ -1067,7 +1058,7 @@ fn dynamic_entries_in_the_same_forest_name_the_dynamic_node() {
     let root = procedure_root(&package, "::f");
     let mut stepper = stepper(&package, 0, 0);
     let mut entries = Vec::new();
-    let after_last_cycle = run_to_end(&mut stepper, &mut DefaultHost::default(), |cycle| {
+    let open = open_after_every_cycle(&mut stepper, &mut DefaultHost::default(), |cycle| {
         if let Some(start) = cycle.node_start
             && start.node == root
         {
@@ -1084,7 +1075,7 @@ fn dynamic_entries_in_the_same_forest_name_the_dynamic_node() {
         }
     });
     assert_eq!(entries, [Some("call"), Some("dyn"), Some("dyn")]);
-    assert_eq!(after_last_cycle, 0, "nodes open after the last cycle");
+    assert_eq!(open.last(), Some(&0), "nodes open after the last cycle");
 }
 
 /// A library whose one procedure, `lib::t::trampoline`, has `trampoline` as its body, without
@@ -1150,15 +1141,16 @@ fn a_callback_through_a_trampoline_does_not_pop_the_boundary_early() {
             })
             .unwrap()
         {
-            after_last_cycle = stepper.open_source_nodes();
+            let open = stepper.open_source_nodes();
+            after_last_cycle = open;
             // The counts are read after the step: right after the external start, and right
             // after the `push.9` cycle, the third cycle back in the program.
             if open_at_external.is_none()
                 && starts.last().is_some_and(|(in_program, external, _)| *in_program && *external)
             {
-                open_at_external = Some(after_last_cycle);
+                open_at_external = Some(open);
             } else if returned && open_on_return.is_none() {
-                open_on_return = Some(after_last_cycle);
+                open_on_return = Some(open);
             }
         }
         let external = starts.iter().position(|(in_program, external, _)| *in_program && *external);
@@ -1194,29 +1186,21 @@ fn dynamic_calls_into_another_forest_are_bounded() {
     let mut roots = Vec::new();
     let mut dynamic_nodes = Vec::new();
     let mut in_program = Vec::new();
-    let mut deepest = 0;
-    let mut after_last_cycle = 0;
-    while stepper
-        .step_sync(&mut host, |cycle| {
-            if let Some(start) = cycle.node_start {
-                if Arc::ptr_eq(cycle.forest, library.mast_forest()) {
-                    roots.push(start);
-                    return;
-                }
-                in_program.push(start);
-                if matches!(
-                    cycle.forest.get_node_by_id(cycle.exec_node.unwrap()),
-                    Some(MastNode::Dyn(_))
-                ) {
-                    dynamic_nodes.push(start);
-                }
+    let open = open_after_every_cycle(&mut stepper, &mut host, |cycle| {
+        if let Some(start) = cycle.node_start {
+            if Arc::ptr_eq(cycle.forest, library.mast_forest()) {
+                roots.push(start);
+                return;
             }
-        })
-        .unwrap()
-    {
-        after_last_cycle = stepper.open_source_nodes();
-        deepest = deepest.max(after_last_cycle);
-    }
+            in_program.push(start);
+            if matches!(
+                cycle.forest.get_node_by_id(cycle.exec_node.unwrap()),
+                Some(MastNode::Dyn(_))
+            ) {
+                dynamic_nodes.push(start);
+            }
+        }
+    });
     assert_eq!(roots.len(), 2, "{roots:?}");
     assert!(roots.iter().all(|start| start.parent.is_none()), "{roots:?}");
     // The second dynamic node's parent is the program's node that lists it.
@@ -1230,8 +1214,8 @@ fn dynamic_calls_into_another_forest_are_bounded() {
         assert_eq!(start.parent, listed_by(&package, start.node), "{in_program:?}");
     }
     // The deepest point is reached on both calls: the first leaves nothing behind.
-    assert_eq!(deepest, 5);
-    assert_eq!(after_last_cycle, 0, "nodes open after the last cycle");
+    assert_eq!(open.iter().max(), Some(&5), "{open:?}");
+    assert_eq!(open.last(), Some(&0), "nodes open after the last cycle");
 }
 
 /// A failed program is stopped but has no output to export.
@@ -1255,11 +1239,11 @@ fn into_output_is_refused_after_a_failure() {
     assert_eq!(records, stepper.cycle() + 1, "the failing cycle is described, not counted");
     assert!(stepper.stopped());
     assert!(stepper.failed());
-    // A failed program is not stepped again, stays failed, and the cycle that failed is not
-    // counted: the clock stays at the eight cycles that completed before it.
+    // A failed program is not stepped again and stays failed.
+    let clock = stepper.cycle();
     assert!(stepper.step_sync(&mut DefaultHost::default(), |_| {}).is_err());
     assert!(stepper.failed() && stepper.stopped());
-    assert_eq!(stepper.cycle(), 8);
+    assert_eq!(stepper.cycle(), clock, "the refused step leaves the clock alone");
     assert!(stepper.run_sync(&mut DefaultHost::default(), |_| {}).is_err());
     assert!(stepper.into_output().is_err());
 }
@@ -1411,9 +1395,10 @@ fn a_dynamic_root_without_a_source_node_pops_its_boundary() {
         })
         .unwrap()
     {
-        after_last_cycle = stepper.open_source_nodes();
+        let open = stepper.open_source_nodes();
+        after_last_cycle = open;
         if returned && open_after_return.is_none() {
-            open_after_return = Some(after_last_cycle);
+            open_after_return = Some(open);
         }
     }
     assert!(returned);
@@ -1510,8 +1495,8 @@ fn debug_info_after_a_completed_step_panics() {
 fn debug_info_after_a_step_dropped_at_clock_zero_panics() {
     let (_, mid) = leaf_and_mid(
         &Arc::new(DefaultSourceManager::default()),
-        "namespace lib::m pub proc f push.3 drop end",
-        "namespace mid::m use lib::m pub proc g exec.m::f end",
+        "namespace leaf::m pub proc f push.3 drop end",
+        "namespace mid::m use leaf::m pub proc g exec.m::f end",
         false,
     );
     // An assembled program starts with a block of its own, so the bare program runs `g`, a
@@ -1597,7 +1582,7 @@ fn the_sibling_of_an_exited_loop_under_an_external_root_has_no_parent() {
     let seven = Operation::Push(Felt::new(7).unwrap());
     let (mut stepper, mut host) = linked_stepper(&[&library], &package, Vec::new(), source_manager);
     let mut after_loop = Vec::new();
-    let after_last_cycle = run_to_end(&mut stepper, &mut host, |cycle| {
+    let open = open_after_every_cycle(&mut stepper, &mut host, |cycle| {
         if let Some(start) = cycle.node_start
             && Arc::ptr_eq(cycle.forest, library.mast_forest())
             && let Some(MastNode::Block(block)) =
@@ -1609,7 +1594,7 @@ fn the_sibling_of_an_exited_loop_under_an_external_root_has_no_parent() {
     });
     assert_eq!(after_loop.len(), 1, "{after_loop:?}");
     assert_eq!(after_loop[0].parent, None, "{after_loop:?}");
-    assert_eq!(after_last_cycle, 0, "nodes open after the last cycle");
+    assert_eq!(open.last(), Some(&0), "nodes open after the last cycle");
 }
 
 /// A library procedure whose root is also the root of another procedure, so that the

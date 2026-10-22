@@ -32,7 +32,10 @@ use crate::debug::{ControlFlowOp, InlineCallFrame};
 ///
 /// A step whose node is a MAST external node resolves the callee's forest and runs the callee
 /// root's first cycle without stopping in between, so the callee root's own start is never
-/// described: the first record in the callee's forest is already inside the root.
+/// described: the first record in the callee's forest is already inside the root. Consumers
+/// rely on that: a coverage reporter counts a `call` into another package by the edge into the
+/// callee's root, and would count the entry twice if the start were described as well. A
+/// change that describes it must take that edge over instead.
 #[derive(Debug)]
 pub struct CycleInfo<'a> {
     /// The forest the step executes in.

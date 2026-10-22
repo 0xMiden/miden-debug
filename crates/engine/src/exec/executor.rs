@@ -170,9 +170,10 @@ impl Executor {
     /// configuration is not used; observe the cycles through the stepper's callback instead.
     ///
     /// Fails as [`Stepper::for_package`] does: the package's advice map conflicts with the
-    /// processor's, or its debug info cannot be used with its program. Panics, as
-    /// [`Executor::into_debug`] does, when `package` is not a program, the advice inputs do not
-    /// fit the options, or an event handler cannot be registered.
+    /// advice inputs or, added to them, exceeds the options' advice budget, or its debug info
+    /// cannot be used with its program. Panics, as [`Executor::into_debug`] does, when `package`
+    /// is not a program, the advice inputs do not fit the options, or an event handler cannot be
+    /// registered.
     pub fn into_stepper(
         mut self,
         package: Arc<Package>,

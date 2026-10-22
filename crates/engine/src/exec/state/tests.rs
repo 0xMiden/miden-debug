@@ -1024,8 +1024,8 @@ fn source_inlining_with_the_physical_procedure_name_is_preserved() {
 }
 
 /// An executor over a finished stepper, as a session that stands in for a remote execution
-/// builds it, never steps: a step stops it and leaves the state it displays untouched, even
-/// when `stopped` was not set.
+/// builds it, never steps: a step stops it and leaves the state it displays untouched, the
+/// stack and the outputs included, even when `stopped` was not set.
 #[test]
 fn a_step_over_a_finished_stepper_changes_nothing() {
     use miden_processor::StackInputs;
@@ -1038,12 +1038,14 @@ fn a_step_over_a_finished_stepper_changes_nothing() {
         Profiler::default(),
     );
     let stack = vec![Felt::new(7).unwrap(), Felt::new(8).unwrap()];
+    // Not the default, so that outputs captured from the untouched processor would show.
+    let outputs = StackOutputs::new(&stack).unwrap();
     exec.current_stack = stack.clone();
+    exec.stack_outputs = outputs;
     exec.cycle = 42;
-    exec.stopped = false;
     assert!(matches!(exec.step(), Ok(None)));
     assert!(exec.stopped);
     assert_eq!(exec.cycle, 42);
     assert_eq!(exec.current_stack, stack);
-    assert_eq!(exec.stack_outputs, StackOutputs::default());
+    assert_eq!(exec.stack_outputs, outputs);
 }

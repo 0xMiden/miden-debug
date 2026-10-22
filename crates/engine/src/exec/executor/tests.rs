@@ -279,3 +279,61 @@ fn into_stepper_keeps_the_event_handlers() {
     let output = stepper.into_output().expect("the program terminated");
     assert_eq!(output.stack.get_element(0), Some(Felt::from(42u32)));
 }
+
+/// `into_stepper` returns the error of a program whose initial context cannot be built rather
+/// than panicking as `into_debug` does: the program's advice map conflicts with the advice
+/// inputs, or does not fit the options' advice budget on top of them.
+#[test]
+fn into_stepper_returns_the_initial_context_error() {
+    use miden_assembly::DefaultSourceManager;
+    use miden_processor::advice::AdviceError;
+
+    let source_manager: Arc<DefaultSourceManager> = Arc::new(DefaultSourceManager::default());
+    let program: Arc<Package> = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program("program", "adv_map A([1, 2, 3, 4]) = [5, 6]\nbegin push.1 drop end")
+        .map(Arc::from)
+        .expect("failed to assemble test program");
+    let (key, values) = program.mast_forest().advice_map().iter().next().expect("the entry");
+    assert_eq!(values.len(), 2);
+
+    // The same key with another value.
+    let conflicting = AdviceInputs::default().with_map([(*key, vec![Felt::from(7u32)])]);
+    let executor = Executor::from_config(ExecutionConfig {
+        advice_inputs: conflicting,
+        ..Default::default()
+    });
+    match executor.into_stepper(program.clone(), source_manager.clone()) {
+        Err(ExecutionError::AdviceError {
+            err: AdviceError::MapKeyAlreadyPresent { .. },
+            ..
+        }) => {}
+        Err(other) => panic!("expected the advice map conflict: {other:?}"),
+        Ok(_) => panic!("a conflicting advice map must not give a stepper"),
+    }
+
+    // A budget the empty advice inputs fill exactly, so the program's own entry exceeds it.
+    // Their size, the empty Merkle store's, is read off the processor's refusal of a budget
+    // of nothing.
+    let empty = |budget| {
+        FastProcessor::new_with_options(
+            StackInputs::default(),
+            AdviceInputs::default(),
+            ExecutionOptions::default().with_max_advice_size_bytes(budget),
+        )
+    };
+    let Err(AdviceError::SizeBudgetExceeded { current: size, .. }) = empty(0) else {
+        panic!("the empty advice inputs take some of the budget");
+    };
+    let executor = Executor::from_config(ExecutionConfig {
+        options: ExecutionOptions::default().with_max_advice_size_bytes(size),
+        ..Default::default()
+    });
+    match executor.into_stepper(program, source_manager) {
+        Err(ExecutionError::AdviceError {
+            err: AdviceError::SizeBudgetExceeded { .. },
+            ..
+        }) => {}
+        Err(other) => panic!("expected the advice budget to be exceeded: {other:?}"),
+        Ok(_) => panic!("an advice map over the budget must not give a stepper"),
+    }
+}

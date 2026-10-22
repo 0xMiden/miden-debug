@@ -168,16 +168,9 @@ impl RemoteState {
         let ui_state = client.handshake().map_err(Report::msg)?;
         let snapshot = convert_ui_state(&ui_state, source_manager);
 
-        // The remote session shows the server's state through an executor that never steps;
-        // its stepper holds an empty program so that it has a processor and a context.
-        let placeholder = miden_assembly::Assembler::new(source_manager.clone())
-            .assemble_program("remote", "begin nop end")
-            .map_err(Report::msg)?;
-        let stepper = Stepper::for_package(
-            FastProcessor::new(StackInputs::default()),
-            Arc::from(placeholder),
-        )
-        .map_err(Report::msg)?;
+        // The remote session shows the server's state through an executor that steps nothing
+        // of its own: its stepper is finished from the start.
+        let stepper = Stepper::finished(FastProcessor::new(StackInputs::default()));
         let debug_vars = DebugVarTracker::new(Rc::new(RefCell::new(Default::default())));
         let executor = DebugExecutor {
             stepper,

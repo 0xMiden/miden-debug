@@ -13,7 +13,10 @@ use miden_processor::{
 
 pub(crate) use super::source::{CurrentCycleInfo, extract_current_op};
 use super::{
-    DebuggerHost, ExecutionTrace, cycle::CycleInfo, source::SourceContext, stepper::Stepper,
+    DebuggerHost, Event, ExecutionTrace,
+    cycle::CycleInfo,
+    source::SourceContext,
+    stepper::{Stepped, Stepper},
 };
 use crate::{
     Breakpoint, BreakpointType, OperationMatcher,
@@ -99,9 +102,49 @@ impl DebugExecutor {
         self.stepper.processor()
     }
 
-    /// The resume context for the next step; `None` once the program has finished.
+    /// The resume context for the next step; `None` once the program is stopped, successfully
+    /// or not, or a step did not complete.
     pub fn resume_ctx(&self) -> Option<&ResumeContext> {
         self.stepper.resume_ctx()
+    }
+
+    /// An executor over `stepper` and `host` at the start of the execution, whose call stack
+    /// follows the frame events written to `events` and whose declarations follow the records
+    /// written to `debug_var_events`.
+    pub(crate) fn new(
+        stepper: Stepper,
+        host: DebuggerHost<dyn miden_assembly_syntax::debuginfo::SourceManager>,
+        events: Arc<miden_utils_sync::RwLock<alloc::collections::BTreeMap<RowIndex, Event>>>,
+        debug_var_events: alloc::rc::Rc<
+            core::cell::RefCell<
+                alloc::collections::BTreeMap<
+                    RowIndex,
+                    Vec<miden_assembly_syntax::ast::DebugVarInfo>,
+                >,
+            >,
+        >,
+        profiler: Profiler,
+    ) -> Self {
+        let root_context = ContextId::root();
+        Self {
+            stepper,
+            host,
+            current_stack: Vec::new(),
+            current_op: None,
+            current_asmop: None,
+            stack_outputs: Default::default(),
+            contexts: Default::default(),
+            root_context,
+            current_context: root_context,
+            callstack: CallStack::new(events),
+            current_proc: None,
+            debug_vars: DebugVarTracker::new(debug_var_events),
+            last_debug_var_count: 0,
+            recent: VecDeque::with_capacity(5),
+            cycle: 0,
+            stopped: false,
+            profiler,
+        }
     }
 }
 
@@ -161,8 +204,10 @@ impl DebugExecutor {
     /// `on_cycle` runs before the cycle executes, after the profiler's instruments received the
     /// same record, so it sees a cycle that fails too. The step that finalizes a finished
     /// program runs no cycle and is not described. Unlike the [`Stepper`] it drives, a step
-    /// after a failure is not an error: it returns `Ok(None)` like a step after the end.
-    /// Otherwise like [`Self::step`].
+    /// after a failure is not an error: it returns `Ok(None)` like a step after the end. A
+    /// step after a panic that unwound through a step, which only a caller that catches panics
+    /// can make, returns the stepper's error once and `Ok(None)` after that. Otherwise like
+    /// [`Self::step`].
     pub fn step_with(
         &mut self,
         on_cycle: impl FnOnce(&CycleInfo<'_>),
@@ -194,9 +239,9 @@ impl DebugExecutor {
             return Ok(None);
         }
 
-        // What the step was about to run, kept past the cycle for the state it leaves behind.
-        let mut described = None;
         let next_cycle = RowIndex::from((self.cycle + 1) as u32);
+        // What the step was about to run comes back with the result, for the state the cycle
+        // leaves behind.
         let step_result = self.stepper.step_sync_described(&mut self.host, |step| {
             let source = step.source;
             let CurrentCycleInfo {
@@ -231,23 +276,26 @@ impl DebugExecutor {
                 self.profiler.on_cycle(cycle);
                 on_cycle(cycle);
             }
-            described = Some(DescribedStep {
+            DescribedStep {
                 op,
                 control_flow_kind,
                 asmop,
                 debug_var_count,
                 inline_frames: source.inline_frames().to_vec(),
-            });
+            }
         });
         match step_result {
-            Ok(true) => {
-                let DescribedStep {
-                    op,
-                    control_flow_kind,
-                    asmop: source_asmop,
-                    debug_var_count,
-                    inline_frames,
-                } = described.expect("a running step was described");
+            Ok(Some(Stepped {
+                described:
+                    DescribedStep {
+                        op,
+                        control_flow_kind,
+                        asmop: source_asmop,
+                        debug_var_count,
+                        inline_frames,
+                    },
+                running: true,
+            })) => {
                 self.cycle = self.stepper.cycle();
 
                 // Query processor state
@@ -290,7 +338,9 @@ impl DebugExecutor {
 
                 Ok(exited)
             }
-            Ok(false) => {
+            // The finalization step, or a stepper already finished under an executor whose
+            // `stopped` flag was reset: both end the program here.
+            Ok(Some(Stepped { running: false, .. })) | Ok(None) => {
                 // Program completed: no invocation remains available for inspection.
                 self.debug_vars.reset();
                 self.stopped = true;
@@ -311,6 +361,7 @@ impl DebugExecutor {
                 Ok(None)
             }
             Err(err) => {
+                self.cycle = self.stepper.cycle();
                 self.stopped = true;
                 self.last_debug_var_count = 0;
                 Err(err)

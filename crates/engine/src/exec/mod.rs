@@ -29,7 +29,7 @@ pub use self::{
     },
     collect_trace::{CallTraceReplay, replay_call_trace},
     config::ExecutionConfig,
-    cycle::{CycleInfo, NodeStart, SourceTracker},
+    cycle::{CycleInfo, NodeStart},
     diagnostic::DiagnosticExecutor,
     event::Event,
     executor::Executor,

@@ -18,8 +18,7 @@ use miden_debug_types::{ByteIndex, SourceManager};
 use miden_mast_package::Package;
 use miden_package_registry::PackageCache;
 use miden_processor::{
-    ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt, LoadedMastForest,
-    ProcessorState,
+    ExecutionError, ExecutionOptions, FastProcessor, Felt, LoadedMastForest, ProcessorState,
     advice::{AdviceInputs, AdviceMutation},
     event::{EventError, EventHandler, EventName},
     trace::RowIndex,
@@ -33,7 +32,7 @@ use super::{
 };
 use crate::{
     HybridPackageRegistry,
-    debug::{CallStack, DebugVarTracker, NativePtr},
+    debug::NativePtr,
     felt::FromMidenRepr,
     profiling::{Profiler, ProfilerConfig},
 };
@@ -173,31 +172,15 @@ impl Executor {
         let processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
             .expect("advice inputs should fit advice map limits");
 
-        let root_context = ContextId::root();
         let stepper =
             Stepper::for_package(processor, package).expect("failed to get initial resume context");
-
-        let callstack = CallStack::new(events);
-        let debug_vars = DebugVarTracker::new(debug_var_events);
-        DebugExecutor {
+        DebugExecutor::new(
             stepper,
             host,
-            current_stack: vec![],
-            current_op: None,
-            current_asmop: None,
-            stack_outputs: Default::default(),
-            contexts: Default::default(),
-            root_context,
-            current_context: root_context,
-            callstack,
-            current_proc: None,
-            debug_vars,
-            last_debug_var_count: 0,
-            recent: VecDeque::with_capacity(5),
-            cycle: 0,
-            stopped: false,
-            profiler: Profiler::from_config(self.profiler_config),
-        }
+            events,
+            debug_var_events,
+            Profiler::from_config(self.profiler_config),
+        )
     }
 
     /// Convert this [Executor] into a [Stepper] over `package` and the host to drive it with.
@@ -293,31 +276,15 @@ impl Executor {
         let processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
             .expect("advice inputs should fit advice map limits");
 
-        let root_context = ContextId::root();
         let stepper =
             Stepper::for_package(processor, package).expect("failed to get initial resume context");
-
-        let callstack = CallStack::new(events);
-        let debug_vars = DebugVarTracker::new(debug_var_events);
-        DebugExecutor {
+        DebugExecutor::new(
             stepper,
             host,
-            current_stack: vec![],
-            current_op: None,
-            current_asmop: None,
-            stack_outputs: Default::default(),
-            contexts: Default::default(),
-            root_context,
-            current_context: root_context,
-            callstack,
-            current_proc: None,
-            debug_vars,
-            last_debug_var_count: 0,
-            recent: VecDeque::with_capacity(5),
-            cycle: 0,
-            stopped: false,
-            profiler: Profiler::from_config(self.profiler_config),
-        }
+            events,
+            debug_var_events,
+            Profiler::from_config(self.profiler_config),
+        )
     }
 
     /// Execute the given program until termination, producing a trace

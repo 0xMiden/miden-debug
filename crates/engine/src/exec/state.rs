@@ -33,7 +33,7 @@ use crate::{
 pub struct DebugExecutor {
     /// The stepper that runs the program: it owns the processor and the resume context, and
     /// describes every cycle before it runs
-    pub stepper: Stepper,
+    stepper: Stepper,
     /// The host providing debugging callbacks
     pub host: DebuggerHost<dyn miden_assembly_syntax::debuginfo::SourceManager>,
 
@@ -64,11 +64,13 @@ pub struct DebugExecutor {
     /// A sliding window of the last 5 operations successfully executed by the VM
     pub recent: VecDeque<Operation>,
     /// The current clock cycle: the stepper's, mirrored after each step so that a session that
-    /// stands in for a remote execution can show its own
+    /// stands in for a remote execution can show its own. After a cycle that completes and
+    /// then trips a limit it is one ahead of the other fields, which show the last described
+    /// cycle
     pub cycle: usize,
     /// Whether or not execution has terminated. Set by a step that finishes or fails the
-    /// program; a session that stands in for a remote execution sets it itself. Once set, a
-    /// step does nothing
+    /// program, or finds the stepper already stopped; a session that stands in for a remote
+    /// execution sets it itself. Once set, a step does nothing
     pub stopped: bool,
     /// The profiler used by this executor
     pub profiler: Profiler,
@@ -109,23 +111,19 @@ impl DebugExecutor {
     }
 
     /// An executor over `stepper` and `host` at the start of the execution, whose call stack
-    /// follows the frame events written to `events` and whose declarations follow the records
-    /// written to `debug_var_events`.
-    pub(crate) fn new(
+    /// follows the frame events written to `events`, with `profiler` receiving the cycles.
+    ///
+    /// [`Executor::into_debug`](crate::Executor::into_debug) builds one over a package; a
+    /// session that shows an execution running elsewhere builds one over
+    /// [`Stepper::finished`] and sets the state it displays.
+    pub fn new(
         stepper: Stepper,
         host: DebuggerHost<dyn miden_assembly_syntax::debuginfo::SourceManager>,
         events: Arc<miden_utils_sync::RwLock<alloc::collections::BTreeMap<RowIndex, Event>>>,
-        debug_var_events: alloc::rc::Rc<
-            core::cell::RefCell<
-                alloc::collections::BTreeMap<
-                    RowIndex,
-                    Vec<miden_assembly_syntax::ast::DebugVarInfo>,
-                >,
-            >,
-        >,
         profiler: Profiler,
     ) -> Self {
         let root_context = ContextId::root();
+        let debug_var_events = alloc::rc::Rc::new(core::cell::RefCell::new(Default::default()));
         Self {
             stepper,
             host,
@@ -234,7 +232,11 @@ impl DebugExecutor {
         observe: impl FnOnce(&Observation<'_>),
         on_cycle: impl FnOnce(&CycleInfo<'_>),
     ) -> Result<Option<CallFrame>, ExecutionError> {
-        if self.stopped {
+        // A stepper that is stopped, because it was created so for a stand-in or because a
+        // caller reset `stopped` after the program ended, has nothing to run: nothing of the
+        // state for inspection changes.
+        if self.stopped || self.stepper.stopped() {
+            self.stopped = true;
             self.last_debug_var_count = 0;
             return Ok(None);
         }
@@ -338,8 +340,8 @@ impl DebugExecutor {
 
                 Ok(exited)
             }
-            // The finalization step, or a stepper already finished under an executor whose
-            // `stopped` flag was reset: both end the program here.
+            // The finalization step; `None` cannot come back since a stopped stepper returned
+            // above, and is treated the same.
             Ok(Some(Stepped { running: false, .. })) | Ok(None) => {
                 // Program completed: no invocation remains available for inspection.
                 self.debug_vars.reset();
@@ -361,6 +363,7 @@ impl DebugExecutor {
                 Ok(None)
             }
             Err(err) => {
+                // A cycle that completes and then trips a limit is on the clock.
                 self.cycle = self.stepper.cycle();
                 self.stopped = true;
                 self.last_debug_var_count = 0;

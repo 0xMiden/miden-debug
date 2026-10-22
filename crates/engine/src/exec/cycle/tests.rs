@@ -305,7 +305,7 @@ fn external_loop_body_does_not_pile_up_open_nodes() {
     let iterations = 12;
     let mut executor = Executor::new(vec![Felt::new(iterations).unwrap()]);
     executor.with_package(library.clone()).unwrap();
-    let (mut stepper, mut host) = executor.into_stepper(package, source_manager);
+    let (mut stepper, mut host) = executor.into_stepper(package, source_manager).unwrap();
     let mut deepest = 0;
     let mut body_starts = 0;
     let mut first_in_library = None;
@@ -372,7 +372,7 @@ fn external_siblings_under_a_foreign_root_have_no_parent() {
     let mut executor = Executor::new(Vec::new());
     executor.with_package(leaf.clone()).unwrap();
     executor.with_package(mid.clone()).unwrap();
-    let (mut stepper, mut host) = executor.into_stepper(package.clone(), source_manager);
+    let (mut stepper, mut host) = executor.into_stepper(package.clone(), source_manager).unwrap();
     let mut external_starts = Vec::new();
     let mut open_after_return = None;
     let mut was_in_library = false;
@@ -446,7 +446,7 @@ fn adjacent_calls_of_a_loop_only_library_procedure_do_not_chain() {
     // Each call pops a 1, loops once, pushes a 0 and pops it as the exit condition.
     let mut executor = Executor::new(vec![Felt::ONE, Felt::ONE, Felt::ONE]);
     executor.with_package(library.clone()).unwrap();
-    let (mut stepper, mut host) = executor.into_stepper(package, source_manager);
+    let (mut stepper, mut host) = executor.into_stepper(package, source_manager).unwrap();
     let mut starts = Vec::new();
     stepper
         .run_sync(&mut host, |cycle| {
@@ -723,7 +723,7 @@ fn a_library_without_debug_info_does_not_inherit_the_pending_one() {
     let debug_info = Arc::new(package.debug_info().unwrap().unwrap());
     let mut executor = Executor::new(Vec::new());
     executor.with_package(library.clone()).unwrap();
-    let (_, mut host) = executor.into_stepper(package.clone(), source_manager);
+    let (_, mut host) = executor.into_stepper(package.clone(), source_manager).unwrap();
     let mut processor = FastProcessor::new(StackInputs::default());
     let ctx = processor.get_initial_resume_context(&package.unwrap_program()).unwrap();
     let mut stepper = Stepper::new(processor, ctx).with_debug_info(debug_info);
@@ -862,7 +862,7 @@ fn a_boundary_is_kept_for_a_forest_without_debug_info() {
     let mut executor = Executor::new(vec![Felt::ONE, Felt::ONE]);
     executor.with_package(leaf.clone()).unwrap();
     executor.with_package(mid.clone()).unwrap();
-    let (mut stepper, mut host) = executor.into_stepper(package, source_manager);
+    let (mut stepper, mut host) = executor.into_stepper(package, source_manager).unwrap();
     let mut loop_starts = Vec::new();
     let mut open_counts = Vec::new();
     while stepper
@@ -978,7 +978,7 @@ fn callback_stepper(
     let mut executor = Executor::new(Vec::new());
     executor.with_package(library.clone()).unwrap();
     executor.with_package(package.clone()).unwrap();
-    executor.into_stepper(package.clone(), source_manager)
+    executor.into_stepper(package.clone(), source_manager).unwrap()
 }
 
 /// A library procedure whose root is itself a dynamic node, calling back into the program:
@@ -1072,7 +1072,7 @@ fn dynamic_calls_into_another_forest_are_bounded() {
         .unwrap();
     let mut executor = Executor::new(Vec::new());
     executor.with_package(library.clone()).unwrap();
-    let (mut stepper, mut host) = executor.into_stepper(package.clone(), source_manager);
+    let (mut stepper, mut host) = executor.into_stepper(package.clone(), source_manager).unwrap();
     let mut roots = Vec::new();
     let mut dynamic_nodes = Vec::new();
     let mut in_program = Vec::new();

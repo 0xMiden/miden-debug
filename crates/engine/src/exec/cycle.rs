@@ -338,10 +338,10 @@ impl SourceTracker {
     /// node, whose start was never described, gets no parent rather than a node of the caller.
     /// The second rule covers a node whose parent is open but does not list it, which happens
     /// when the debug info and the forest disagree; a loop that exited but is still open never
-    /// lists its sibling as a child, so the first rule skips it. Such a loop could still be
-    /// returned by the second rule for a sibling under a root whose start was never described,
-    /// but the assembler wraps every `while.true` in a split whose finish closes the loop before
-    /// the sibling starts, so it does not happen for assembled programs.
+    /// lists its sibling as a child, so the first rule skips it, and the second never returns a
+    /// loop: a loop's only child is its body, which the first rule finds, and an exited loop
+    /// stays open until its parent's finish, so under a root whose start was never described a
+    /// `do ... while` loop would otherwise be handed to its sibling.
     fn parent_of(
         &self,
         forest: &Arc<MastForest>,
@@ -358,7 +358,15 @@ impl SourceTracker {
                 .source_node(*node)
                 .is_some_and(|source| source.children.contains(&child))
         };
-        same_forest.clone().find(lists_child).or_else(|| same_forest.clone().next())
+        let is_loop = |node: &DebugSourceNodeId| {
+            debug_info.source_node(*node).is_some_and(|source| {
+                matches!(forest.get_node_by_id(source.exec_node), Some(MastNode::Loop(_)))
+            })
+        };
+        same_forest
+            .clone()
+            .find(lists_child)
+            .or_else(|| same_forest.clone().find(|node| !is_loop(node)))
     }
 
     /// Pops the open nodes above `node` of `forest`, and `node` itself unless `keep` is set.

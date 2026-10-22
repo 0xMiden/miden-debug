@@ -1,18 +1,13 @@
 use alloc::{
     collections::{BTreeMap, VecDeque},
-    rc::Rc,
     string::String,
     sync::Arc,
     vec::Vec,
 };
-use core::{
-    cell::{Cell, RefCell},
-    fmt,
-    ops::Deref,
-};
+use core::{cell::Cell, fmt, ops::Deref};
 
 use log::Level;
-use miden_assembly_syntax::{ast::DebugVarInfo, debuginfo::SourceFile, diagnostics::Report};
+use miden_assembly_syntax::{debuginfo::SourceFile, diagnostics::Report};
 use miden_core::program::StackInputs;
 use miden_debug_types::{ByteIndex, SourceManager};
 use miden_mast_package::Package;
@@ -166,22 +161,12 @@ impl Executor {
         let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
         register_builtin_event_handlers(&mut host, Some(Arc::clone(&events)));
 
-        // Set up debug variable tracking
-        let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
-            Rc::new(Default::default());
-
         let processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
             .expect("advice inputs should fit advice map limits");
 
         let stepper =
             Stepper::for_package(processor, package).expect("failed to get initial resume context");
-        DebugExecutor::new(
-            stepper,
-            host,
-            events,
-            debug_var_events,
-            Profiler::from_config(self.profiler_config),
-        )
+        DebugExecutor::new(stepper, host, events, Profiler::from_config(self.profiler_config))
     }
 
     /// Convert this [Executor] into a [Stepper] over `package` and the host to drive it with.
@@ -192,15 +177,15 @@ impl Executor {
     /// this the cheap way to step a program to its end while observing every cycle. The profiler
     /// configuration is not used; observe the cycles through the stepper's callback instead.
     ///
-    /// Panics, as [`Executor::into_debug`] does, when `package` is not a program, the advice
-    /// inputs do not fit the options, an event handler cannot be registered, or
-    /// [`Stepper::for_package`] fails: the package's advice map conflicts with the processor's,
-    /// or its debug info cannot be used with its program.
+    /// Fails as [`Stepper::for_package`] does: the package's advice map conflicts with the
+    /// processor's, or its debug info cannot be used with its program. Panics, as
+    /// [`Executor::into_debug`] does, when `package` is not a program, the advice inputs do not
+    /// fit the options, or an event handler cannot be registered.
     pub fn into_stepper(
         mut self,
         package: Arc<Package>,
         source_manager: Arc<dyn SourceManager>,
-    ) -> (Stepper, DebuggerHost<dyn SourceManager>) {
+    ) -> Result<(Stepper, DebuggerHost<dyn SourceManager>), ExecutionError> {
         assert!(package.is_program());
         if !self.profiler_config.instruments.is_empty() {
             log::warn!("a stepper runs no profiler; the configured instruments are dropped");
@@ -211,9 +196,8 @@ impl Executor {
 
         let processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
             .expect("advice inputs should fit advice map limits");
-        let stepper =
-            Stepper::for_package(processor, package).expect("failed to get initial resume context");
-        (stepper, host)
+        let stepper = Stepper::for_package(processor, package)?;
+        Ok((stepper, host))
     }
 
     /// The host with the linked packages loaded.
@@ -270,9 +254,6 @@ impl Executor {
         }
         host.set_event_replay(event_replay);
 
-        let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
-            Rc::new(Default::default());
-
         let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
         register_builtin_event_handlers(&mut host, Some(Arc::clone(&events)));
 
@@ -281,13 +262,7 @@ impl Executor {
 
         let stepper =
             Stepper::for_package(processor, package).expect("failed to get initial resume context");
-        DebugExecutor::new(
-            stepper,
-            host,
-            events,
-            debug_var_events,
-            Profiler::from_config(self.profiler_config),
-        )
+        DebugExecutor::new(stepper, host, events, Profiler::from_config(self.profiler_config))
     }
 
     /// Execute the given program until termination, producing a trace

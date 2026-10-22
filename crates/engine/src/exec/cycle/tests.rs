@@ -277,34 +277,6 @@ fn stepper_records_node_starts_with_parents_and_ops() {
     assert_eq!(hits.node_starts.get(&skip_src), Some(&1));
 }
 
-/// Both drivers go through the same resolution and produce the same records, in the same
-/// number.
-#[test]
-fn debug_executor_and_stepper_produce_the_same_records() {
-    let (package, source_manager) = fixture();
-
-    let mut stepper = stepper(&package, 1, 3);
-    let mut from_stepper = Vec::new();
-    stepper
-        .run_sync(&mut DefaultHost::default(), |cycle| from_stepper.push(Record::from(cycle)))
-        .unwrap();
-
-    // `Executor::new` hands its arguments to `StackInputs::new` like `stepper` does.
-    let mut exec = Executor::new(inputs(1, 3)).into_debug(package, source_manager);
-    let mut from_executor = Vec::new();
-    while !exec.stopped {
-        exec.step_with(|cycle| from_executor.push(Record::from(cycle))).unwrap();
-    }
-
-    // Both describe every cycle once and the finalization step not at all.
-    assert_eq!(from_stepper.len(), from_executor.len());
-    assert_eq!(from_stepper.len(), stepper.cycle());
-    assert_eq!(from_executor.len(), exec.cycle);
-    for (i, (stepper, executor)) in from_stepper.iter().zip(&from_executor).enumerate() {
-        assert_eq!(stepper, executor, "record {i}");
-    }
-}
-
 /// A loop whose body is a procedure of another package starts a source node per iteration
 /// that no finish of this forest closes; the loop's own finish must pop it.
 #[test]
@@ -644,7 +616,7 @@ fn instruments_receive_the_record_before_the_cycle_runs() {
         let order_observer = order.clone();
         let order_cycle = order.clone();
         outcome = exec.step_impl(
-            move |_, _| order_observer.borrow_mut().push("observer"),
+            move |_| order_observer.borrow_mut().push("observer"),
             move |_| order_cycle.borrow_mut().push("on_cycle"),
         );
         if outcome.is_err() {

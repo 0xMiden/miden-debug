@@ -495,7 +495,7 @@ fn recursive_locals_belong_to_distinct_invocations_and_retire_on_return() {
             .filter_map(|id| {
                 executor
                     .debug_vars
-                    .resolve(*id, "x", &executor.processor)
+                    .resolve(*id, "x", executor.processor())
                     .and_then(|var| var.raw)
             })
             .collect::<Vec<_>>();
@@ -508,7 +508,7 @@ fn recursive_locals_belong_to_distinct_invocations_and_retire_on_return() {
                 assert!(!executor.debug_vars.has_invocation(*old));
             }
             assert_eq!(
-                executor.debug_vars.resolve(ids[0], "x", &executor.processor).unwrap().raw,
+                executor.debug_vars.resolve(ids[0], "x", executor.processor()).unwrap().raw,
                 Some(Felt::from_u32(99))
             );
             returned = true;
@@ -555,12 +555,12 @@ fn suspended_locals_use_their_own_context_and_post_prologue_frame_pointer() {
                     .and_then(|frame| frame.invocation_id())
                     .unwrap_or_else(|| panic!("{invocation}: {frames:?}"));
                 assert_eq!(
-                    executor.debug_vars.resolve(outer, "x", &executor.processor).unwrap().raw,
+                    executor.debug_vars.resolve(outer, "x", executor.processor()).unwrap().raw,
                     Some(Felt::from_u32(42)),
                     "{invocation}: caller FMP/context"
                 );
                 assert_eq!(
-                    executor.debug_vars.resolve(inner, "x", &executor.processor).unwrap().raw,
+                    executor.debug_vars.resolve(inner, "x", executor.processor()).unwrap().raw,
                     Some(Felt::from_u32(7)),
                     "{invocation}: callee FMP/context"
                 );
@@ -626,7 +626,7 @@ fn frame_base_anchors_refresh_while_active_and_freeze_while_suspended() {
             && executor.debug_vars.get_variable("framed").is_some()
         {
             assert_eq!(
-                executor.debug_vars.resolve(caller, "framed", &executor.processor).unwrap().raw,
+                executor.debug_vars.resolve(caller, "framed", executor.processor()).unwrap().raw,
                 Some(Felt::from_u32(88))
             );
             active_update = true;
@@ -634,7 +634,7 @@ fn frame_base_anchors_refresh_while_active_and_freeze_while_suspended() {
         if op.is_some_and(|op| op.op().as_ref() == "push.5") {
             for name in ["framed", "expression", "live"] {
                 assert_eq!(
-                    executor.debug_vars.resolve(caller, name, &executor.processor).unwrap().raw,
+                    executor.debug_vars.resolve(caller, name, executor.processor()).unwrap().raw,
                     Some(Felt::from_u32(99)),
                     "{name}: frozen base with live storage"
                 );
@@ -667,7 +667,7 @@ fn invocation_local_values_and_ownership_match_during_replay() {
                     frame.name().to_string(),
                     executor
                         .debug_vars
-                        .resolve(id, "x", &executor.processor)
+                        .resolve(id, "x", executor.processor())
                         .and_then(|variable| variable.raw),
                 ))
             })
@@ -711,7 +711,7 @@ fn unavailable_transient_values_remain_distinct_from_explicit_kills() {
             let current = executor.debug_vars.current_invocation().unwrap();
             let value = executor
                 .debug_vars
-                .resolve(current, "x", &executor.processor)
+                .resolve(current, "x", executor.processor())
                 .expect("unreadable declarations remain visible");
             assert!(value.raw.is_none());
             assert_eq!(value.value, "<unavailable>");
@@ -823,9 +823,9 @@ fn check_linked_package_locals(invocation: &str, stripped: bool) {
             !executor.callstack.has_recovered_current_frame()
                 && executor.callstack.frames().len() == 2
                 && executor
-                    .processor
+                    .processor()
                     .memory()
-                    .read_element(executor.processor.state().ctx(), Felt::from_u32(200))
+                    .read_element(executor.processor().state().ctx(), Felt::from_u32(200))
                     .ok()
                     == Some(Felt::from_u32(17))
         } else {
@@ -834,12 +834,12 @@ fn check_linked_package_locals(invocation: &str, stripped: bool) {
         if in_callee {
             let caller = caller_id.expect("caller declarations must be observed before the call");
             assert_eq!(
-                executor.debug_vars.resolve(caller, "x", &executor.processor).unwrap().raw,
+                executor.debug_vars.resolve(caller, "x", executor.processor()).unwrap().raw,
                 Some(Felt::from_u32(42)),
                 "{invocation}: caller's stack snapshot survives package entry"
             );
             assert_eq!(
-                executor.debug_vars.resolve(caller, "cell", &executor.processor).unwrap().raw,
+                executor.debug_vars.resolve(caller, "cell", executor.processor()).unwrap().raw,
                 Some(Felt::from_u32(caller_cell)),
                 "{invocation}: caller memory uses its own context"
             );
@@ -859,11 +859,11 @@ fn check_linked_package_locals(invocation: &str, stripped: bool) {
                 assert_ne!(caller, callee);
                 callee_id = Some(callee);
                 assert_eq!(
-                    executor.debug_vars.resolve(callee, "x", &executor.processor).unwrap().raw,
+                    executor.debug_vars.resolve(callee, "x", executor.processor()).unwrap().raw,
                     Some(Felt::from_u32(7))
                 );
                 assert_eq!(
-                    executor.debug_vars.resolve(callee, "cell", &executor.processor).unwrap().raw,
+                    executor.debug_vars.resolve(callee, "cell", executor.processor()).unwrap().raw,
                     Some(Felt::from_u32(17))
                 );
             }
@@ -873,11 +873,11 @@ fn check_linked_package_locals(invocation: &str, stripped: bool) {
             assert_eq!(current, caller_id, "return restores the original caller identity");
             let caller = current.unwrap();
             assert_eq!(
-                executor.debug_vars.resolve(caller, "x", &executor.processor).unwrap().raw,
+                executor.debug_vars.resolve(caller, "x", executor.processor()).unwrap().raw,
                 Some(Felt::from_u32(42))
             );
             assert_eq!(
-                executor.debug_vars.resolve(caller, "cell", &executor.processor).unwrap().raw,
+                executor.debug_vars.resolve(caller, "cell", executor.processor()).unwrap().raw,
                 Some(Felt::from_u32(caller_cell))
             );
             if let Some(callee) = callee_id {
@@ -945,15 +945,15 @@ fn caller_frame_base_includes_the_final_write_before_a_merged_exec() {
                 let caller = executor.callstack.logical_frames("")[0].invocation_id().unwrap();
                 assert_eq!(
                     executor
-                        .processor
+                        .processor()
                         .memory()
-                        .read_element(executor.processor.state().ctx(), Felt::from_u32(48))
+                        .read_element(executor.processor().state().ctx(), Felt::from_u32(48))
                         .unwrap(),
                     Felt::from_u32(1200),
                     "fixture must write the new frame-base address"
                 );
                 assert_eq!(
-                    executor.debug_vars.resolve(caller, "x", &executor.processor).unwrap().raw,
+                    executor.debug_vars.resolve(caller, "x", executor.processor()).unwrap().raw,
                     Some(Felt::from_u32(88)),
                     "batch offset {padding}: suspended frame must include its final store"
                 );

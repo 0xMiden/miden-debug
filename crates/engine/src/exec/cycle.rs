@@ -90,7 +90,7 @@ pub struct NodeStart {
 /// above the innermost boundary. One tracker follows one execution from start to end; it must
 /// see every cycle, in order.
 #[derive(Debug, Default)]
-pub struct SourceTracker {
+pub(crate) struct SourceTracker {
     /// Open nodes and forest boundaries, innermost last.
     open: Vec<Entry>,
     /// Positions of the boundaries in `open`, innermost last.

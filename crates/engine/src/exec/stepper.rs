@@ -28,6 +28,15 @@ pub(crate) struct Described<'a> {
     pub cycle: Option<&'a CycleInfo<'a>>,
 }
 
+/// What a described step left: the value `describe` returned, and whether the program is
+/// still running after the step.
+pub(crate) struct Stepped<R> {
+    /// What `describe` made of the step before it ran.
+    pub described: R,
+    /// Whether the program is still running.
+    pub running: bool,
+}
+
 /// Steps a processor one cycle at a time and describes each cycle before it runs.
 ///
 /// Unlike [`DebugExecutor`](crate::DebugExecutor) it owns no host and keeps no state for
@@ -74,6 +83,20 @@ impl Stepper {
         Self {
             processor,
             state: State::Ready(resume_ctx),
+            pending_debug_info: None,
+            tracker: SourceTracker::new(),
+        }
+    }
+
+    /// Creates a stepper that has nothing left to run: it holds `processor` and is stopped from
+    /// the start, so a step finalizes at once and describes nothing.
+    ///
+    /// For a stand-in, such as a session that shows an execution running elsewhere and must
+    /// not run anything of its own.
+    pub fn finished(processor: FastProcessor) -> Self {
+        Self {
+            processor,
+            state: State::Finished,
             pending_debug_info: None,
             tracker: SourceTracker::new(),
         }
@@ -140,8 +163,8 @@ impl Stepper {
         self.processor
     }
 
-    /// The context the next step consumes; `None` once the program is stopped or a step did
-    /// not complete.
+    /// The context the next step consumes; `None` once the program is stopped, successfully or
+    /// not, or a step did not complete.
     pub fn resume_ctx(&self) -> Option<&ResumeContext> {
         match &self.state {
             State::Ready(ctx) => Some(ctx),
@@ -166,24 +189,27 @@ impl Stepper {
         host: &mut impl SyncHost,
         on_cycle: impl FnOnce(&CycleInfo<'_>),
     ) -> Result<bool, ExecutionError> {
-        self.step_sync_described(host, |described| {
+        let stepped = self.step_sync_described(host, |described| {
             if let Some(cycle) = described.cycle {
                 on_cycle(cycle);
             }
-        })
+        })?;
+        Ok(stepped.is_some_and(|stepped| stepped.running))
     }
 
     /// Executes one step with a synchronous host, showing `describe` what it is about to run
     /// first: the finalization step included, with no cycle record.
     ///
-    /// Otherwise like [`Self::step_sync`].
-    pub(crate) fn step_sync_described(
+    /// Returns what `describe` made of the step and whether the program still runs; `None`
+    /// once the program has finished, when no step runs and nothing is described. Otherwise
+    /// like [`Self::step_sync`].
+    pub(crate) fn step_sync_described<R>(
         &mut self,
         host: &mut impl SyncHost,
-        describe: impl FnOnce(&Described<'_>),
-    ) -> Result<bool, ExecutionError> {
-        let Some(Step { ctx, debug_info }) = self.before_step(describe)? else {
-            return Ok(false);
+        describe: impl FnOnce(&Described<'_>) -> R,
+    ) -> Result<Option<Stepped<R>>, ExecutionError> {
+        let Some((Step { ctx, debug_info }, described)) = self.before_step(describe)? else {
+            return Ok(None);
         };
         let next = match debug_info {
             Some(debug_info) => {
@@ -191,7 +217,8 @@ impl Stepper {
             }
             None => self.processor.step_sync(host, ctx),
         };
-        self.after_step(next)
+        let running = self.after_step(next)?;
+        Ok(Some(Stepped { described, running }))
     }
 
     /// Executes one step with an asynchronous host, describing its cycle to `on_cycle` first.
@@ -207,7 +234,7 @@ impl Stepper {
                 on_cycle(cycle);
             }
         };
-        let Some(Step { ctx, debug_info }) = self.before_step(describe)? else {
+        let Some((Step { ctx, debug_info }, ())) = self.before_step(describe)? else {
             return Ok(false);
         };
         let next = match debug_info {
@@ -262,11 +289,11 @@ impl Stepper {
     }
 
     /// Takes the resume context, shows `describe` what the step is about to run, and returns
-    /// what the step needs. `None` once the program has finished.
-    fn before_step(
+    /// what the step needs with what `describe` returned. `None` once the program has finished.
+    fn before_step<R>(
         &mut self,
-        describe: impl FnOnce(&Described<'_>),
-    ) -> Result<Option<Step>, ExecutionError> {
+        describe: impl FnOnce(&Described<'_>) -> R,
+    ) -> Result<Option<(Step, R)>, ExecutionError> {
         let ctx = match core::mem::replace(&mut self.state, State::Stepping) {
             State::Ready(ctx) => ctx,
             State::Finished => {
@@ -289,13 +316,13 @@ impl Stepper {
         let debug_info = ctx.debug_info().or(pending);
         let source = SourceContext::with_debug_info(&ctx, debug_info.clone());
         let cycle = self.tracker.observe(&ctx, &source);
-        describe(&Described {
+        let described = describe(&Described {
             processor: &self.processor,
             ctx: &ctx,
             source: &source,
             cycle: cycle.as_ref(),
         });
-        Ok(Some(Step { ctx, debug_info }))
+        Ok(Some((Step { ctx, debug_info }, described)))
     }
 
     /// Records the result of a step.
@@ -319,19 +346,20 @@ impl Stepper {
 
 /// What one step runs: the context it consumes and the debug info to run it with.
 struct Step {
+    /// The context the step consumes.
     ctx: ResumeContext,
+    /// The debug info the step runs with, the context's own or the pending one.
     debug_info: Option<Arc<PackageDebugInfo>>,
 }
 
 /// Packages a processor that ran to its end into the output a full execution returns, with
 /// `stack` as the outputs.
-///
-/// `into_parts` gives the advice provider and the memory but drops the deferred state, so the
-/// precompile witness is exported from a clone of it first.
 pub(crate) fn execution_output(
     processor: FastProcessor,
     stack: StackOutputs,
 ) -> Result<ExecutionOutput, ExecutionError> {
+    // `into_parts` gives the advice provider and the memory but drops the deferred state, so
+    // the precompile witness is exported from a clone of it first.
     let precompile_witness = processor
         .deferred_state()
         .clone()

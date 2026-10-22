@@ -280,9 +280,9 @@ fn into_stepper_keeps_the_event_handlers() {
     assert_eq!(output.stack.get_element(0), Some(Felt::from(42u32)));
 }
 
-/// `into_stepper` returns the error of a program whose initial context cannot be built rather
-/// than panicking as `into_debug` does: the program's advice map conflicts with the advice
-/// inputs, or does not fit the options' advice budget on top of them.
+/// `into_stepper` returns the error of a program whose initial context cannot be built: the
+/// program's advice map conflicts with the advice inputs, or does not fit the options' advice
+/// budget on top of them. A budget that just fits the entry gives a stepper.
 #[test]
 fn into_stepper_returns_the_initial_context_error() {
     use miden_assembly::DefaultSourceManager;
@@ -295,25 +295,26 @@ fn into_stepper_returns_the_initial_context_error() {
         .expect("failed to assemble test program");
     let (key, values) = program.mast_forest().advice_map().iter().next().expect("the entry");
     assert_eq!(values.len(), 2);
+    let into_stepper = |config| {
+        Executor::from_config(config).into_stepper(program.clone(), source_manager.clone())
+    };
+    // The advice error that refuses the stepper.
+    let refusal = |config| match into_stepper(config) {
+        Err(ExecutionError::AdviceError { err, .. }) => err,
+        Err(other) => panic!("expected an advice error: {other:?}"),
+        Ok(_) => panic!("the program's advice map must not give a stepper"),
+    };
 
     // The same key with another value.
     let conflicting = AdviceInputs::default().with_map([(*key, vec![Felt::from(7u32)])]);
-    let executor = Executor::from_config(ExecutionConfig {
+    let error = refusal(ExecutionConfig {
         advice_inputs: conflicting,
         ..Default::default()
     });
-    match executor.into_stepper(program.clone(), source_manager.clone()) {
-        Err(ExecutionError::AdviceError {
-            err: AdviceError::MapKeyAlreadyPresent { .. },
-            ..
-        }) => {}
-        Err(other) => panic!("expected the advice map conflict: {other:?}"),
-        Ok(_) => panic!("a conflicting advice map must not give a stepper"),
-    }
+    assert!(matches!(error, AdviceError::MapKeyAlreadyPresent { .. }), "{error:?}");
 
-    // A budget the empty advice inputs fill exactly, so the program's own entry exceeds it.
-    // Their size, the empty Merkle store's, is read off the processor's refusal of a budget
-    // of nothing.
+    // The size of the empty advice inputs, the empty Merkle store's, is read off the
+    // processor's refusal of a budget of nothing.
     let empty = |budget| {
         FastProcessor::new_with_options(
             StackInputs::default(),
@@ -324,16 +325,13 @@ fn into_stepper_returns_the_initial_context_error() {
     let Err(AdviceError::SizeBudgetExceeded { current: size, .. }) = empty(0) else {
         panic!("the empty advice inputs take some of the budget");
     };
-    let executor = Executor::from_config(ExecutionConfig {
-        options: ExecutionOptions::default().with_max_advice_size_bytes(size),
+    // The entry takes its key's 32 bytes and its two values' eight bytes each.
+    let entry = 48;
+    let with_budget = |budget| ExecutionConfig {
+        options: ExecutionOptions::default().with_max_advice_size_bytes(budget),
         ..Default::default()
-    });
-    match executor.into_stepper(program, source_manager) {
-        Err(ExecutionError::AdviceError {
-            err: AdviceError::SizeBudgetExceeded { .. },
-            ..
-        }) => {}
-        Err(other) => panic!("expected the advice budget to be exceeded: {other:?}"),
-        Ok(_) => panic!("an advice map over the budget must not give a stepper"),
-    }
+    };
+    let error = refusal(with_budget(size + entry - 1));
+    assert!(matches!(error, AdviceError::SizeBudgetExceeded { .. }), "{error:?}");
+    assert!(into_stepper(with_budget(size + entry)).is_ok(), "the entry fits the budget");
 }

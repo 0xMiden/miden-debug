@@ -296,6 +296,10 @@ impl SourceTracker {
     /// the same cycle.
     fn return_to(&mut self, depth: usize) -> Option<DebugSourceNodeId> {
         let mut handed_over = None;
+        // With the engine's own host no program pops two boundaries in one cycle: the host
+        // resolves a digest straight to the leaf forest, and the assembler never emits a dynamic
+        // node answered by a forest whose root is external. The loop's second iteration is
+        // therefore not reachable in the tests; it is kept for hosts that behave otherwise.
         while let Some(position) = self.boundaries.last().copied() {
             let Entry::Boundary {
                 dynamic,
@@ -307,8 +311,8 @@ impl SourceTracker {
             if depth > *unwound_at {
                 break;
             }
-            // Only a same-forest callee root starts exactly at the threshold; a cycle deeper
-            // than the boundary's own node is not one.
+            // Only a same-forest callee root starts exactly at the threshold; a cycle that
+            // unwound below it is a return, not the callee's root start, and hands nothing over.
             handed_over = (depth == *unwound_at).then_some(*dynamic).flatten();
             self.truncate(position);
         }
@@ -319,11 +323,13 @@ impl SourceTracker {
     /// innermost open node of that forest when none does.
     ///
     /// Only the current frame is searched, so a node of a root entered through an external
-    /// node, whose start was never described, gets no parent rather than a node of the
-    /// caller. The
-    /// second rule covers a node whose parent is open but does not list it, which happens when
-    /// the debug info and the forest disagree; a loop that exited but is still open never
-    /// lists its sibling as a child, so the first rule skips it.
+    /// node, whose start was never described, gets no parent rather than a node of the caller.
+    /// The second rule covers a node whose parent is open but does not list it, which happens
+    /// when the debug info and the forest disagree; a loop that exited but is still open never
+    /// lists its sibling as a child, so the first rule skips it. Such a loop could still be
+    /// returned by the second rule for a sibling under a root whose start was never described,
+    /// but the assembler wraps every `while.true` in a split whose finish closes the loop before
+    /// the sibling starts, so it does not happen for assembled programs.
     fn parent_of(
         &self,
         forest: &Arc<MastForest>,

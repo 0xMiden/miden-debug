@@ -635,6 +635,73 @@ fn instruments_receive_the_record_before_the_cycle_runs() {
     );
 }
 
+/// The debug executor describes every cycle of a program that runs to its end, mirrors the
+/// processor's clock, and once stopped neither steps nor describes.
+#[test]
+fn debug_executor_describes_every_cycle_and_stops_at_the_end() {
+    let (package, source_manager) = fixture();
+    let mut exec = Executor::new(inputs(1, 3)).into_debug(package, source_manager);
+    let mut records = Vec::new();
+    while !exec.stopped {
+        exec.step_with(|cycle| records.push(Record::from(cycle))).unwrap();
+    }
+    assert!(!records.is_empty());
+    assert_eq!(records.len(), exec.cycle);
+    assert_eq!(exec.cycle, u32::from(exec.processor().state().clock()) as usize);
+    let mut described = false;
+    assert!(exec.step_with(|_| described = true).unwrap().is_none());
+    assert!(!described, "a step after the end describes nothing");
+    assert!(exec.stopped);
+}
+
+/// A failing step stops the debug executor with the clock mirrored, and the step after it does
+/// nothing instead of failing again.
+#[test]
+fn debug_executor_stops_on_a_failing_step() {
+    let source_manager = Arc::new(DefaultSourceManager::default());
+    let package = miden_assembly::Assembler::new(source_manager.clone())
+        .assemble_program("failing", "begin push.1 drop assert end")
+        .map(Arc::<Package>::from)
+        .unwrap();
+    let mut exec = Executor::new(Vec::new()).into_debug(package, source_manager);
+    let error = loop {
+        if let Err(error) = exec.step() {
+            break error;
+        }
+        assert!(!exec.stopped, "the program fails on `assert` before it ends");
+    };
+    assert!(!matches!(error, ExecutionError::Internal(_)), "{error:?}");
+    assert!(exec.stopped);
+    assert_eq!(exec.cycle, u32::from(exec.processor().state().clock()) as usize);
+    let mut described = false;
+    assert!(exec.step_with(|_| described = true).unwrap().is_none());
+    assert!(!described, "a step after a failure describes nothing");
+    assert!(exec.stopped);
+}
+
+/// A panic that unwinds through a step's callback loses the execution: the next step reports
+/// it once, and the debug executor is stopped after that.
+#[test]
+fn a_step_after_a_panic_in_the_callback_reports_the_lost_execution_once() {
+    let (package, source_manager) = fixture();
+    let mut exec = Executor::new(inputs(1, 3)).into_debug(package, source_manager);
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        exec.step_with(|_| panic!("boom"))
+    }));
+    assert!(unwound.is_err());
+    assert!(!exec.stopped);
+    match exec.step() {
+        Err(ExecutionError::Internal(message)) => {
+            assert!(message.contains("did not complete"), "{message}")
+        }
+        Err(other) => panic!("expected the lost execution to be reported: {other:?}"),
+        Ok(_) => panic!("a step after a lost execution must fail"),
+    }
+    assert!(exec.stopped);
+    assert!(exec.step().unwrap().is_none());
+    assert!(exec.stopped);
+}
+
 /// The pending debug info of a bare-program stepper is spent on the first step: a library
 /// without debug info, entered later, does not inherit it.
 #[test]

@@ -108,9 +108,10 @@ impl Stepper {
     /// Creates a stepper over the program of `package`, with its debug info when it has any,
     /// starting at the entry-point source node the package names.
     ///
-    /// Fails when the package's advice map conflicts with the processor's, or its debug info
-    /// cannot be decoded, does not match its program, or leaves the entry point's source root
-    /// ambiguous or malformed. Panics when `package` is not executable.
+    /// Fails when the package's advice map conflicts with the processor's or, added to the
+    /// processor's advice, exceeds the options' advice budget, or when its debug info cannot be
+    /// decoded, does not match its program, or leaves the entry point's source root ambiguous
+    /// or malformed. Panics when `package` is not executable.
     pub fn for_package(
         mut processor: FastProcessor,
         package: Arc<Package>,

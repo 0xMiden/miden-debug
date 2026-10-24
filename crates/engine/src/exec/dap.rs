@@ -5,7 +5,7 @@ use alloc::{
 };
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     eprintln,
     io::{BufReader, BufWriter},
     net::TcpListener,
@@ -551,10 +551,121 @@ fn present_recorded_frames(frames: &[DapCallFrame]) -> Vec<DapPresentedFrame> {
 /// A source breakpoint stored from a SetBreakpoints request.
 #[derive(Debug, Clone)]
 struct StoredBreakpoint {
+    id: i64,
     /// The source file path as sent by the client.
     path: String,
     /// 1-indexed line number.
-    line: i64,
+    requested_line: i64,
+    line: Option<i64>,
+}
+
+impl StoredBreakpoint {
+    fn as_dap(&self) -> types::Breakpoint {
+        types::Breakpoint {
+            id: Some(self.id),
+            verified: self.line.is_some(),
+            message: match self.line {
+                Some(line) if line != self.requested_line => {
+                    Some(format!("Moved to executable line {line}."))
+                }
+                Some(_) => None,
+                None => Some(
+                    "Pending until executable debug information for this source is loaded.".into(),
+                ),
+            },
+            line: Some(self.line.unwrap_or(self.requested_line)),
+            source: Some(types::Source {
+                path: Some(self.path.clone()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+}
+
+#[derive(Default)]
+struct SourceBreakpoints {
+    entries: Vec<StoredBreakpoint>,
+    packages: BTreeMap<usize, Arc<PackageDebugInfo>>,
+    updates: Vec<events::BreakpointEventBody>,
+    prefixes: Vec<String>,
+    next_id: i64,
+}
+
+impl SourceBreakpoints {
+    fn executable_lines<H: Host>(&self, path: &str, host: &H) -> BTreeSet<i64> {
+        self.packages
+            .values()
+            .flat_map(|info| breakable_source_lines(info, host, path, &self.prefixes))
+            .collect()
+    }
+
+    fn send_updates<R: std::io::Read, W: std::io::Write>(&mut self, server: &mut Server<R, W>) {
+        for update in self.updates.drain(..) {
+            server.send_event(Event::Breakpoint(update)).ok();
+        }
+    }
+
+    fn observe<H: Host>(&mut self, info: Arc<PackageDebugInfo>, host: &H) {
+        let key = Arc::as_ptr(&info) as usize;
+        let Entry::Vacant(entry) = self.packages.entry(key) else {
+            return;
+        };
+        entry.insert(info);
+        let mut lines_by_source = BTreeMap::new();
+        for breakpoint in &self.entries {
+            lines_by_source
+                .entry(breakpoint.path.clone())
+                .or_insert_with(|| self.executable_lines(&breakpoint.path, host));
+        }
+        for breakpoint in &mut self.entries {
+            let line = resolve_breakpoint_line(
+                &lines_by_source[&breakpoint.path],
+                breakpoint.requested_line,
+            );
+            if breakpoint.line != line {
+                breakpoint.line = line;
+                self.updates.push(events::BreakpointEventBody {
+                    reason: types::BreakpointEventReason::Changed,
+                    breakpoint: breakpoint.as_dap(),
+                });
+            }
+        }
+    }
+
+    fn replace<H: Host>(
+        &mut self,
+        path: &str,
+        requested: &[types::SourceBreakpoint],
+        host: &H,
+    ) -> Vec<types::Breakpoint> {
+        self.entries
+            .retain(|breakpoint| !source_paths_match(&breakpoint.path, path, &self.prefixes));
+        let lines = self.executable_lines(path, host);
+        requested
+            .iter()
+            .map(|request| {
+                self.next_id += 1;
+                let breakpoint = StoredBreakpoint {
+                    id: self.next_id,
+                    path: path.into(),
+                    requested_line: request.line,
+                    line: (request.line > 0)
+                        .then(|| resolve_breakpoint_line(&lines, request.line))
+                        .flatten(),
+                };
+                let mut response = breakpoint.as_dap();
+                if request.line <= 0 || path.is_empty() {
+                    response.verified = false;
+                    response.message =
+                        Some("A source path and a positive line number are required.".into());
+                } else {
+                    self.entries.push(breakpoint);
+                }
+                response
+            })
+            .collect()
+    }
 }
 
 /// A function/pattern breakpoint stored from a SetFunctionBreakpoints request.
@@ -570,7 +681,6 @@ struct StoredFunctionBreakpoint {
 }
 
 struct ContinueBreakpoints<'a> {
-    source: &'a [StoredBreakpoint],
     function: &'a [StoredFunctionBreakpoint],
     source_path_prefixes: &'a [String],
 }
@@ -674,13 +784,15 @@ fn breakable_source_lines<H: Host>(
         return lines;
     };
 
-    // Collect all locations for that source file index
-    let mut spans = Vec::with_capacity(256);
-    for location in debug_info.locations() {
-        if location.file_idx == file_idx {
-            spans.push((location.start, location.end));
-        }
-    }
+    let spans = debug_info
+        .nodes()
+        .iter()
+        .flat_map(|node| &node.asm_ops)
+        .filter_map(|operation| operation.location_idx.into_option())
+        .map(|index| debug_info[index])
+        .filter(|location| location.file_idx == file_idx)
+        .map(|location| (location.start, location.end))
+        .collect::<Vec<_>>();
 
     // Extract the first span from those locations so we can request the source file from the host
     let Some(((start, end), spans)) = spans.split_first() else {
@@ -691,22 +803,31 @@ fn breakable_source_lines<H: Host>(
     let path_idx = debug_info[file_idx].path_idx;
     let path = debug_info[path_idx].clone();
     let location = Location::new(path.into(), *start, *end);
-    let (_, Some(source_file)) = host.get_label_and_source_file(&location) else {
-        return lines;
+    let (_, source_file) = host.get_label_and_source_file(&location);
+    let bytes = match source_file {
+        Some(file) => file.as_str().as_bytes().to_vec(),
+        None => {
+            let Some(path) = crate::debug::resolve_source_path(location.uri()) else {
+                return lines;
+            };
+            let Ok(bytes) = std::fs::read(path) else {
+                return lines;
+            };
+            bytes
+        }
     };
-
-    // Map all locations to a unique set of lines on which those locations start
-    let source_content = source_file.content();
-    let last_line = source_content.last_line_index();
-    let last_line_range = source_content.line_range(last_line).unwrap();
+    let line_starts = core::iter::once(0)
+        .chain(
+            bytes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, byte)| (*byte == b'\n').then_some(index + 1)),
+        )
+        .collect::<Vec<_>>();
     for (start, _) in core::iter::once((*start, *end)).chain(spans.iter().copied()) {
-        if start >= last_line_range.end {
-            continue;
-        } else if last_line_range.contains(&start) {
-            lines.insert(last_line.to_u32() as i64 + 1);
-        } else {
-            let line = source_content.line_index(start);
-            lines.insert(line.to_u32() as i64 + 1);
+        let start = start.to_usize();
+        if start < bytes.len() {
+            lines.insert(line_starts.partition_point(|line_start| *line_start <= start) as i64);
         }
     }
 
@@ -1077,12 +1198,14 @@ impl DapInspection {
 
 struct DapDebugVarState {
     debug_vars: DebugVarTracker,
+    source_breakpoints: SourceBreakpoints,
 }
 
 impl DapDebugVarState {
     fn new() -> Self {
         Self {
             debug_vars: DebugVarTracker::new(Rc::new(RefCell::new(BTreeMap::new()))),
+            source_breakpoints: SourceBreakpoints::default(),
         }
     }
 }
@@ -1231,7 +1354,6 @@ impl DapExecutor {
         let writer = BufWriter::new(stream);
 
         let mut server = Server::new(reader, writer);
-        let mut breakpoints: Vec<StoredBreakpoint> = Vec::new();
         let mut function_breakpoints: Vec<StoredFunctionBreakpoint> = Vec::new();
         let mut is_restart = false;
         let mut inspection = DapInspection::default();
@@ -1242,6 +1364,8 @@ impl DapExecutor {
         let mut entry_announced = false;
         let restart_flag = config.restart_requested.clone();
         let source_path_prefixes = config.source_path_prefixes.clone();
+        let mut debug_state = DapDebugVarState::new();
+        debug_state.source_breakpoints.prefixes = source_path_prefixes.clone();
 
         // Outer restart loop — on restart, the DapHostWrapper borrow is dropped,
         // a fresh FastProcessor is created, and the inner event loop re-enters.
@@ -1274,15 +1398,16 @@ impl DapExecutor {
 
             let mut resume_ctx = Some(resume_ctx);
             let mut cycle: usize = 0;
-            let mut current_debug_info: Option<Arc<PackageDebugInfo>> = None;
             let mut current_asmop: Option<AssemblyOp> = None;
             let mut current_inline_frames = Vec::new();
-            let mut debug_state = DapDebugVarState::new();
+            debug_state.debug_vars = DapDebugVarState::new().debug_vars;
 
             // Extract initial asmop and populate the root frame.
             if let Some(ctx) = resume_ctx.as_ref() {
                 let source = SourceContext::new(ctx);
-                current_debug_info = source.debug_info().cloned();
+                if let Some(info) = source.debug_info() {
+                    debug_state.source_breakpoints.observe(info.clone(), &wrapper);
+                }
                 current_asmop = source.asmop();
                 wrapper.recovered.update(ctx, source.source_operation(), current_asmop.as_ref());
                 current_inline_frames = source.inline_frames().to_vec();
@@ -1461,11 +1586,10 @@ impl DapExecutor {
                         server.respond(resp).ok();
 
                         let continue_breakpoints = ContinueBreakpoints {
-                            source: &breakpoints,
                             function: &function_breakpoints,
                             source_path_prefixes: &source_path_prefixes,
                         };
-                        match step_until_breakpoint(
+                        let result = step_until_breakpoint(
                             &mut processor,
                             &mut wrapper,
                             &mut resume_ctx,
@@ -1473,7 +1597,9 @@ impl DapExecutor {
                             &mut current_asmop,
                             &continue_breakpoints,
                             &mut debug_state,
-                        ) {
+                        );
+                        debug_state.source_breakpoints.send_updates(&mut server);
+                        match result {
                             StepResult::Stepped | StepResult::Breakpoint(_) => {
                                 send_ui_state_snapshot(
                                     &mut server,
@@ -1547,6 +1673,7 @@ impl DapExecutor {
                             )
                         };
 
+                        debug_state.source_breakpoints.send_updates(&mut server);
                         match step_result {
                             StepResult::Stepped | StepResult::Breakpoint(_) => {
                                 if resume_ctx.is_none() {
@@ -1590,14 +1717,16 @@ impl DapExecutor {
                         let resp = req.success(ResponseBody::StepIn);
                         server.respond(resp).ok();
 
-                        match step_one(
+                        let result = step_one(
                             &mut processor,
                             &mut wrapper,
                             &mut resume_ctx,
                             &mut cycle,
                             &mut current_asmop,
                             &mut debug_state,
-                        ) {
+                        );
+                        debug_state.source_breakpoints.send_updates(&mut server);
+                        match result {
                             StepResult::Stepped | StepResult::Breakpoint(_) => {
                                 if resume_ctx.is_none() {
                                     server.send_event(Event::Terminated(None)).ok();
@@ -1640,14 +1769,16 @@ impl DapExecutor {
                         let resp = req.success(ResponseBody::StepOut);
                         server.respond(resp).ok();
 
-                        match step_out(
+                        let result = step_out(
                             &mut processor,
                             &mut wrapper,
                             &mut resume_ctx,
                             &mut cycle,
                             &mut current_asmop,
                             &mut debug_state,
-                        ) {
+                        );
+                        debug_state.source_breakpoints.send_updates(&mut server);
+                        match result {
                             StepResult::Stepped | StepResult::Breakpoint(_) => {
                                 if resume_ctx.is_none() {
                                     server.send_event(Event::Terminated(None)).ok();
@@ -1875,59 +2006,11 @@ impl DapExecutor {
                     // --- Breakpoints ---
                     Command::SetBreakpoints(ref args) => {
                         let source_path = args.source.path.clone().unwrap_or_default();
-                        breakpoints.retain(|bp| {
-                            !source_paths_match(&bp.path, &source_path, &source_path_prefixes)
-                        });
-                        let breakable_lines =
-                            if let Some(debug_info) = current_debug_info.as_deref() {
-                                breakable_source_lines(
-                                    debug_info,
-                                    &wrapper,
-                                    &source_path,
-                                    &source_path_prefixes,
-                                )
-                            } else {
-                                BTreeSet::default()
-                            };
-
-                        let mut confirmed = Vec::new();
-                        if let Some(bps) = &args.breakpoints {
-                            for sbp in bps {
-                                let resolved_line =
-                                    resolve_breakpoint_line(&breakable_lines, sbp.line);
-                                let verified = resolved_line.is_some();
-                                let actual_line = resolved_line.unwrap_or(sbp.line);
-                                let message = match resolved_line {
-                                    Some(line) if line != sbp.line => {
-                                        Some(format!("Moved to executable line {line}."))
-                                    }
-                                    Some(_) => None,
-                                    None => Some(
-                                        "No executable Miden operation is mapped to this source \
-                                         file."
-                                            .into(),
-                                    ),
-                                };
-
-                                if verified {
-                                    breakpoints.push(StoredBreakpoint {
-                                        path: source_path.clone(),
-                                        line: actual_line,
-                                    });
-                                }
-
-                                confirmed.push(types::Breakpoint {
-                                    verified,
-                                    message,
-                                    line: Some(actual_line),
-                                    source: Some(types::Source {
-                                        path: Some(source_path.clone()),
-                                        ..Default::default()
-                                    }),
-                                    ..Default::default()
-                                });
-                            }
-                        }
+                        let confirmed = debug_state.source_breakpoints.replace(
+                            &source_path,
+                            args.breakpoints.as_deref().unwrap_or_default(),
+                            &wrapper,
+                        );
 
                         let resp = req.success(ResponseBody::SetBreakpoints(
                             responses::SetBreakpointsResponse {
@@ -2123,6 +2206,7 @@ impl DapExecutor {
                         server.respond(req.error("Unsupported command")).ok();
                     }
                 }
+                debug_state.source_breakpoints.send_updates(&mut server);
             }
 
             if phase2_requested {
@@ -2287,6 +2371,9 @@ fn advance_one<H: Host>(
     debug_state: &mut DapDebugVarState,
 ) -> Result<Option<ResumeContext>, ExecutionError> {
     let source = SourceContext::new(&ctx);
+    if let Some(info) = source.debug_info() {
+        debug_state.source_breakpoints.observe(info.clone(), &*host);
+    }
     let executed_asmop = source.executed_asmop();
     let debug_var_infos = source.debug_vars();
     let source_asmop = source.asmop();
@@ -2539,8 +2626,8 @@ fn step_until_breakpoint<H: Host>(
 
                     // Check line breakpoints
                     if let Some((ref path, line)) = resolved {
-                        for bp in breakpoints.source {
-                            if bp.line == line
+                        for bp in &debug_state.source_breakpoints.entries {
+                            if bp.line == Some(line)
                                 && source_paths_match(
                                     path,
                                     &bp.path,

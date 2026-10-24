@@ -103,7 +103,6 @@ fn function_breakpoint_waits_for_entry_variables() {
         &mut cycle,
         &mut current_asmop,
         &ContinueBreakpoints {
-            source: &[],
             function: &function,
             source_path_prefixes: &[],
         },
@@ -149,7 +148,6 @@ fn function_breakpoints_match_rust_symbols_without_source_path_fallback() {
                     &mut cycle,
                     &mut asmop,
                     &ContinueBreakpoints {
-                        source: &[],
                         function: &function,
                         source_path_prefixes: &[],
                     },

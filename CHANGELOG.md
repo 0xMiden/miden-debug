@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep DAP source breakpoints pending until dynamically loaded package debug information is available, then verify them with stable breakpoint IDs. Reconsider relocated bindings when another package contributes executable lines for the same source. Source-line validation also reads matching local files when the execution host does not provide source text.
+
 ## [0.19.0]
 
 ### Added

@@ -5,8 +5,9 @@ use miden_debug_types::DefaultSourceManager;
 use miden_processor::{ExecutionError, Felt, event::EventId};
 
 use super::{
-    DebugQuery, Event, ExecutionConfig, Executor, ReplaySnapshot, source::SourceContext,
-    state::DebugExecutor,
+    DebugQuery, Event, ExecutionConfig, Executor, ReplaySnapshot,
+    source::SourceContext,
+    state::{DebugExecutor, Observation},
 };
 use crate::debug::{
     CallTrace, CallTraceRecorder, DebugVarSnapshot, FrameTransition, resolve_typed_variable_values,
@@ -63,9 +64,9 @@ fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<Execut
     let mut error = None;
 
     while !executor.stopped {
-        if let Err(err) = executor.step_with_observer(|executor, source| {
-            observe_callee(&mut recorder, executor, source);
-            observe_arguments(&mut recorder, executor);
+        if let Err(err) = executor.step_with_observer(|observed| {
+            observe_callee(&mut recorder, observed);
+            observe_arguments(&mut recorder, observed);
         }) {
             error = Some(err);
             break;
@@ -98,19 +99,15 @@ fn collect_call_trace(executor: &mut DebugExecutor) -> (CallTrace, Option<Execut
     (recorder.finish(), error)
 }
 
-fn observe_callee(
-    recorder: &mut CallTraceRecorder,
-    executor: &DebugExecutor,
-    source: &SourceContext,
-) {
+fn observe_callee(recorder: &mut CallTraceRecorder, observed: &Observation<'_>) {
     if !recorder.needs_callee() {
         return;
     }
-    if !executor.callstack.has_recovered_current_frame() || has_metadata_gap(source) {
+    if !observed.callstack.has_recovered_current_frame() || has_metadata_gap(observed.source) {
         recorder.stop_callee_search();
         return;
     }
-    let frames = executor.callstack.logical_frames("");
+    let frames = observed.callstack.logical_frames("");
     if let Some(callee) = recorder.pending_callee(&frames)
         && let Some((info, function)) = callee.debug_info().zip(callee.function())
     {
@@ -137,14 +134,14 @@ fn has_metadata_gap(source: &SourceContext) -> bool {
         .is_none_or(|node| node.asm_ops.is_empty() && node.inline_calls.is_empty())
 }
 
-fn observe_arguments(recorder: &mut CallTraceRecorder, executor: &DebugExecutor) {
+fn observe_arguments(recorder: &mut CallTraceRecorder, observed: &Observation<'_>) {
     // Only inspect the selected physical invocation. Inline-local ownership is not
     // available, so an exec-only wrapper must not borrow an unmarked leaf's arguments.
     if let Some(enter_clk) = recorder.accepting_args()
         && let Some(owner) = recorder.argument_owner()
-        && executor.debug_vars.current_invocation() == Some(owner)
+        && observed.debug_vars.current_invocation() == Some(owner)
     {
-        for snapshot in executor.debug_vars.current_variables() {
+        for snapshot in observed.debug_vars.current_variables() {
             let Some(index) = snapshot.info.arg_index() else {
                 continue;
             };
@@ -161,7 +158,7 @@ fn observe_arguments(recorder: &mut CallTraceRecorder, executor: &DebugExecutor)
             let felt_count = ty.and_then(value_felt_count);
             let values = felt_count
                 .zip(ty)
-                .and_then(|(count, ty)| resolve_arg_values(executor, snapshot, ty, count));
+                .and_then(|(count, ty)| resolve_arg_values(observed, snapshot, ty, count));
             recorder.observe_arg(index.get(), snapshot.info.name(), felt_count, values);
         }
     }
@@ -169,7 +166,7 @@ fn observe_arguments(recorder: &mut CallTraceRecorder, executor: &DebugExecutor)
 
 /// Read `count` consecutive felts of a typed argument out of the VM state.
 fn resolve_arg_values(
-    executor: &DebugExecutor,
+    observed: &Observation<'_>,
     snapshot: &DebugVarSnapshot,
     ty: &miden_assembly_syntax::ast::types::Type,
     count: usize,
@@ -179,13 +176,13 @@ fn resolve_arg_values(
     // `Stack` locations are resolved at the debug decorator and rewritten to a `Const`, which
     // holds a single felt (see `snapshot_transient_debug_values`). Anything wider than one felt
     // survives only in the capture.
-    if let Some(captured) = executor.debug_vars.captured_values(snapshot.info.name())
+    if let Some(captured) = observed.debug_vars.captured_values(snapshot.info.name())
         && captured.len() == count
     {
         return Some(to_u64(captured.to_vec()));
     }
 
-    let read_memory = |addr: u32| executor.read_memory_element(addr);
+    let read_memory = |addr: u32| observed.read_memory_element(addr);
     let read_local = |offset: i16| {
         let fmp = read_memory(FMP_ADDR.as_canonical_u64() as u32)?;
         let fmp = u32::try_from(fmp.as_canonical_u64()).ok()?;
@@ -196,7 +193,7 @@ fn resolve_arg_values(
         snapshot.info.value_location(),
         ty,
         count,
-        &executor.current_stack,
+        observed.current_stack,
         read_memory,
         read_local,
     )

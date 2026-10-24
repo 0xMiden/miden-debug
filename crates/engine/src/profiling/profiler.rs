@@ -2,7 +2,10 @@ use alloc::{boxed::Box, vec::Vec};
 
 use miden_core::operations::Operation;
 
-use crate::profiling::{OutputResult, OutputWriter, ProfilerConfig, instrument::Instrument};
+use crate::{
+    CycleInfo,
+    profiling::{OutputResult, OutputWriter, ProfilerConfig, instrument::Instrument},
+};
 
 /// Holds the loaded [`Instrument`]s and dispatches event handlers to them.
 ///
@@ -27,6 +30,13 @@ impl Profiler {
     pub fn on_operation_execution_cycle(&mut self, op: Operation, proc: Option<&str>) {
         for instrument in &mut self.instruments {
             instrument.on_operation_execution_cycle(op, proc);
+        }
+    }
+
+    /// Describes the cycle about to execute to every active instrument, otherwise it's a no-op.
+    pub fn on_cycle(&mut self, cycle: &CycleInfo<'_>) {
+        for instrument in &mut self.instruments {
+            instrument.on_cycle(cycle);
         }
     }
 

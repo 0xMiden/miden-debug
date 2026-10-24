@@ -1,7 +1,10 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use miden_assembly_syntax::ast::DebugVarInfo;
-use miden_core::{mast::MastNode, operations::AssemblyOp};
+use miden_core::{
+    mast::{MastNode, MastNodeId},
+    operations::AssemblyOp,
+};
 use miden_mast_package::debug_info::{DebugSourceNode, DebugSourceNodeId, PackageDebugInfo};
 use miden_processor::{Continuation, ResumeContext, operation::Operation};
 
@@ -15,8 +18,18 @@ pub(crate) struct SourceContext {
 }
 
 impl SourceContext {
+    /// Selects the cycle metadata against the context's own debug info.
+    #[cfg(any(test, feature = "dap"))]
     pub fn new(context: &ResumeContext) -> Self {
-        let debug_info = context.debug_info();
+        Self::with_debug_info(context, context.debug_info())
+    }
+
+    /// Selects the cycle metadata against `debug_info` instead of the context's own, which a
+    /// context built from a bare program does not have before its first step.
+    pub fn with_debug_info(
+        context: &ResumeContext,
+        debug_info: Option<Arc<PackageDebugInfo>>,
+    ) -> Self {
         let cycle = extract_cycle(context, debug_info.as_deref());
         let inline_frames = inline_frames_for_operation(
             debug_info
@@ -74,11 +87,25 @@ impl SourceContext {
     }
 }
 
+/// What the next continuation executes, as far as the forest and the debug info tell.
 #[derive(Clone, Copy)]
 pub(crate) struct CurrentCycleInfo {
+    /// The operation the cycle executes; `None` on a control-flow cycle.
     pub op: Option<Operation>,
+    /// The MAST node the cycle works on; `None` for a forest switch and when there is no
+    /// continuation to run.
+    pub exec_node: Option<MastNodeId>,
+    /// The source occurrence of the node, when the debug info has one.
     pub source_node_id: Option<DebugSourceNodeId>,
+    /// Whether `source_node_id` is the unique source root of the node rather than the
+    /// occurrence the processor tracks: the processor tracks none for a context built from a
+    /// bare program before its first step, and none at all for an invocation whose entry root
+    /// it could not pick.
+    pub source_node_inferred: bool,
+    /// The padded index of the operation within its basic block; on a `RESPAN` cycle the
+    /// index of the next batch's first operation.
     pub op_idx: Option<usize>,
+    /// The control-flow operation of the cycle, when it is one the call stack tracks.
     pub control_flow_kind: Option<ControlFlowOp>,
 }
 
@@ -95,11 +122,16 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
         continuation_stack.iter_continuations_for_next_clock_with_source_node_ids()
     {
         let exec_node = cont.exec_node();
-        let source_node_id = source_node_id.or_else(|| {
+        let tracked = source_node_id;
+        // The processor tracks no source node before the first step of a context built from a
+        // bare program, and none for an invocation whose entry root it could not pick; the
+        // node's unique source root stands in, and the record says so.
+        let source_node_id = tracked.or_else(|| {
             exec_node.zip(debug_info).and_then(|(exec_node, di)| {
                 di.unique_source_root_for_exec_node(exec_node).ok().flatten()
             })
         });
+        let source_node_inferred = tracked.is_none() && source_node_id.is_some();
         match cont {
             Continuation::ResumeBasicBlock {
                 node_id,
@@ -118,7 +150,9 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                 let op = block.op_batches()[*batch_index].ops().get(*op_idx_in_batch).copied();
                 return CurrentCycleInfo {
                     op,
+                    exec_node,
                     source_node_id,
+                    source_node_inferred,
                     op_idx: Some(global_idx),
                     control_flow_kind: None,
                 };
@@ -135,7 +169,9 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                     }
                     return CurrentCycleInfo {
                         op: None,
+                        exec_node,
                         source_node_id,
+                        source_node_inferred,
                         op_idx: Some(global_idx),
                         control_flow_kind: Some(ControlFlowOp::Respan),
                     };
@@ -150,7 +186,9 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
                 };
                 return CurrentCycleInfo {
                     op: None,
+                    exec_node,
                     source_node_id,
+                    source_node_inferred,
                     op_idx: None,
                     control_flow_kind,
                 };
@@ -163,7 +201,9 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
             | Continuation::FinishDyn(_) => {
                 return CurrentCycleInfo {
                     op: None,
+                    exec_node,
                     source_node_id,
+                    source_node_inferred,
                     op_idx: None,
                     control_flow_kind: Some(ControlFlowOp::End),
                 };
@@ -171,7 +211,9 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
             Continuation::EnterForest { .. } => {
                 return CurrentCycleInfo {
                     op: None,
+                    exec_node,
                     source_node_id,
+                    source_node_inferred,
                     op_idx: None,
                     control_flow_kind: None,
                 };
@@ -180,7 +222,9 @@ fn extract_cycle(ctx: &ResumeContext, debug_info: Option<&PackageDebugInfo>) -> 
     }
     CurrentCycleInfo {
         op: None,
+        exec_node: None,
         source_node_id: None,
+        source_node_inferred: false,
         op_idx: None,
         control_flow_kind: None,
     }

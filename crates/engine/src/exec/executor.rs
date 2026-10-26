@@ -1,25 +1,19 @@
 use alloc::{
     collections::{BTreeMap, VecDeque},
-    rc::Rc,
     string::String,
     sync::Arc,
     vec::Vec,
 };
-use core::{
-    cell::{Cell, RefCell},
-    fmt,
-    ops::Deref,
-};
+use core::{cell::Cell, fmt, ops::Deref};
 
 use log::Level;
-use miden_assembly_syntax::{ast::DebugVarInfo, debuginfo::SourceFile, diagnostics::Report};
+use miden_assembly_syntax::{debuginfo::SourceFile, diagnostics::Report};
 use miden_core::program::StackInputs;
 use miden_debug_types::{ByteIndex, SourceManager};
 use miden_mast_package::Package;
 use miden_package_registry::PackageCache;
 use miden_processor::{
-    ContextId, ExecutionError, ExecutionOptions, FastProcessor, Felt, LoadedMastForest,
-    ProcessorState,
+    ExecutionError, ExecutionOptions, FastProcessor, Felt, LoadedMastForest, ProcessorState,
     advice::{AdviceInputs, AdviceMutation},
     event::{EventError, EventHandler, EventName},
     trace::RowIndex,
@@ -27,13 +21,13 @@ use miden_processor::{
 use miden_utils_sync::RwLock;
 
 use super::{
-    DebugExecutor, DebuggerHost, Event, ExecutionConfig, ExecutionTrace,
+    DebugExecutor, DebuggerHost, Event, ExecutionConfig, ExecutionTrace, Stepper,
     event::{FRAME_END_EVENT, FRAME_START_EVENT, PRINTLN_EVENT},
     query::read_memory_bytes,
 };
 use crate::{
     HybridPackageRegistry,
-    debug::{CallStack, DebugVarTracker, NativePtr},
+    debug::NativePtr,
     felt::FromMidenRepr,
     profiling::{Profiler, ProfilerConfig},
 };
@@ -52,6 +46,9 @@ const MAX_PRINTLN_BYTES: usize = 512 * 1024;
 /// manage execution step-by-step, such as is done by the debugger; or by running
 /// the program to completion and obtaining an [ExecutionTrace], which can be used
 /// to introspect the final program state.
+///
+/// [Executor::into_stepper] is the third exit: a [Stepper] with the same host, for driving the
+/// program to its end while observing every cycle without the debugger's bookkeeping.
 pub struct Executor {
     stack: StackInputs,
     advice: AdviceInputs,
@@ -114,11 +111,12 @@ impl Executor {
 
     /// Record the advice mutations produced by each event handler invocation during execution.
     ///
-    /// Recording is a private detail of the debug host created by [Executor::into_debug]: once
-    /// the program completes, take the log via [DebuggerHost::take_recorded_event_mutations] on
-    /// the [DebugExecutor]'s host, and feed it back into [Executor::into_debug_with_replay] to
-    /// debug the same execution later without the original event handlers (e.g. transaction
-    /// debugging with event replay).
+    /// Recording is a private detail of the debug host created by [Executor::into_debug] or
+    /// [Executor::into_stepper]: once the program completes, take the log via
+    /// [DebuggerHost::take_recorded_event_mutations] on that host (the [DebugExecutor]'s, or
+    /// the one returned with the stepper), and feed it back into
+    /// [Executor::into_debug_with_replay] to debug the same execution later without the
+    /// original event handlers (e.g. transaction debugging with event replay).
     ///
     /// Mutations are only recorded for live event handling; nothing is recorded while an event
     /// replay queue is being consumed.
@@ -145,6 +143,11 @@ impl Executor {
 
     /// Convert this [Executor] into a [DebugExecutor], which captures much more information
     /// about the program being executed, and must be stepped manually.
+    ///
+    /// Panics when `package` is not a program, the advice inputs do not fit the options'
+    /// advice budget, an event handler cannot be registered, or the initial resume context
+    /// cannot be built: the package's advice map conflicts with the advice inputs or, added to
+    /// them, exceeds the budget, or its debug info cannot be used with its program.
     pub fn into_debug(
         mut self,
         package: Arc<Package>,
@@ -154,10 +157,92 @@ impl Executor {
 
         log::debug!("creating debug executor");
 
-        let mut host = DebuggerHost::new(source_manager.clone());
+        let host = self.build_host(source_manager);
+        self.debug_executor(host, package)
+    }
+
+    /// Convert this [Executor] into a [Stepper] over `package` and the host to drive it with.
+    ///
+    /// The host is the one [Executor::into_debug] would build: the linked packages, the
+    /// registered event handlers, and the builtin ones, with the frame events accepted and
+    /// dropped since there is no call stack to feed. Nothing is kept for inspection, which makes
+    /// this the cheap way to step a program to its end while observing every cycle. The profiler
+    /// configuration is not used; observe the cycles through the stepper's callback instead.
+    ///
+    /// Fails as [`Stepper::for_package`] does: the package's advice map conflicts with the
+    /// advice inputs or, added to them, exceeds the options' advice budget, or its debug info
+    /// cannot be used with its program. Panics, as [`Executor::into_debug`] does, when `package`
+    /// is not a program, the advice inputs do not fit the options' advice budget, or an event
+    /// handler cannot be registered.
+    pub fn into_stepper(
+        mut self,
+        package: Arc<Package>,
+        source_manager: Arc<dyn SourceManager>,
+    ) -> Result<(Stepper, DebuggerHost<dyn SourceManager>), ExecutionError> {
+        assert!(package.is_program());
+        if !self.profiler_config.instruments.is_empty() {
+            log::warn!("a stepper runs no profiler; the configured instruments are dropped");
+        }
+
+        let mut host = self.build_host(source_manager);
+        register_builtin_event_handlers(&mut host, None);
+
+        let (stepper, _) = self.stepper(package)?;
+        Ok((stepper, host))
+    }
+
+    /// The stepper over `package` with the inputs and options, and the profiler configuration,
+    /// which outlives the conversion. Called once the host is built, since it consumes the
+    /// executor.
+    ///
+    /// Fails as [`Stepper::for_package`] does. Panics when the advice inputs do not fit the
+    /// options' advice budget, as every conversion of the executor does.
+    fn stepper(self, package: Arc<Package>) -> Result<(Stepper, ProfilerConfig), ExecutionError> {
+        let Self {
+            stack,
+            advice,
+            options,
+            profiler_config,
+            ..
+        } = self;
+        let processor = FastProcessor::new_with_options(stack, advice, options)
+            .expect("advice inputs should fit the options' advice budget");
+        Ok((Stepper::for_package(processor, package)?, profiler_config))
+    }
+
+    /// A debug executor over `package` and `host`, with the builtin event handlers feeding its
+    /// call stack. Panics as [`Self::stepper`] does, and when the initial context cannot be
+    /// built: a debug session has no use for a program it cannot start.
+    fn debug_executor(
+        self,
+        mut host: DebuggerHost<dyn SourceManager>,
+        package: Arc<Package>,
+    ) -> DebugExecutor {
+        let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
+        register_builtin_event_handlers(&mut host, Some(Arc::clone(&events)));
+        let (stepper, profiler_config) =
+            self.stepper(package).expect("failed to get initial resume context");
+        DebugExecutor::new(stepper, host, events, Profiler::from_config(profiler_config))
+    }
+
+    /// The host with the linked packages loaded.
+    fn new_host(&self, source_manager: Arc<dyn SourceManager>) -> DebuggerHost<dyn SourceManager> {
+        let mut host = DebuggerHost::new(source_manager);
         for lib in self.registry.all() {
             host.load_package(lib);
         }
+        host
+    }
+
+    /// The host with the linked packages and the registered event handlers, recording the
+    /// advice mutations of the event handlers when
+    /// [`Self::with_event_advice_mutations_recording`] turned that on. The event handlers are
+    /// taken out of `self`, which is left with none.
+    fn build_host(
+        &mut self,
+        source_manager: Arc<dyn SourceManager>,
+    ) -> DebuggerHost<dyn SourceManager> {
+        let mut host = self.new_host(source_manager);
         for (event, handler) in core::mem::take(&mut self.event_handlers) {
             host.register_event_handler(event, handler)
                 .expect("failed to register debug executor event handler");
@@ -165,44 +250,7 @@ impl Executor {
         if self.record_event_mutations {
             host = host.with_event_advice_mutations_recording();
         }
-
-        let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
-        register_builtin_event_handlers(&mut host, Arc::clone(&events));
-
-        // Set up debug variable tracking
-        let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
-            Rc::new(Default::default());
-
-        let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
-            .expect("advice inputs should fit advice map limits");
-
-        let root_context = ContextId::root();
-        let resume_ctx = processor
-            .get_initial_resume_context_for_package(package)
-            .expect("failed to get initial resume context");
-
-        let callstack = CallStack::new(events);
-        let debug_vars = DebugVarTracker::new(debug_var_events);
-        DebugExecutor {
-            processor,
-            host,
-            resume_ctx: Some(resume_ctx),
-            current_stack: vec![],
-            current_op: None,
-            current_asmop: None,
-            stack_outputs: Default::default(),
-            contexts: Default::default(),
-            root_context,
-            current_context: root_context,
-            callstack,
-            current_proc: None,
-            debug_vars,
-            last_debug_var_count: 0,
-            recent: VecDeque::with_capacity(5),
-            cycle: 0,
-            stopped: false,
-            profiler: Profiler::from_config(self.profiler_config),
-        }
+        host
     }
 
     /// Convert this [Executor] into a [DebugExecutor] with event replay support.
@@ -224,51 +272,15 @@ impl Executor {
 
         log::debug!("creating debug executor with event replay");
 
-        let mut host = DebuggerHost::new(source_manager.clone());
-        for lib in self.registry.all() {
-            host.load_package(lib);
-        }
+        // Replay feeds the recorded mutations, so the live event handlers are not registered
+        // and nothing is recorded either.
+        let mut host = self.new_host(source_manager);
         for forest in extra_mast_forests {
             host.load_mast_forest(forest);
         }
         host.set_event_replay(event_replay);
 
-        let debug_var_events: Rc<RefCell<BTreeMap<RowIndex, Vec<DebugVarInfo>>>> =
-            Rc::new(Default::default());
-
-        let events: Arc<RwLock<BTreeMap<RowIndex, Event>>> = Arc::new(Default::default());
-        register_builtin_event_handlers(&mut host, Arc::clone(&events));
-
-        let mut processor = FastProcessor::new_with_options(self.stack, self.advice, self.options)
-            .expect("advice inputs should fit advice map limits");
-
-        let root_context = ContextId::root();
-        let resume_ctx = processor
-            .get_initial_resume_context_for_package(package)
-            .expect("failed to get initial resume context");
-
-        let callstack = CallStack::new(events);
-        let debug_vars = DebugVarTracker::new(debug_var_events);
-        DebugExecutor {
-            processor,
-            host,
-            resume_ctx: Some(resume_ctx),
-            current_stack: vec![],
-            current_op: None,
-            current_asmop: None,
-            stack_outputs: Default::default(),
-            contexts: Default::default(),
-            root_context,
-            current_context: root_context,
-            callstack,
-            current_proc: None,
-            debug_vars,
-            last_debug_var_count: 0,
-            recent: VecDeque::with_capacity(5),
-            cycle: 0,
-            stopped: false,
-            profiler: Profiler::from_config(self.profiler_config),
-        }
+        self.debug_executor(host, package)
     }
 
     /// Execute the given program until termination, producing a trace
@@ -384,9 +396,11 @@ enum PrintLnError {
     InvalidUtf8,
 }
 
+/// Registers the handlers of the debugger's own events. Frame start and end are recorded into
+/// `events` for the call stack, or accepted and dropped when there is none.
 fn register_builtin_event_handlers(
     host: &mut DebuggerHost<dyn SourceManager>,
-    events: Arc<RwLock<BTreeMap<RowIndex, Event>>>,
+    events: Option<Arc<RwLock<BTreeMap<RowIndex, Event>>>>,
 ) {
     let println_handler = |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
         match decode_println(process) {
@@ -410,19 +424,23 @@ fn register_builtin_event_handlers(
     host.register_event_handler(PRINTLN_EVENT, Arc::new(println_handler))
         .expect("failed to register println event handler");
 
-    let frame_start_events = Arc::clone(&events);
+    let frame_start_events = events.clone();
     let frame_start_handler =
         move |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
-            frame_start_events.write().insert(process.clock(), Event::FrameStart);
+            if let Some(events) = &frame_start_events {
+                events.write().insert(process.clock(), Event::FrameStart);
+            }
             Ok(vec![])
         };
     host.register_event_handler(FRAME_START_EVENT, Arc::new(frame_start_handler))
         .expect("failed to register frame start event handler");
 
-    let frame_end_events = Arc::clone(&events);
+    let frame_end_events = events;
     let frame_end_handler =
         move |process: &ProcessorState| -> Result<Vec<AdviceMutation>, EventError> {
-            frame_end_events.write().insert(process.clock(), Event::FrameEnd);
+            if let Some(events) = &frame_end_events {
+                events.write().insert(process.clock(), Event::FrameEnd);
+            }
             Ok(vec![])
         };
     host.register_event_handler(FRAME_END_EVENT, Arc::from(frame_end_handler))

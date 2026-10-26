@@ -36,7 +36,7 @@ use miden_processor::{
 
 use super::{
     EventMutationRecorder, MastForestRecorder, RecordingHost, ReplaySnapshot,
-    ReplaySnapshotRecorder, ReplaySnapshotWrite, source::SourceContext,
+    ReplaySnapshotRecorder, ReplaySnapshotWrite, poll_immediately, source::SourceContext,
     state::should_wait_for_entry_variables,
 };
 use crate::{
@@ -264,20 +264,6 @@ impl<H: Host> Host for DapHostWrapper<'_, H> {
         process: &ProcessorState<'_>,
     ) -> impl FutureMaybeSend<Result<(), TraceError>> {
         self.inner.on_trace(process)
-    }
-}
-
-// POLL IMMEDIATELY
-// ================================================================================================
-
-/// Resolve a future that is expected to complete immediately (synchronous host methods).
-fn poll_immediately<T>(fut: impl std::future::Future<Output = T>) -> T {
-    let waker = std::task::Waker::noop();
-    let mut cx = std::task::Context::from_waker(waker);
-    let mut fut = std::pin::pin!(fut);
-    match fut.as_mut().poll(&mut cx) {
-        std::task::Poll::Ready(val) => val,
-        std::task::Poll::Pending => panic!("future was expected to complete immediately"),
     }
 }
 
@@ -2289,19 +2275,7 @@ impl DapExecutor {
             let stack = StackOutputs::new(&stack_top)
                 .unwrap_or_else(|_| StackOutputs::new(&[]).expect("empty stack outputs"));
 
-            // The deferred state is only borrowable here, so clone it before consuming the
-            // processor; export mirrors `FastProcessor::into_execution_output`.
-            let precompile_witness =
-                processor.deferred_state().clone().into_witness().map_err(|_| {
-                    ExecutionError::Internal("failed to export deferred execution witness")
-                })?;
-            let (advice, memory) = processor.into_parts();
-            return Ok(ExecutionOutput {
-                stack,
-                advice,
-                memory,
-                precompile_witness,
-            });
+            return super::stepper::execution_output(processor, stack);
         } // end outer restart loop
     }
 }

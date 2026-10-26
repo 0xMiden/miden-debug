@@ -7,6 +7,8 @@ use alloc::{boxed::Box, string::String};
 
 use miden_core::operations::Operation;
 
+use crate::CycleInfo;
+
 mod op_histogram_global;
 mod op_histogram_proc;
 
@@ -25,6 +27,13 @@ pub trait Instrument {
     /// be attributed to a procedure. For example, it is `None` while executing a program without
     /// assembly operation metadata.
     fn on_operation_execution_cycle(&mut self, op: Operation, proc: Option<&str>);
+    /// To be called before each vm cycle with what the cycle is about to execute, resolved to
+    /// source.
+    ///
+    /// Unlike [`Self::on_operation_execution_cycle`], this runs before the cycle executes and
+    /// for control-flow cycles too, so a cycle that fails is reported like any other. Instruments
+    /// that do not need the source view keep the default, which does nothing.
+    fn on_cycle(&mut self, _cycle: &CycleInfo<'_>) {}
     /// Write this instrumentation's collected output as a report to `writer`
     fn write_report_to(&self, writer: &mut dyn OutputWriter) -> OutputResult<()>;
 }

@@ -93,7 +93,11 @@ pub struct NodeStart {
 /// Keeps the open source nodes between steps so a node start can name its parent.
 ///
 /// A start pushes, a finish pops through the node, and a loop's per-iteration finish pops the
-/// body while keeping the loop. A start whose callee may run in another forest, an external
+/// body while keeping the loop. Every entry also has a lifetime of its own, independent of
+/// source attribution: a node is alive while its finish continuation sits on the stack, at
+/// the depth its start had, so an entry is popped as soon as the continuation stack is
+/// shallower than its start, whether or not the finish that ended it carried a source node;
+/// finishes are the early exit. A start whose callee may run in another forest, an external
 /// or a dynamic node, pushes a boundary (the dynamic node itself is pushed below it, so that
 /// its finish still finds it): whatever the callee leaves open, such as the children of a
 /// root whose start was never described, is popped with the boundary once the continuation
@@ -120,6 +124,9 @@ enum Entry {
         forest: Arc<MastForest>,
         /// The open node.
         node: DebugSourceNodeId,
+        /// The continuation-stack depth at the node's start. Its finish sits at that depth
+        /// until the node is done, so the node is dead once the stack is shallower.
+        depth: usize,
     },
     /// The boundary left by a start whose callee may run in another forest.
     Boundary {
@@ -186,6 +193,7 @@ impl SourceTracker {
         // The depth counts the next continuation itself.
         let depth = ctx.continuation_stack().len();
         let returned_from = self.return_to(depth);
+        self.expire(depth);
         let node_start = match next {
             Continuation::StartNode(exec_node) => {
                 // The boundary does not depend on the node having a source node: a forest
@@ -210,13 +218,13 @@ impl SourceTracker {
                     // finish then closes the node in the caller's frame.
                     Some(MastNode::Dyn(_)) => {
                         if let Some(node) = node {
-                            self.push_node(forest, node);
+                            self.push_node(forest, node, depth);
                         }
                         self.push_boundary(Leaving::Dynamic(node), depth);
                     }
                     _ => {
                         if let Some(node) = node {
-                            self.push_node(forest, node);
+                            self.push_node(forest, node, depth);
                         }
                     }
                 }
@@ -262,12 +270,29 @@ impl SourceTracker {
         })
     }
 
-    /// Opens `node` of `forest`.
-    fn push_node(&mut self, forest: &Arc<MastForest>, node: DebugSourceNodeId) {
+    /// Opens `node` of `forest`, started with the continuation stack `depth` deep.
+    fn push_node(&mut self, forest: &Arc<MastForest>, node: DebugSourceNodeId, depth: usize) {
         self.open.push(Entry::Node {
             forest: forest.clone(),
             node,
+            depth,
         });
+    }
+
+    /// Pops the nodes of the current frame whose start was deeper than the continuation stack
+    /// is now, `depth` deep: their finishes are gone, whether or not a finish with a source
+    /// node closed them. In an invocation the processor does not track, only the nodes the
+    /// engine infers have source nodes, so a kept loop under a parent without one would
+    /// otherwise stay open and pile up once per iteration.
+    ///
+    /// Run every cycle, so a dead entry never ends up under a live one: scanning from the top
+    /// down to the first live node or boundary finds them all.
+    fn expire(&mut self, depth: usize) {
+        while let Some(Entry::Node { depth: started, .. }) = self.open.last()
+            && *started > depth
+        {
+            self.open.pop();
+        }
     }
 
     /// Marks that the forest leaves through `leaving`, with the continuation stack `depth`
@@ -355,7 +380,9 @@ impl SourceTracker {
     ) -> Option<DebugSourceNodeId> {
         let same_forest =
             self.open[self.frame_start()..].iter().rev().filter_map(|entry| match entry {
-                Entry::Node { forest: open, node } if Arc::ptr_eq(open, forest) => Some(*node),
+                Entry::Node {
+                    forest: open, node, ..
+                } if Arc::ptr_eq(open, forest) => Some(*node),
                 _ => None,
             });
         let lists_child = |node: &DebugSourceNodeId| {
@@ -379,7 +406,7 @@ impl SourceTracker {
     fn close(&mut self, forest: &Arc<MastForest>, node: DebugSourceNodeId, keep: bool) {
         let frame_start = self.frame_start();
         let position = self.open[frame_start..].iter().rposition(|entry| {
-            matches!(entry, Entry::Node { forest: open, node: open_node }
+            matches!(entry, Entry::Node { forest: open, node: open_node, .. }
                 if *open_node == node && Arc::ptr_eq(open, forest))
         });
         if let Some(position) = position {

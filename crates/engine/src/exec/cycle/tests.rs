@@ -917,13 +917,13 @@ fn a_root_loop_is_closed_at_the_end() {
     assert_eq!(open, (1, 0), "open after the last cycle and at the end");
 }
 
-/// A program whose entry node is external: its callee leaves its exited loop open, since the
-/// loop's parent is the callee's root, whose start was never described, and the entry's
-/// boundary, which pops it on the return, has no caller cycle to return to. Only the
-/// finalization step closes the loop; one that closed nothing would leave it open once the
-/// program ended.
+/// A program whose entry node is external: the callee's exited loop has for parent the
+/// callee's root, whose start was never described, so no finish with a source node pops it,
+/// and the entry's boundary, which would pop it on the return, has no caller cycle to return
+/// to. The loop is popped all the same, by the depth rule, on the root's finish: nothing is
+/// open after the last cycle, and nothing at the end.
 #[test]
-fn what_an_external_root_leaves_open_is_closed_at_the_end() {
+fn an_exited_loop_under_an_undescribed_root_is_popped_by_depth() {
     let source_manager = Arc::new(DefaultSourceManager::default());
     let (leaf, mid) = leaf_and_mid(
         &source_manager,
@@ -936,7 +936,7 @@ fn what_an_external_root_leaves_open_is_closed_at_the_end() {
     let mut host = DebuggerHost::new(source_manager);
     host.load_package(leaf);
     let open = open_nodes_around_the_end(&mid, 3, &mut host);
-    assert_eq!(open, (1, 0), "open after the last cycle and at the end");
+    assert_eq!(open, (0, 0), "open after the last cycle and at the end");
 }
 
 /// A stepper over a bare program resolves its first cycle against the supplied debug info, so
@@ -1633,4 +1633,39 @@ fn records_of_an_invocation_without_a_tracked_root_are_inferred() {
     assert!(with_source.iter().all(|record| record.source_node_inferred), "{in_library:?}");
     assert!(!in_program.is_empty());
     assert!(in_program.iter().all(|record| !record.source_node_inferred), "{in_program:?}");
+}
+
+/// A loop under a parent the processor does not track: in an invocation whose entry root is
+/// ambiguous only the unique roots get a source node, so the inner loop is pushed and its
+/// parent, the outer loop's body, has no finish with a source node to pop it. The tracker pops
+/// it when the stack is shallower than its start, so the open count does not grow with the
+/// iterations.
+#[test]
+fn inferred_loop_nodes_stay_bounded_without_a_tracked_root() {
+    let mut peaks = Vec::new();
+    for iterations in [4u32, 40] {
+        let manager = Arc::new(DefaultSourceManager::default());
+        let (library, package) = linked_packages(
+            &manager,
+            r#"
+namespace lib::loops
+proc inner
+    do push.0 while nop end
+end
+proc body
+    do sub.1 exec.inner while dup neq.0 end
+end
+pub proc nested
+    exec.body
+end
+"#,
+            false,
+            "use lib::loops begin exec.loops::nested end",
+        );
+        let (mut stepper, mut host) =
+            linked_stepper(&[&library], &package, vec![Felt::from_u32(iterations)], manager);
+        let open = open_after_every_cycle(&mut stepper, &mut host, |_| {});
+        peaks.push(open.into_iter().max().unwrap());
+    }
+    assert_eq!(peaks[0], peaks[1], "open source nodes grow with iteration count: {peaks:?}");
 }

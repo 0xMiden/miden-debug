@@ -1,5 +1,9 @@
 # Miden Debugger
 
+Development has moved to [0xMiden/miden-vm](https://github.com/0xMiden/miden-vm). The debugger CLI and library live in [`crates/debugger`](https://github.com/0xMiden/miden-vm/tree/next/crates/debugger).
+
+Please [report issues](https://github.com/0xMiden/miden-vm/issues) and submit pull requests in the VM repository. The information below describes the former standalone repository.
+
 This repo provides the implementation of the `miden debug` command, i.e. an interactive debugger for Miden programs.
 
 The underlying `miden-debug` crate may also be used as a library, for use cases where you want to use the debugger as an executor for Miden programs, such as
